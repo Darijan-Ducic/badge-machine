@@ -477,6 +477,27 @@ def test_a_29_s_session_of_tracker_boxes_fits_in_one_header(api, store, dictatio
     assert [t["status"] for t in finished(api, session)["turns"]] == ["processed", "processed"]
 
 
+def test_a_practice_users_dictation_belongs_to_their_dataset_and_skips_the_daily_cap(api, dictation,
+                                                                                      session_recording, monkeypatch):
+    monkeypatch.setattr(sessions, "DAILY_CAP", 0)
+
+    response = api.post("/dictation?user=practice:obama-weekly:obama", content=session_recording)
+
+    detail = finished(api, response.json()["session"])
+    assert detail["dataset"] == "obama-weekly"
+    assert [t["status"] for t in detail["turns"]] == ["processed", "processed"]
+
+
+def test_any_other_users_dictation_has_no_dataset_and_spends_the_daily_cap(api, dictation, session_recording,
+                                                                            monkeypatch):
+    monkeypatch.setattr(sessions, "DAILY_CAP", 0)
+
+    detail = finished(api, post_dictation(api, session_recording)["session"])
+
+    assert detail["dataset"] is None
+    assert [(t["status"], t["reason"]) for t in detail["turns"]] == [("skipped", "daily cap")] * 2
+
+
 def test_startup_resumes_the_pending_turns_a_restart_lost(store, dictation, session_recording, monkeypatch):
     class Lost:  # the queue of a server that stopped before running its turns
         def submit(self, *args, **kwargs):
