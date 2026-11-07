@@ -17,8 +17,8 @@ import pymongo
 import pytest
 
 import sessions
-from sessions import (MongoStore, get_session, list_sessions, parse_silences, plan_segments, policy, session_video,
-                      slice_boxes, start_session, used_today)
+from sessions import (MongoStore, get_session, list_sessions, parse_silences, plan_segments, policy, resume_pending,
+                      session_video, slice_boxes, start_session, used_today)
 
 FPS = 30
 LIST_KEYS = {"users", "sessions"}
@@ -483,6 +483,99 @@ def test_a_streamed_recording_without_a_container_duration_still_gets_its_length
     (summary,) = list_sessions("u1", store=store)["sessions"]
     assert summary["duration_s"] == pytest.approx(6.0, abs=0.05)
     assert statuses(result["session"], store) == [("processed", None)]
+
+
+# ---- resume_pending: the queue a restart lost -----------------------------------------------------------------------
+
+@pytest.fixture
+def restart(monkeypatch):
+    """Simulates a new server process: the jobs queued in memory are gone, the store is not."""
+    return lambda: monkeypatch.setattr(sessions, "_RUN", uuid.uuid4().hex)
+
+
+def interrupted(recording, store, user="u1", boxes=None):
+    """A session whose turns were queued on an executor that never ran them: the process died."""
+    return start_session(recording, user_id=user, boxes=boxes or [], flags={}, process_turn=FakeClips(),
+                         executor=Later(), transcribe=FakeSTT(STT), store=store)
+
+
+def test_after_a_restart_every_pending_turn_is_processed_from_the_stored_recording_and_boxes(store, recording,
+                                                                                            restart):
+    frame_ms = [round(k * 1000 / FPS) for k in range(round(19.5 * FPS))]
+    boxes = [[t, k, 0, 10, 10] for k, t in enumerate(frame_ms)]  # x = the frame number
+    sid = interrupted(recording, store, boxes=boxes)["session"]
+    restart()
+    clips, later = FakeClips(probe_segments=True), Later()
+
+    assert resume_pending(clips, later, store=store) == 2
+    later.run()
+
+    detail = get_session(sid, store=store)
+    assert [(t["status"], t["reason"]) for t in detail["turns"]] == [
+        ("processed", None), ("skipped", "too short"), ("skipped", "no speech"), ("processed", None)]
+    assert (detail["status"], dict(clips.count)) == ("done", {0: 1, 3: 1})
+    for i in (0, 3):
+        turn, call = detail["turns"][i], clips.calls[i]
+        start_ms, end_ms = round(turn["start"] * 1000), round(turn["end"] * 1000)
+        window = [k for k, t in enumerate(frame_ms) if start_ms <= t < end_ms]
+        assert ([b[1] for b in call["boxes"]], call["frames"]) == (window, len(window))
+        assert (call["transcript"], call["user_id"], call["session_id"], call["mode"]) == (
+            turn["stt"], "u1", sid, "stt_on")
+
+
+def test_resume_pending_takes_up_every_unfinished_session(store, recording, restart):
+    first, second = interrupted(recording, store), interrupted(recording, store, user="u2")
+    restart()
+    later = Later()
+
+    assert resume_pending(FakeClips(), later, store=store) == 4
+    later.run()
+
+    assert [get_session(s["session"], store=store)["status"] for s in (first, second)] == ["done", "done"]
+
+
+def test_resume_pending_called_twice_processes_each_turn_once(store, recording, restart):
+    interrupted(recording, store)
+    restart()
+    clips, later = FakeClips(), Later()
+
+    counts = resume_pending(clips, later, store=store), resume_pending(clips, later, store=store)
+    later.run()
+
+    assert (counts, dict(clips.count)) == ((2, 0), {0: 1, 3: 1})
+
+
+def test_resume_pending_while_the_original_turns_are_queued_processes_each_turn_once(store, recording):
+    clips, queued = FakeClips(), Later()
+    start_session(recording, user_id="u1", boxes=[], flags={}, process_turn=clips, executor=queued,
+                  transcribe=FakeSTT(STT), store=store)
+
+    resumed = resume_pending(clips, queued, store=store)
+    queued.run()
+
+    assert (resumed, dict(clips.count)) == (0, {0: 1, 3: 1})
+
+
+def test_resume_pending_while_the_original_turns_are_running_processes_each_turn_once(store, recording):
+    release, pool = threading.Event(), ThreadPoolExecutor(4)
+    clips = FakeClips(gate=release)
+    try:
+        start_session(recording, user_id="u1", boxes=[], flags={}, process_turn=clips, executor=pool,
+                      transcribe=FakeSTT(STT), store=store)
+        resumed = resume_pending(clips, pool, store=store)
+    finally:
+        release.set()
+        pool.shutdown(wait=True)
+
+    assert (resumed, dict(clips.count)) == (0, {0: 1, 3: 1})
+
+
+def test_resume_pending_leaves_finished_sessions_alone(store, recording, restart):
+    run(recording, store, clips=FakeClips(fail_turn=0))
+    restart()
+    clips = FakeClips()
+
+    assert (resume_pending(clips, Later(), store=store), dict(clips.count)) == (0, {})
 
 
 # ---- the /sessions contract -----------------------------------------------------------------------------------------
