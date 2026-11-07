@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Webcam transcript</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    video { width: 100%; border-radius: 8px; background: #000; transform: scaleX(-1); }
+    button { font-size: 1rem; padding: .6rem 1.2rem; margin: 1rem 0; }
+    #transcript { white-space: pre-wrap; background: #f4f4f4; padding: 1rem; border-radius: 8px; min-height: 3rem; }
+  </style>
+</head>
+<body>
+  <h1>Webcam transcript</h1>
+  <video id="preview" autoplay muted playsinline></video>
+  <button id="toggle" disabled>Start recording</button>
+  <p id="status">Requesting camera…</p>
+  <div id="transcript"></div>
+  <script>
+    const preview = document.getElementById("preview");
+    const toggle = document.getElementById("toggle");
+    const statusEl = document.getElementById("status");
+    const output = document.getElementById("transcript");
+    let stream, recorder, chunks;
+
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: true })
+      .then((s) => {
+        stream = s;
+        preview.srcObject = s;
+        toggle.disabled = false;
+        statusEl.textContent = "Camera ready.";
+      })
+      .catch((err) => { statusEl.textContent = `Camera unavailable: ${err.message}`; });
+
+    toggle.onclick = () => {
+      if (recorder?.state === "recording") {
+        recorder.stop();
+        return;
+      }
+      chunks = [];
+      recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = transcribe;
+      recorder.start();
+      toggle.textContent = "Stop recording";
+      statusEl.textContent = "Recording…";
+      output.textContent = "";
+    };
+
+    async function transcribe() {
+      toggle.textContent = "Start recording";
+      toggle.disabled = true;
+      statusEl.textContent = "Transcribing…";
+      try {
+        const res = await fetch("/transcribe", { method: "POST", body: new Blob(chunks, { type: recorder.mimeType }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        output.textContent = data.transcript;
+        statusEl.textContent = "Done.";
+      } catch (err) {
+        statusEl.textContent = `Transcription failed: ${err.message}`;
+      } finally {
+        toggle.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>
