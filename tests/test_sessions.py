@@ -334,6 +334,23 @@ def test_the_daily_cap_spans_the_users_sessions_and_not_other_users(monkeypatch,
     assert statuses(other["session"], store)[0] == ("processed", None)
 
 
+def test_a_dataset_session_is_not_held_to_the_daily_cap(monkeypatch, store, recording):
+    monkeypatch.setattr(sessions, "DAILY_CAP", 1)
+
+    practice = run(recording, store, dataset="obama-weekly")
+
+    assert [statuses(practice["session"], store)[i] for i in (0, 3)] == [("processed", None)] * 2
+
+
+def test_a_dataset_session_does_not_spend_the_users_daily_cap(monkeypatch, store, recording):
+    monkeypatch.setattr(sessions, "DAILY_CAP", 1)
+
+    run(recording, store, dataset="obama-weekly")  # 2 processed turns of practice footage
+    live = run(recording, store)
+
+    assert [statuses(live["session"], store)[i] for i in (0, 3)] == [("processed", None), ("skipped", "daily cap")]
+
+
 @pytest.mark.parametrize("fmt", ["webm", "mp4"])
 def test_each_kept_turn_gets_a_frame_accurate_segment_in_the_recordings_container(store, recording, mp4_recording, fmt):
     source, stt, seconds = {"webm": (recording, STT, 19.5), "mp4": (mp4_recording, {3.5: "yes", 2.0: "yes"}, 3.5)}[fmt]
