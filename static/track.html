@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mouth tracker</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* page-specific; colors and radii are theme.css tokens */
+    .framing-wrap > .col { width: min(640px, 100%); }
+    .framing .headline { margin-top: 24px; }
+    .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; transform: scaleX(-1); } /* mirrored like the video */
+    .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+    .stat { background: var(--well); border-radius: 18px; padding: 12px 14px; min-width: 0; }
+    .stat .v { margin-top: 2px; font-size: 24px; line-height: 1.2; letter-spacing: -0.02em; }
+    .stat .sub { margin: 2px 0 0; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .meter { height: 6px; margin-top: 8px; border-radius: 3px; background: var(--well-2); overflow: hidden; }
+    .meter > i { display: block; height: 100%; width: 0; background: var(--onplan); transition: width .1s linear; }
+    .meter.low > i { background: var(--over); }
+    .key { display: inline-flex; align-items: center; gap: 6px; }
+    .key::before { content: ""; width: 12px; height: 3px; border-radius: 2px; background: var(--c); }
+    #mouth { display: block; width: 100%; margin-top: 14px; border-radius: var(--r-inner); background: var(--well); }
+    .dock .ring { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--coach); }
+  </style>
+</head>
+<body>
+  <div class="haze" aria-hidden="true"></div>
+  <main class="framing-wrap">
+    <div class="col">
+      <section class="framing">
+        <div class="cam" id="cam"><video id="preview" autoplay muted playsinline></video><canvas id="overlay" aria-hidden="true"></canvas></div>
+        <h1 class="headline">Mouth tracker</h1>
+        <p class="note" id="status">Requesting camera…</p>
+      </section>
+      <article class="card">
+        <p class="eyebrow"><b>Live</b>
+          <span class="key" style="--c: var(--coach)">face</span>
+          <span class="key" style="--c: var(--near)">anchor</span>
+          <span class="key" style="--c: var(--onplan)">mouth crop</span>
+          <span class="key" style="--c: var(--over)">flagged</span></p>
+        <div class="stats">
+          <div class="stat"><p class="eyebrow">Confidence</p><div class="v" id="conf">–</div><div class="meter" id="conf-meter"><i id="conf-bar"></i></div></div>
+          <div class="stat"><p class="eyebrow">SAM calls</p><div class="v" id="sam">0</div><p class="sub" id="sam-why">–</p></div>
+          <div class="stat"><p class="eyebrow">Flagged frames</p><div class="v" id="flagged">0%</div><p class="sub" id="flag-now">–</p></div>
+          <div class="stat"><p class="eyebrow">Motion</p><div class="v" id="motion">–</div><p class="sub" id="outside">–</p></div>
+          <div class="stat"><p class="eyebrow">Tracker step</p><div class="v" id="step">–</div><p class="sub" id="fps">–</p></div>
+          <div class="stat"><p class="eyebrow">Frames</p><div class="v" id="frames">0</div><p class="sub" id="size">–</p></div>
+        </div>
+      </article>
+      <article class="card">
+        <p class="eyebrow"><b>Mouth crop</b> smoothed, unmirrored, as the lip-reading models get it</p>
+        <canvas id="mouth" width="480" height="240"></canvas>
+      </article>
+    </div>
+  </main>
+  <nav class="dock"><button class="go" id="reanchor" disabled><span class="ring"></span><span>Re-anchor now</span></button></nav>
+  <script type="module">
+    import { createTracker, CONFIG } from "./tracker.js";
+
+    const $ = (id) => document.getElementById(id);
+    const video = $("preview"), overlay = $("overlay"), mouth = $("mouth"), statusEl = $("status");
+    const css = getComputedStyle(document.documentElement), color = (v) => css.getPropertyValue(v).trim();
+    const work = document.createElement("canvas"); // the frame the tracker and SAM see (max 640 wide)
+    const wctx = work.getContext("2d", { willReadFrequently: true });
+    const octx = overlay.getContext("2d"), mctx = mouth.getContext("2d");
+    const state = { frames: 0, flagged: 0, samCalls: 0, last: null };
+    window.__track = state; // read by tests/track-page.e2e.mjs
+    let force = false, busy = false, lastTick = 0, fps = 0;
+
+    async function samFace() {
+      const blob = await new Promise((resolve) => work.toBlob(resolve, "image/jpeg", 0.85));
+      const res = await fetch("/sam?prompt=face", { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: blob });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return (data.objects || []).map((o) => o.box);
+    }
+    const tracker = createTracker({ samFace });
+
+    function grayFrame() {
+      const { width: w, height: h } = work, rgba = wctx.getImageData(0, 0, w, h).data, data = new Uint8ClampedArray(w * h);
+      for (let k = 0, p = 0; k < data.length; k++, p += 4) data[k] = (rgba[p] * 77 + rgba[p + 1] * 150 + rgba[p + 2] * 29) >> 8;
+      return { data, width: w, height: h, t: performance.now() / 1000 };
+    }
+
+    function stroke(box, c, width, dash = []) {
+      if (!box) return;
+      octx.strokeStyle = c; octx.lineWidth = width; octx.setLineDash(dash);
+      octx.strokeRect(box[0], box[1], box[2], box[3]);
+    }
+
+    function render(r, ms) {
+      const lw = Math.max(2, work.width / 280);
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+      stroke(r.face, color("--coach"), lw, [3 * lw, 2 * lw]);
+      stroke(r.anchor, color("--near"), lw);
+      stroke(r.crop, color(r.flags.length ? "--over" : "--onplan"), 1.5 * lw);
+      if (r.crop) {
+        const [x, y, w, h] = r.crop;
+        mouth.height = Math.round(mouth.width * h / w);
+        mctx.drawImage(work, x, y, w, h, 0, 0, mouth.width, mouth.height);
+      }
+      $("conf").textContent = r.conf.toFixed(2);
+      $("conf-bar").style.width = `${Math.max(0, r.conf) * 100}%`;
+      $("conf-meter").classList.toggle("low", r.conf < CONFIG.T_CONF);
+      $("sam").textContent = String(state.samCalls);
+      if (r.sam) $("sam-why").textContent = `last: ${r.sam.reasons.join(" + ")}${r.sam.error ? " (error)" : ""}`;
+      $("flagged").textContent = `${(100 * state.flagged / state.frames).toFixed(1)}%`;
+      $("flag-now").textContent = r.flags.length ? `now: ${r.flags.join(", ")}` : "now: clear";
+      $("motion").textContent = `${(100 * r.motion).toFixed(1)}%`;
+      $("outside").textContent = `outside face ${(100 * r.outside).toFixed(1)}%`;
+      if (!r.sam) $("step").textContent = `${ms.toFixed(1)} ms`;
+      $("fps").textContent = `${fps.toFixed(0)} fps`;
+      $("frames").textContent = String(state.frames);
+      statusEl.textContent = r.sam?.error ? `SAM failed: ${r.sam.error}`
+        : !r.anchor ? "Looking for a face…"
+        : r.flags.length ? `Tracking, frame flagged: ${r.flags.join(", ")}`
+        : r.sam ? `Re-anchored (${r.sam.reasons.join(" + ")})` : "Tracking";
+    }
+
+    async function process() {
+      wctx.drawImage(video, 0, 0, work.width, work.height);
+      const frame = grayFrame(), t0 = performance.now();
+      const r = await tracker.step(frame, { force });
+      const ms = performance.now() - t0;
+      force = false;
+      state.frames++;
+      if (r.flags.length) state.flagged++;
+      state.samCalls = tracker.samCalls;
+      state.last = r;
+      render(r, ms);
+    }
+
+    function tick(now) {
+      if (!busy && video.readyState >= 2) {
+        fps = lastTick ? 0.9 * fps + 0.1 * (1000 / (now - lastTick)) : 0;
+        lastTick = now;
+        busy = true;
+        process().catch((err) => { statusEl.textContent = `Tracker error: ${err.message}`; }).finally(() => { busy = false; });
+      }
+      requestAnimationFrame(tick);
+    }
+
+    $("reanchor").onclick = () => { force = true; };
+
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false })
+      .then((stream) => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          const scale = Math.min(1, 640 / video.videoWidth);
+          work.width = overlay.width = Math.round(video.videoWidth * scale);
+          work.height = overlay.height = Math.round(video.videoHeight * scale);
+          $("cam").style.aspectRatio = `${work.width} / ${work.height}`; // no object-fit crop, so overlays line up
+          $("size").textContent = `${work.width}×${work.height}`;
+          $("reanchor").disabled = false;
+          statusEl.textContent = "Camera ready. Looking for a face…";
+          requestAnimationFrame(tick);
+        };
+      })
+      .catch((err) => { statusEl.textContent = `Camera unavailable: ${err.message}`; });
+  </script>
+</body>
+</html>
