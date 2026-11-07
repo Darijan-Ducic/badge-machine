@@ -434,6 +434,16 @@ def test_dictation_turns_become_clips_of_that_session_read_by_every_model(api, s
     assert [call[1] for call in fake_calls["sample_open"].calls] == [5, 5]
 
 
+def test_dictation_turns_are_cropped_with_the_tracker_boxes_from_the_header(api, store, dictation, session_recording):
+    boxes = [[t, 40, 30, 64, 48] for t in range(0, 11500, 33)]
+
+    session = post_dictation(api, session_recording, **{"X-Tracker-Boxes": json.dumps(boxes),
+                                                        "X-Tracker-Flags": '["occluded?"]'})["session"]
+
+    turns = finished(api, session)["turns"]
+    assert [backend(store).get(t["clip_id"])["config"]["crop"] for t in turns] == ["v1-tracker-median"] * 2
+
+
 def test_sessions_route_lists_the_users_sessions_and_serves_the_recording(api, dictation, session_recording):
     session = post_dictation(api, session_recording)["session"]
     finished(api, session)
