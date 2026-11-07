@@ -22,7 +22,7 @@ export function gauss(rand) {
 }
 
 // Where the synthetic mouth is drawn, as fractions of the face box (matches the tracker's default ratios).
-export const MOUTH = { cx: 0.5, cy: 0.78, w: 0.3, h: 0.1 };
+export const MOUTH = { cx: 0.5, cy: 0.74, w: 0.3, h: 0.1 };
 
 function blob(lum, w, h, bx, by, rx, ry, amp) {
   const x0 = Math.max(0, Math.floor(bx - 3 * rx)), x1 = Math.min(w, Math.ceil(bx + 3 * rx));
@@ -45,7 +45,7 @@ export function makeFace(w, h, seed = 1) {
   }
   blob(lum, w, h, 0.3 * w, 0.38 * h, 0.08 * w, 0.035 * h, -80); // eyes
   blob(lum, w, h, 0.7 * w, 0.38 * h, 0.08 * w, 0.035 * h, -80);
-  blob(lum, w, h, 0.5 * w, 0.6 * h, 0.06 * w, 0.03 * h, -60); // nose tip shadow
+  blob(lum, w, h, 0.5 * w, 0.64 * h, 0.06 * w, 0.03 * h, -60); // nose tip shadow
   blob(lum, w, h, 0.5 * w, 0.93 * h, 0.12 * w, 0.03 * h, -40); // chin shadow
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {

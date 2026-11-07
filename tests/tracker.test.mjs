@@ -115,12 +115,14 @@ test('c2: smoothed crop follows a real 20 px move to within 2 px inside 1 s', ()
 
 test('d: a face scaling past T_SCALE since the last keyframe fires a scale re-anchor', async () => {
   const face = makeFace(150, 180, 7);
-  const scaleAt = (i) => 1.03 ** i;
+  const HOLD = 10; // still until the SAM_MIN_GAP cost cap after the init keyframe has passed, then zoom 3%/frame
+  assert.ok(HOLD / FPS >= C.SAM_MIN_GAP, 'scenario must not cross T_SCALE inside the SAM cost-cap window');
+  const n = HOLD + 12, scaleAt = (i) => 1.03 ** Math.max(0, i - HOLD);
   const layer = (i) => ({ face, s: scaleAt(i), x: 320 - 75 * scaleAt(i), y: 240 - 90 * scaleAt(i) });
-  const frames = clip(12, (i) => [layer(i)]);
+  const frames = clip(n, (i) => [layer(i)]);
   const { sam, calls } = fakeSam((i) => [faceBox(layer(i))]);
   const { results } = await trackClip(frames, sam, QUIET);
-  const expected = [...Array(12).keys()].find((i) => scaleAt(i) - 1 > C.T_SCALE); // first frame past the threshold
+  const expected = [...Array(n).keys()].find((i) => scaleAt(i) - 1 > C.T_SCALE); // first frame past the threshold
   const first = calls[1]?.i;
   assert.ok(first !== undefined && Math.abs(first - expected) <= 1, `scale re-anchor at frame ${first}, truth crosses T_SCALE at ${expected}`);
   assert.deepEqual(results[first].sam.reasons, ['scale']);
