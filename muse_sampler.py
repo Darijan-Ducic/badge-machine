@@ -251,13 +251,46 @@ phrases (including saying nothing, or no visible mouth). Judge each phrase on it
 # ---------------------------------------------------------------- calls
 
 
-def _request(prompt: str, grids: Grids, name: str, schema: dict) -> dict:
-    images = [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}}
-              for jpeg in grids.images]
+def _image(jpeg: bytes) -> dict:
+    return {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}}
+
+
+# Few-shot (lab-personal experiment; off by default): earlier labeled clips of the same speaker, each shown as ONE
+# image of EXAMPLE_GRID evenly spaced frames with its transcript, before the clip. The clip's own images and the
+# default prompt are unchanged, so a few-shot read pairs with a stored default read of the same clip.
+FEWSHOT_ID = "fewshot-v1"  # log as prompt_id f"{CONFIG['prompt_id']}+{FEWSHOT_ID}" on a few-shot read
+EXAMPLE_GRID = "4x4"
+
+
+def _example_parts(examples: list[dict]) -> tuple[str, list[dict]]:
+    """For `examples` [{"clip": Path, "text": transcript}]: a preamble for the prompt, and the content parts that
+    follow it: per example its transcript and its one image, then the line that starts the clip."""
+    cols, rows = map(int, EXAMPLE_GRID.split("x"))
+    shown = [(ex, labeled_grids(ex["clip"], EXAMPLE_GRID, CONFIG["tile_width"], max_images=1)) for ex in examples]
+    rates = [len(ex["text"].split()) / max(g.n_frames, 1) * FPS for ex, g in shown]
+    preamble = f"""\
+Before the clip you get {len(examples)} labeled example(s) of THIS SAME speaker, filmed the same way, from earlier \
+recordings. Each example is one image of {cols * rows} evenly spaced frames, with the words the speaker actually \
+said. Use the examples for three things: (1) how this speaker's lips form each viseme; (2) how fast this speaker \
+talks: about {sum(rates) / len(rates):.1f} words per second in the examples, so your slots should cover every word \
+of the speech, not a short summary of it; (3) the topics and phrasing this speaker uses. The clip is a different \
+moment: never copy an example's words unless the clip's lips show them. All instructions below about "the images" \
+and frame numbers refer ONLY to the clip's images, which follow the line "THE CLIP TO READ"."""
+    parts = []
+    for n, (ex, grids) in enumerate(shown, 1):
+        parts.append({"type": "text", "text": f"EXAMPLE {n} ({grids.n_frames} frames, {len(ex['text'].split())} "
+                                              f"words). The speaker said: \"{ex['text']}\""})
+        parts.append(_image(grids.images[0]))
+    parts.append({"type": "text", "text": "THE CLIP TO READ: the images below."})
+    return preamble, parts
+
+
+def _request(prompt: str, grids: Grids, name: str, schema: dict, lead: list[dict] = ()) -> dict:
+    images = [_image(jpeg) for jpeg in grids.images]
     request = {
         "model": CONFIG["model"],
         "temperature": CONFIG["temperature"],
-        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, *images]}],
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, *lead, *images]}],
         "response_format": {"type": "json_schema", "json_schema": {"name": name, "schema": schema, "strict": True}},
     }
     if CONFIG["effort"] is not None:  # None = the model's default effort
@@ -282,11 +315,16 @@ def _call(client, call: str, sample_idx: int, request: dict, finish) -> dict:
     return item if usage is None else {**item, "usage": usage}
 
 
-def sample_open(clip: Path, k: int) -> list[dict]:
+def sample_open(clip: Path, k: int, examples: list[dict] | None = None) -> list[dict]:
     """K parallel open samples (schema v1). Outputs violating v1 or citing frames outside the clip keep their
-    output and list the violations in `error`."""
+    output and list the violations in `error`. `examples` [{"clip": Path, "text": transcript}] (default none) puts
+    earlier labeled clips of the same speaker before the clip (FEWSHOT_ID); the clip's own images are unchanged."""
     grids = labeled_grids(clip, CONFIG["grid"], CONFIG["tile_width"])
-    request = _request(_open_prompt(grids), grids, "lipread_v1", WIRE_SCHEMA)
+    prompt, lead = _open_prompt(grids), []
+    if examples:
+        preamble, lead = _example_parts(examples)
+        prompt = f"{preamble}\n\n{prompt}"
+    request = _request(prompt, grids, "lipread_v1", WIRE_SCHEMA, lead)
 
     def finish(raw):
         output = from_wire(raw)
