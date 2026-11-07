@@ -36,7 +36,7 @@ flowchart TD
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
   class CAM,GEM,GATE,SAM,TRK,TRIG,QG,REPEAT,CROP,MUSEK,MUSEC,POOL,FEAT,FUSE built
-  class SEND,CONFIRM planned
+  class SEND,CONFIRM building
 ```
 
 ## Learning: how it gets better

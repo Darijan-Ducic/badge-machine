@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Dictation</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* page-specific; colors and radii are theme.css tokens */
+    .board > .col > .framing { width: auto; }
+    .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; transform: scaleX(-1); } /* mirrored like the video */
+    .framing .live { justify-content: center; margin: 18px 0 0; }
+    #hold { touch-action: none; user-select: none; -webkit-user-select: none; }
+    .said { padding: 22px; animation: pop .35s var(--ease) both; }
+    .said > .msg { margin-top: 12px; }
+    .said .tip-text { overflow-wrap: anywhere; }
+    .said .tip-text.none { color: var(--ink-3); }
+    .sessions { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 14px; }
+    .session .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--ink-3); }
+    .session .head b { color: var(--ink); font-weight: 500; }
+    .session > small { display: block; margin-top: 2px; font-size: 12px; color: var(--ink-3); }
+    .turns { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 2px; }
+    .turn { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 8px 10px; border-radius: 14px; background: var(--well); color: inherit; text-decoration: none; font-size: 13.5px; }
+    a.turn:hover { background: var(--well-2); }
+    .turn .n { font-size: 12px; color: var(--ink-3); padding-top: 1px; }
+    .turn .texts { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+    .turn .texts small { font-size: 12px; color: var(--ink-3); }
+    .turn .side { display: grid; gap: 3px; justify-items: end; font-size: 12px; text-align: right; }
+    .turn .reason { color: var(--ink-3); }
+    .turn .open { color: var(--coach-ink); }
+    .mark.yes { color: var(--onplan-ink); } .mark.no { color: var(--near-ink); }
+  </style>
+</head>
+<body>
+  <div class="haze" aria-hidden="true"></div>
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
+  <main class="section"><div class="page">
+    <header class="top">
+      <h1>Dictation</h1>
+      <p class="meta">STT on: speak naturally and get your words back as text. Every turn also teaches the lip readers.<i></i><span>User <b id="user"></b></span></p>
+    </header>
+    <div class="board">
+      <div class="col">
+        <section class="framing">
+          <div class="cam" id="cam"><video id="preview" autoplay muted playsinline></video><canvas id="overlay" aria-hidden="true"></canvas></div>
+          <p class="meta live"><span class="chip" id="quality">Starting camera</span><span id="q-detail"></span></p>
+          <p class="meta"><span>Camera <b id="fps">…</b></span><i></i><span><kbd>Space</kbd> hold and speak</span></p>
+          <p class="note" id="note">Requesting camera and microphone…</p>
+        </section>
+      </div>
+      <div class="col">
+        <article class="card said" id="said" aria-live="polite"><p class="eyebrow">Hold Space, or the button, and speak. Your words land here.</p></article>
+        <article class="card">
+          <p class="eyebrow"><b>Recent sessions</b><span id="sessions-sum"></span></p>
+          <ul class="sessions" id="sessions"></ul>
+          <p class="eyebrow" id="sessions-note" hidden></p>
+        </article>
+      </div>
+    </div>
+  </div></main>
+  <div class="status" id="rec" hidden><span class="rec"></span>Recording</div>
+  <nav class="dock"><button class="go" id="hold" type="button" disabled><span class="dot" id="hold-icon"></span><span id="hold-label">Hold to dictate</span></button></nav>
+  <script type="module">
+    import { openCapture } from "./capture.js";
+
+    const $ = (id) => document.getElementById(id);
+    const USER = new URLSearchParams(location.search).get("user") || "default";
+    const MIN_MS = 500, RECENT = 30, SHOWN = 5, POLL_MS = 3000;
+    const BUSY = ["recorded", "transcribed", "processing"]; // session statuses still moving: keep polling
+    const STATUS = { processing: "chip near", done: "chip onplan", failed: "chip over" };
+    const TURN = { processed: "chip onplan", skipped: "chip near", failed: "chip over" };
+    const READERS = [["vtt", "VTT"], ["gemini", "VTT · Gemini"], ["muse", "VTT · Muse"]];
+    const css = getComputedStyle(document.documentElement), color = (v) => css.getPropertyValue(v).trim();
+    const octx = $("overlay").getContext("2d");
+    const state = { frames: 0, recent: [], quality: "starting", last: null, polls: 0 };
+    window.__dict = state; // read by tests/dictation.e2e.mjs
+    let cap = null, ticket = 0, result = null, poll = null;
+    const details = new Map(); // session id -> {key, d}: details are refetched only when a session's summary changes
+
+    const note = (text) => { $("note").textContent = text; };
+    const pct = (x) => `${Math.round(x * 100)}%`;
+    const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    const json = (r) => r.json().then((d) => (r.ok ? d : Promise.reject(new Error(d.error || r.statusText))));
+    const getJSON = (url) => fetch(url, { cache: "no-store" }).then(json);
+    const when = (t) => new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const clock = (s) => (s == null ? "" : `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`);
+    $("user").textContent = USER;
+
+    // ---------- live view: mouth box overlay and quality ----------
+    function stroke(box, c, width, dash = []) {
+      if (!box) return;
+      octx.strokeStyle = c; octx.lineWidth = width; octx.setLineDash(dash);
+      octx.strokeRect(box[0], box[1], box[2], box[3]);
+    }
+
+    function render(r, c) {
+      state.frames++;
+      state.last = r;
+      state.recent.push(r.flags.length > 0);
+      if (state.recent.length > RECENT) state.recent.shift();
+      const ratio = state.recent.filter(Boolean).length / state.recent.length;
+      const lw = Math.max(2, c.work.width / 280);
+      octx.clearRect(0, 0, $("overlay").width, $("overlay").height);
+      stroke(r.face, color("--coach"), lw, [3 * lw, 2 * lw]);
+      stroke(r.crop, color(r.flags.length ? "--over" : "--onplan"), 1.5 * lw);
+      state.quality = !r.anchor ? "searching" : ratio > c.tracker.config.T_BAD ? "hidden" : "ok";
+      const [kind, text] = { searching: ["near", "Looking for a face"], hidden: ["over", "Mouth hidden or blurred"], ok: ["onplan", "Mouth in view"] }[state.quality];
+      $("quality").className = `chip ${kind}`;
+      $("quality").textContent = text;
+      $("q-detail").textContent = r.sam?.error ? `SAM failed: ${r.sam.error}` : `${pct(ratio)} of recent frames flagged`;
+    }
+
+    openCapture({ video: $("preview"), audio: true, onFrame: render, onError: (err) => note(`Tracker error: ${err.message}`) })
+      .then((c) => {
+        cap = c;
+        $("overlay").width = c.work.width;
+        $("overlay").height = c.work.height;
+        $("cam").style.aspectRatio = `${c.work.width} / ${c.work.height}`; // no object-fit crop, so the overlay lines up
+        $("fps").textContent = c.fps == null ? "fps unknown" : `${+c.fps.toFixed(1)} fps`;
+        $("hold").disabled = false;
+        note("Ready. Hold Space, or the button, and speak.");
+      })
+      .catch((err) => note(`Camera or microphone unavailable: ${err.message}`));
+
+    // ---------- the take: hold Space or the button ----------
+    function begin() {
+      if (!cap || cap.recording || $("hold").disabled) return;
+      cap.start();
+      $("rec").hidden = false;
+      $("hold-icon").className = "sq";
+      $("hold-label").textContent = "Release to send";
+    }
+
+    async function end() {
+      if (!cap?.recording) return;
+      $("rec").hidden = true;
+      $("hold-icon").className = "dot";
+      $("hold-label").textContent = "Hold to dictate";
+      const take = await cap.stop();
+      if (take.ms < MIN_MS) return note("Too short: hold for at least half a second while you speak.");
+      send(take); // no quality gate here: STT works with the mouth hidden; the flags travel with the clip
+    }
+
+    addEventListener("keydown", (e) => { if (e.code !== "Space") return; e.preventDefault(); if (!e.repeat) begin(); });
+    addEventListener("keyup", (e) => { if (e.code !== "Space") return; e.preventDefault(); end(); });
+    addEventListener("blur", end);
+    $("hold").addEventListener("pointerdown", (e) => { $("hold").setPointerCapture(e.pointerId); begin(); });
+    $("hold").addEventListener("pointerup", end);
+    $("hold").addEventListener("pointercancel", end);
+    $("hold").addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // ---------- the result: STT text first, then a small learning indicator ----------
+    async function send(take) {
+      const mine = ++ticket, head = el("p", "eyebrow"), pending = el("div", "msg coach typing");
+      head.append(el("b", null, "You said"), `· ${(take.ms / 1000).toFixed(1)} s`);
+      pending.setAttribute("aria-label", "Transcribing");
+      pending.append(el("i"), el("i"), el("i"));
+      $("said").replaceChildren(head, pending);
+      note("Transcribing…");
+      try {
+        const data = await fetch(`/dictation?user=${encodeURIComponent(USER)}`, {
+          method: "POST",
+          headers: { "Content-Type": take.blob.type || "video/webm", "X-Tracker-Flags": JSON.stringify(take.flags), "X-Tracker-Boxes": JSON.stringify(take.boxes) },
+          body: take.blob,
+        }).then(json);
+        if (mine !== ticket) return;
+        const learning = el("span", "chip coach", "learning");
+        learning.title = "Its turns are being read by the lip readers and scored against this STT";
+        head.append(` · ${data.turns} turn${data.turns === 1 ? "" : "s"}`, learning);
+        $("said").replaceChildren(head, data.stt ? el("p", "tip-text", data.stt) : el("p", "tip-text none", "No speech heard."));
+        result = { session: data.session, chip: learning };
+        note("Ready. Hold Space, or the button, and speak.");
+      } catch (err) {
+        if (mine !== ticket) return;
+        $("said").replaceChildren(head, el("p", "msg error", err.message));
+        note(`Dictation failed: ${err.message}`);
+      }
+      loadSessions();
+    }
+
+    // ---------- recent sessions; per turn, VTT vs STT once processed ----------
+    function marks(correct) {
+      if (!correct) return [];
+      return READERS.filter(([k]) => correct[k] != null).map(([k, name]) => {
+        const m = el("span", `mark ${correct[k] ? "yes" : "no"}`, `${name} ${correct[k] ? "✓" : "✗"}`);
+        m.title = `${name} ${correct[k] ? "matches" : "differs from"} STT`;
+        return m;
+      });
+    }
+
+    function turnRow(t) {
+      const texts = el("span", "texts"), side = el("span", "side"), chip = el("span", TURN[t.status] || "chip", t.status);
+      texts.append(el("span", null, t.stt || "—"));
+      if (t.vtt) texts.append(el("small", null, `VTT: ${t.vtt.text || "—"} · p ${t.vtt.p.toFixed(2)}`));
+      side.append(chip, ...(t.reason ? [el("span", "reason", t.reason)] : []), ...marks(t.correct));
+      const row = t.clip_id ? el("a", "turn") : el("div", "turn");
+      if (t.clip_id) {
+        row.href = `clips.html?clip=${encodeURIComponent(t.clip_id)}`;
+        row.title = `Open clip ${t.clip_id}`;
+        side.append(el("span", "open", "open clip →"));
+      }
+      row.append(el("span", "n", `#${t.i} ${clock(t.start)}`), texts, side);
+      const li = el("li");
+      li.append(row);
+      return li;
+    }
+
+    function sessionItem(s) {
+      const li = el("li", "session"), head = el("div", "head");
+      head.append(el("b", null, `Session ${s.id}`), `· ${when(s.t)}`, el("span", STATUS[s.status] || "chip", s.status));
+      li.dataset.id = s.id;
+      li.append(head, el("small", null, `${s.turns} turns · ${s.processed} processed · ${s.skipped} skipped · VTT ${s.vtt_correct}/${s.processed} ✓`));
+      const turns = details.get(s.id)?.d.turns;
+      if (turns?.length) {
+        const ul = el("ul", "turns");
+        ul.append(...turns.map(turnRow));
+        li.append(ul);
+      }
+      return li;
+    }
+
+    async function loadSessions() {
+      clearTimeout(poll);
+      state.polls++;
+      try {
+        const { sessions } = await getJSON(`/sessions?user=${encodeURIComponent(USER)}`);
+        const shown = [...sessions].sort((a, b) => b.t - a.t).slice(0, SHOWN);
+        await Promise.all(shown.map(async (s) => {
+          const key = `${s.status}:${s.processed}:${s.skipped}:${s.turns}`;
+          if (details.get(s.id)?.key !== key) details.set(s.id, { key, d: await getJSON(`/sessions/${encodeURIComponent(s.id)}`) });
+        }));
+        $("sessions").replaceChildren(...shown.map(sessionItem));
+        $("sessions-sum").textContent = sessions.length ? `· ${shown.length} of ${sessions.length}, newest first` : "";
+        $("sessions-note").hidden = sessions.length > 0;
+        $("sessions-note").textContent = "No sessions yet: hold Space and speak.";
+        const mine = result && sessions.find((s) => s.id === result.session);
+        if (mine?.status === "done") { result.chip.className = "chip onplan"; result.chip.textContent = "learned"; }
+        else if (mine?.status === "failed") { result.chip.className = "chip over"; result.chip.textContent = "not learned"; }
+        if (shown.some((s) => BUSY.includes(s.status))) poll = setTimeout(loadSessions, POLL_MS);
+      } catch (err) {
+        $("sessions-note").hidden = false;
+        $("sessions-note").textContent = `Sessions unavailable: ${err.message}`;
+      }
+    }
+    loadSessions();
+  </script>
+</body>
+</html>

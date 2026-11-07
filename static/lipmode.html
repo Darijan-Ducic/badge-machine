@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Lip mode</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* page-specific; colors and radii are theme.css tokens */
+    .board > .col > .framing { width: auto; }
+    .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; transform: scaleX(-1); } /* mirrored like the video */
+    .framing .live { justify-content: center; margin: 18px 0 0; }
+    #crop { display: block; width: 256px; max-width: 100%; margin: 12px auto 0; border-radius: 14px; background: var(--well); }
+    #hold { touch-action: none; user-select: none; -webkit-user-select: none; }
+    .read { padding: 22px; animation: pop .35s var(--ease) both; }
+    .read > .msg { margin-top: 12px; }
+    .read .headline { margin-top: 12px; max-width: none; overflow-wrap: anywhere; }
+    .read .headline.undone { text-decoration: line-through; color: var(--ink-3); }
+    .read .ask { margin-top: 16px; }
+    .read .opts { margin-top: 10px; }
+    .opt small { font-size: 11.5px; font-weight: 400; color: var(--ink-3); }
+    .opt[aria-pressed="true"] small { color: rgba(255, 255, 255, .7); }
+    .typeit { display: flex; gap: 6px; margin-top: 10px; }
+    .typeit input { flex: 1; min-width: 0; padding: 7px 13px; border-radius: 16px; border: 1px solid var(--hair-2); background: var(--card); color: var(--ink); font: inherit; font-size: 13.5px; }
+    .typeit input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    .readylist { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; }
+    .readylist li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 64px; gap: 12px; align-items: center; padding: 9px 12px; border-radius: 14px; background: var(--well); font-size: 13.5px; }
+    .readylist li > span:first-child { overflow-wrap: anywhere; }
+    .readylist small { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+    .readylist .chip { justify-self: end; }
+  </style>
+</head>
+<body>
+  <div class="haze" aria-hidden="true"></div>
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
+  <main class="section"><div class="page">
+    <header class="top">
+      <h1>Lip mode</h1>
+      <p class="meta">Video only: mouth a phrase, no voice. A sure read is sent; otherwise you pick.<i></i><span>User <b id="user"></b></span></p>
+    </header>
+    <div class="board">
+      <div class="col">
+        <section class="framing">
+          <div class="cam" id="cam"><video id="preview" autoplay muted playsinline></video><canvas id="overlay" aria-hidden="true"></canvas></div>
+          <p class="meta live"><span class="chip" id="quality">Starting camera</span><span id="q-detail"></span></p>
+          <canvas id="crop" width="256" height="128" aria-label="Mouth crop preview"></canvas>
+          <p class="meta"><span>Camera <b id="fps">…</b></span><i></i><span><kbd>Space</kbd> hold and mouth the phrase</span></p>
+          <p class="note" id="note">Requesting camera…</p>
+        </section>
+        <article class="card">
+          <p class="eyebrow"><b>Readiness</b><span id="ready-sum"></span></p>
+          <ul class="readylist" id="ready"></ul>
+          <p class="eyebrow" id="ready-note" hidden></p>
+        </article>
+      </div>
+      <section class="col" id="feed" aria-live="polite">
+        <p class="eyebrow" id="feed-hint">Reads land here, newest first.</p>
+      </section>
+    </div>
+  </div></main>
+  <div class="status" id="rec" hidden><span class="rec"></span>Watching your lips</div>
+  <nav class="dock"><button class="go" id="hold" type="button" disabled><span class="dot" id="hold-icon"></span><span id="hold-label">Hold to speak silently</span></button></nav>
+  <script type="module">
+    import { openCapture } from "./capture.js";
+
+    const $ = (id) => document.getElementById(id);
+    const USER = new URLSearchParams(location.search).get("user") || "default";
+    const MIN_MS = 500, RECENT = 30; // shortest take sent; frames in the live quality window
+    const css = getComputedStyle(document.documentElement), color = (v) => css.getPropertyValue(v).trim();
+    const octx = $("overlay").getContext("2d"), pctx = $("crop").getContext("2d");
+    const state = { frames: 0, recent: [], quality: "starting", last: null };
+    window.__lip = state; // read by tests/lipmode.e2e.mjs
+    let cap = null;
+
+    const note = (text) => { $("note").textContent = text; };
+    const pct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
+    const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    const json = (r) => r.json().then((d) => (r.ok ? d : Promise.reject(new Error(d.error || r.statusText))));
+    const setChip = (chip, kind, text) => { chip.className = kind ? `chip ${kind}` : "chip"; chip.textContent = text; };
+    $("user").textContent = USER;
+
+    // ---------- live view: mouth box overlay, crop preview, quality ----------
+    function stroke(box, c, width, dash = []) {
+      if (!box) return;
+      octx.strokeStyle = c; octx.lineWidth = width; octx.setLineDash(dash);
+      octx.strokeRect(box[0], box[1], box[2], box[3]);
+    }
+
+    function render(r, c) {
+      state.frames++;
+      state.last = r;
+      state.recent.push(r.flags.length > 0);
+      if (state.recent.length > RECENT) state.recent.shift();
+      const ratio = state.recent.filter(Boolean).length / state.recent.length;
+      const lw = Math.max(2, c.work.width / 280);
+      octx.clearRect(0, 0, $("overlay").width, $("overlay").height);
+      stroke(r.face, color("--coach"), lw, [3 * lw, 2 * lw]);
+      stroke(r.crop, color(r.flags.length ? "--over" : "--onplan"), 1.5 * lw);
+      if (r.crop) { // preview only: the server makes the crop the lip readers get
+        const [x, y, w, h] = r.crop, crop = $("crop");
+        crop.height = Math.round(crop.width * h / w);
+        pctx.drawImage(c.work, x, y, w, h, 0, 0, crop.width, crop.height);
+      }
+      state.quality = !r.anchor ? "searching" : ratio > c.tracker.config.T_BAD ? "hidden" : "ok";
+      const [kind, text] = { searching: ["near", "Looking for a face"], hidden: ["over", "Mouth hidden or blurred"], ok: ["onplan", "Quality OK"] }[state.quality];
+      setChip($("quality"), kind, text);
+      $("q-detail").textContent = r.sam?.error ? `SAM failed: ${r.sam.error}` : `${pct(ratio)} of recent frames flagged`;
+    }
+
+    openCapture({ video: $("preview"), audio: false, onFrame: render, onError: (err) => note(`Tracker error: ${err.message}`) })
+      .then((c) => {
+        cap = c;
+        $("overlay").width = c.work.width;
+        $("overlay").height = c.work.height;
+        $("cam").style.aspectRatio = `${c.work.width} / ${c.work.height}`; // no object-fit crop, so the overlay lines up
+        $("fps").textContent = c.fps == null ? "fps unknown" : `${+c.fps.toFixed(1)} fps`;
+        $("hold").disabled = false;
+        note("Camera ready. Hold Space, or the button, and mouth the phrase.");
+      })
+      .catch((err) => note(`Camera unavailable: ${err.message}`));
+
+    // ---------- the take: hold Space or the button ----------
+    function begin() {
+      if (!cap || cap.recording || $("hold").disabled) return;
+      cap.start();
+      $("rec").hidden = false;
+      $("hold-icon").className = "sq";
+      $("hold-label").textContent = "Release to read";
+    }
+
+    async function end() {
+      if (!cap?.recording) return;
+      $("rec").hidden = true;
+      $("hold-icon").className = "dot";
+      $("hold-label").textContent = "Hold to speak silently";
+      const take = await cap.stop();
+      if (take.ms < MIN_MS) return note("Too short: hold for at least half a second while you mouth it.");
+      if (!take.flags.length || !take.gate.ok) return repeat(take); // the free check, before any model spend
+      note("Reading your lips…");
+      read(take);
+    }
+
+    const typing = (e) => e.target instanceof Element && e.target.closest("input, textarea");
+    addEventListener("keydown", (e) => { if (e.code !== "Space" || typing(e)) return; e.preventDefault(); if (!e.repeat) begin(); });
+    addEventListener("keyup", (e) => { if (e.code !== "Space" || typing(e)) return; e.preventDefault(); end(); });
+    addEventListener("blur", end);
+    $("hold").addEventListener("pointerdown", (e) => { $("hold").setPointerCapture(e.pointerId); begin(); });
+    $("hold").addEventListener("pointerup", end);
+    $("hold").addEventListener("pointercancel", end);
+    $("hold").addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // ---------- reads ----------
+    function card(take) {
+      $("feed-hint").hidden = true;
+      const c = el("article", "card read"), head = el("p", "eyebrow"), chip = el("span", "chip");
+      head.append(el("b", null, "Lip read"), `· ${(take.ms / 1000).toFixed(1)} s`, chip);
+      c.append(head);
+      $("feed").prepend(c);
+      return { c, head, chip };
+    }
+
+    function repeat(take) {
+      const { c, head, chip } = card(take);
+      setChip(chip, "over", "Not sent");
+      head.insertBefore(document.createTextNode(` · ${pct(take.gate.ratio)} of frames flagged`), chip);
+      c.append(el("p", "msg error", "Please repeat — mouth hidden or blurred"));
+      note("Please repeat — mouth hidden or blurred. Nothing was sent.");
+    }
+
+    async function read(take) {
+      const { c, head, chip } = card(take);
+      setChip(chip, null, "Reading lips");
+      const pending = el("div", "msg coach typing");
+      pending.setAttribute("aria-label", "Reading");
+      pending.append(el("i"), el("i"), el("i"));
+      c.append(pending);
+      try {
+        const data = await fetch(`/vtt?user=${encodeURIComponent(USER)}`, {
+          method: "POST",
+          headers: { "Content-Type": take.blob.type || "video/webm", "X-Tracker-Flags": JSON.stringify(take.flags), "X-Tracker-Boxes": JSON.stringify(take.boxes) },
+          body: take.blob,
+        }).then(json);
+        pending.remove();
+        head.insertBefore(document.createTextNode(` · ${data.latency_ms} ms`), chip);
+        const view = { c, chip, clip: data.clip };
+        if (data.action === "auto") sent(view, data);
+        else if (data.action === "confirm") {
+          setChip(chip, "near", "Confirm");
+          ask(view, data.alternatives?.length ? data.alternatives : [data.vtt], "Did you mean");
+        } else {
+          setChip(chip, "near", "Type it");
+          ask(view, [], "Couldn't read that. Type what you said");
+        }
+        note("Camera ready. Hold Space, or the button, and mouth the phrase.");
+      } catch (err) {
+        setChip(chip, "over", "Failed");
+        pending.replaceWith(el("p", "msg error", err.message));
+        note(`Read failed: ${err.message}`);
+      }
+      loadReadiness();
+    }
+
+    // auto: the VTT text, already sent, with Undo
+    function sent(view, data) {
+      setChip(view.chip, "onplan", "Sent");
+      const said = el("h2", "headline", data.vtt.text), undo = el("button", "opt", "Undo"), opts = el("div", "opts");
+      undo.type = "button";
+      opts.append(undo);
+      view.c.append(el("p", "eyebrow", `VTT · p ${data.vtt.p.toFixed(2)}`), said, opts);
+      undo.onclick = async () => {
+        undo.disabled = true;
+        if (!(await label(view, data.vtt.text, "undo"))) { undo.disabled = false; return; }
+        said.classList.add("undone");
+        opts.remove();
+        setChip(view.chip, "near", "Undone");
+        ask(view, (data.alternatives || []).filter((a) => a.text !== data.vtt.text), "What did you say?");
+      };
+    }
+
+    // confirm / none: the top alternatives as buttons, plus "none of these — type it"
+    function ask(view, alternatives, prompt) {
+      const box = el("div", "ask"), opts = el("div", "opts"), form = el("form", "typeit"), input = el("input");
+      input.type = "text";
+      input.placeholder = alternatives.length ? "None of these — type it" : "Type what you said";
+      input.setAttribute("aria-label", input.placeholder);
+      const go = el("button", "opt", "Send");
+      go.type = "submit";
+      form.append(input, go);
+      for (const a of alternatives) {
+        const b = el("button", "opt");
+        b.type = "button";
+        b.append(el("span", null, a.text), el("small", null, `p ${a.p.toFixed(2)}`));
+        b.onclick = () => choose(a.text, "confirm", b);
+        opts.append(b);
+      }
+      box.append(el("p", "eyebrow", prompt), ...(alternatives.length ? [opts] : []), form);
+      view.c.append(box);
+      form.onsubmit = (e) => { e.preventDefault(); if (input.value.trim()) choose(input.value.trim(), "edit", go); };
+
+      async function choose(text, source, button) {
+        const controls = box.querySelectorAll("button, input");
+        controls.forEach((x) => { x.disabled = true; });
+        if (button !== go) button.setAttribute("aria-pressed", "true");
+        if (!(await label(view, text, source))) { controls.forEach((x) => { x.disabled = false; }); button.removeAttribute("aria-pressed"); return; }
+        box.replaceWith(el("p", "eyebrow", source === "edit" ? "Typed" : "Confirmed"), el("h2", "headline", text));
+        setChip(view.chip, "onplan", "Sent");
+      }
+    }
+
+    async function label(view, text, source) {
+      view.c.querySelector(".msg.error")?.remove();
+      try {
+        await fetch(`/vtt/${encodeURIComponent(view.clip)}/label`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, source }),
+        }).then(json);
+        loadReadiness();
+        return true;
+      } catch (err) {
+        view.c.append(el("p", "msg error", `Couldn't save: ${err.message}`));
+        return false;
+      }
+    }
+
+    // ---------- readiness: per phrase, clip count, VTT accuracy, ready ----------
+    async function loadReadiness() {
+      try {
+        const { phrases } = await fetch(`/readiness?user=${encodeURIComponent(USER)}`, { cache: "no-store" }).then(json);
+        $("ready").replaceChildren(...phrases.map((p) => {
+          const li = el("li");
+          li.append(el("span", null, p.text), el("small", null, `${p.n} clip${p.n === 1 ? "" : "s"}`), el("small", null, `VTT ${pct(p.vtt_acc)}`),
+            el("span", p.ready ? "chip onplan" : "chip", p.ready ? "ready" : "learning"));
+          return li;
+        }));
+        $("ready-sum").textContent = `· ${phrases.filter((p) => p.ready).length} of ${phrases.length} phrases ready`;
+        $("ready-note").hidden = phrases.length > 0;
+        $("ready-note").textContent = "No phrases yet: dictate with STT on to train them.";
+      } catch (err) {
+        $("ready-note").hidden = false;
+        $("ready-note").textContent = `Readiness unavailable: ${err.message}`;
+      }
+    }
+    loadReadiness();
+  </script>
+</body>
+</html>
