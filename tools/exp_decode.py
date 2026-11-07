@@ -18,11 +18,12 @@ import sys
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(TOOLS))
-sys.path.insert(0, TOOLS)
+sys.path.append(TOOLS)  # after the root: tools/experiment.py must not shadow experiment.py
 
 import argparse  # noqa: E402
 import json  # noqa: E402
 import tempfile  # noqa: E402
+import threading  # noqa: E402
 import time  # noqa: E402
 import uuid  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
@@ -184,6 +185,7 @@ def main(argv=None) -> int:
     p.add_argument("--name", default="lab-decode")
     p.add_argument("--save", action="store_true")
     p.add_argument("--out")
+    p.add_argument("--cache", default="/tmp/lab-decode-cache.jsonl", help="paid items, reused across runs")
     args = p.parse_args(argv)
     arms = [a for a in args.arms.split(",") if a in ARMS]
     turns = _turns(args.user, args.skip, args.first)
@@ -192,9 +194,28 @@ def main(argv=None) -> int:
         print(f"no usable turns for {args.user!r}", file=sys.stderr)
         return 2
     client = make_client().with_options(max_retries=6)
-    workers = max(1, WORKERS // len(arms))  # each turn runs its arms one after another
-    with ThreadPoolExecutor(workers) as pool:
-        all_items = list(pool.map(lambda t: run_turn(t[0], t[1], arms, client), turns))
+    cache_path, cache = Path(args.cache), {}  # (clip, arm, config) -> item, appended the moment a call returns
+    if cache_path.exists():
+        for line in cache_path.read_text().splitlines():
+            entry = json.loads(line)
+            cache[(entry["clip"], entry["arm"], entry["config"])] = entry["item"]
+    key, lock = json.dumps(decode.CONFIG, sort_keys=True), threading.Lock()
+
+    def task(job):
+        (record, video), arm = job
+        if (record["id"], arm, key) in cache:
+            return cache[(record["id"], arm, key)]
+        item = run_turn(record, video, [arm], client)[arm]
+        if not item.get("error"):
+            with lock, cache_path.open("a") as f:
+                f.write(json.dumps({"clip": record["id"], "arm": arm, "config": key, "item": item}) + "\n")
+        return item
+
+    jobs = [(t, arm) for t in turns for arm in arms]
+    with ThreadPoolExecutor(WORKERS) as pool:  # WORKERS concurrent calls in all
+        flat = list(pool.map(task, jobs))
+    all_items = [{arm: flat[i * len(arms) + j] for j, arm in enumerate(arms)} for i in range(len(turns))]
+    raw = Path(args.out or f"/tmp/{args.name}-items.json")
     rows = []
     for (record, _), items in zip(turns, all_items):
         stt = record["label"]["stt_text"]
@@ -227,8 +248,7 @@ def main(argv=None) -> int:
               f"{s['viseme']['up']:>3}/{s['viseme']['down']:<3}{s['viseme']['p']:>7.3f} "
               f"{s['extra_cost_per_turn']:>7.4f} {s['extra_latency_s']:>7.1f} {s['errors']:>4}")
     print(f"\ntotal spend ${sum(s['cost_total'] for s in summaries):.3f}")
-    if args.out:
-        Path(args.out).write_text(json.dumps({"rows": rows, "summaries": summaries}, default=str))
+    raw.write_text(json.dumps({"rows": rows, "summaries": summaries}, default=str))
     if args.save:
         import runs
         for s in summaries:
