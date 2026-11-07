@@ -57,7 +57,7 @@ struct StudioView: View {
                         .frame(maxWidth: .infinity, minHeight: 48)
                         .background(.white, in: RoundedRectangle(cornerRadius: 8))
                         .background {
-                            ShortcutKeyCapture(onKeyDown: studio.recordShortcut, onFn: studio.previewFn)
+                            ShortcutKeyCapture(onKeyDown: studio.recordShortcut, onModifier: studio.previewModifier)
                                 .accessibilityHidden(true)
                         }
 
@@ -106,6 +106,10 @@ struct StudioView: View {
                 Button("Open Input Monitoring", action: studio.openInputMonitoring)
             }
 
+            if studio.needsLeftOptionSetup {
+                Button("Enable Left Option in Accessibility", action: studio.openLeftOptionAccessibility)
+            }
+
             if !studio.status.isEmpty {
                 Text(studio.status)
                     .font(.system(size: 12))
@@ -117,7 +121,7 @@ struct StudioView: View {
         .foregroundStyle(ink)
         .background(paper)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            studio.resumeFnMonitoring()
+            studio.resumeShortcutMonitoring()
         }
         .onDisappear {
             if studio.choosing { studio.cancelChoosing() }
@@ -127,23 +131,24 @@ struct StudioView: View {
 
 private struct ShortcutKeyCapture: NSViewRepresentable {
     let onKeyDown: (NSEvent) -> Void
-    let onFn: () -> Void
+    let onModifier: (Shortcut) -> Void
 
     func makeNSView(context: Context) -> KeyView {
         let view = KeyView()
         view.onKeyDown = onKeyDown
-        view.onFn = onFn
+        view.onModifier = onModifier
         return view
     }
 
     func updateNSView(_ view: KeyView, context: Context) {
         view.onKeyDown = onKeyDown
-        view.onFn = onFn
+        view.onModifier = onModifier
     }
 
     final class KeyView: NSView {
         var onKeyDown: ((NSEvent) -> Void)?
-        var onFn: (() -> Void)?
+        var onModifier: ((Shortcut) -> Void)?
+        private var leftOptionTap = LeftOptionTap()
         override var acceptsFirstResponder: Bool { true }
 
         override func viewDidMoveToWindow() {
@@ -155,17 +160,21 @@ private struct ShortcutKeyCapture: NSViewRepresentable {
         }
 
         override func keyDown(with event: NSEvent) {
+            _ = leftOptionTap.handle(event)
             onKeyDown?(event)
         }
 
         override func flagsChanged(with event: NSEvent) {
-            if Shortcut.isFnPress(event) {
-                onFn?()
+            if leftOptionTap.handle(event) {
+                onModifier?(.leftOption)
+            } else if Shortcut.isFnPress(event) {
+                onModifier?(.fn)
             }
         }
 
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
             guard window?.firstResponder === self else { return false }
+            _ = leftOptionTap.handle(event)
             onKeyDown?(event)
             return true
         }

@@ -41,6 +41,8 @@ final class Studio: ObservableObject {
         .cursor: GlobalShortcut(signature: 0x4241494B)
     ]
     private let fnMonitor = FnKeyMonitor()
+    private let leftOptionMonitor = LeftOptionMonitor()
+    @Published private(set) var leftOptionReady = false
     private var fnArmed = false
     @Published private(set) var fnMonitoringReady = false
     private let gemini: Gemini?
@@ -51,6 +53,10 @@ final class Studio: ObservableObject {
         let keys = APIKeys()
         gemini = keys.gemini.map(Gemini.init(key:))
         muse = keys.meta.map(MuseSpark.init(key:))
+        leftOptionMonitor.onTap = { [weak self] in
+            guard let self, let mode = self.leftOptionMode else { return }
+            self.activate(mode)
+        }
         fnMonitor.onChange = { [weak self] pressed in self?.handleFn(pressed: pressed) }
         for mode in Mode.allCases {
             hotkeys[mode]?.onRelease = { [weak self] in self?.activate(mode) }
@@ -59,13 +65,18 @@ final class Studio: ObservableObject {
             shortcuts[mode] = saved
             restoreShortcut(for: mode)
         }
-        resumeFnMonitoring()
+        resumeShortcutMonitoring()
     }
 
     private var fnMode: Mode? {
         Mode.allCases.first { shortcuts[$0]?.isFn == true }
     }
 
+    private var leftOptionMode: Mode? {
+        Mode.allCases.first { shortcuts[$0]?.isLeftOption == true }
+    }
+
+    var needsLeftOptionSetup: Bool { !choosing && leftOptionMode != nil && !leftOptionReady }
     var needsFnSetup: Bool { !choosing && fnMode != nil && !fnMonitoringReady }
 
     private func activate(_ mode: Mode) {
@@ -76,7 +87,7 @@ final class Studio: ObservableObject {
     }
 
     private func restoreShortcut(for mode: Mode) {
-        guard let shortcut = shortcuts[mode], !shortcut.isFn else { return }
+        guard let shortcut = shortcuts[mode], !shortcut.usesEventMonitor else { return }
         if hotkeys[mode]?.register(shortcut) != true {
             status = "The shortcut for \(mode.rawValue) is unavailable. Choose another."
         }
@@ -157,14 +168,14 @@ final class Studio: ObservableObject {
         fnArmed = false
         editingMode = mode
         status = ""
-        resumeFnMonitoring()
+        resumeShortcutMonitoring()
     }
 
     func cancelChoosing() {
         editingMode = nil
         pendingShortcut = nil
         status = ""
-        resumeFnMonitoring()
+        resumeShortcutMonitoring()
         for mode in Mode.allCases { restoreShortcut(for: mode) }
     }
 
@@ -179,13 +190,21 @@ final class Studio: ObservableObject {
         status = ""
     }
 
-    func previewFn() {
+    func previewFn() { previewModifier(.fn) }
+
+    func previewModifier(_ shortcut: Shortcut) {
         guard choosing else { return }
-        pendingShortcut = .fn
+        pendingShortcut = shortcut
         status = ""
     }
 
-    func resumeFnMonitoring() {
+    func resumeShortcutMonitoring() {
+        if !choosing && leftOptionMode != nil {
+            leftOptionReady = leftOptionMonitor.start()
+        } else {
+            leftOptionMonitor.stop()
+            leftOptionReady = false
+        }
         if choosing || fnMode != nil {
             fnMonitoringReady = fnMonitor.start()
         } else {
@@ -222,7 +241,7 @@ final class Studio: ObservableObject {
             status = "That shortcut is already set for \(conflict.key.rawValue)."
             return
         }
-        if !choice.isFn && hotkeys[mode]?.register(choice) != true {
+        if !choice.usesEventMonitor && hotkeys[mode]?.register(choice) != true {
             status = "That shortcut is already in use. Try another."
             return
         }
@@ -232,8 +251,14 @@ final class Studio: ObservableObject {
         editingMode = nil
         pendingShortcut = nil
         status = ""
-        resumeFnMonitoring()
+        resumeShortcutMonitoring()
         for other in Mode.allCases where other != mode { restoreShortcut(for: other) }
+    }
+
+    func openLeftOptionAccessibility() {
+        requestInsertionAccess(message: "")
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+        NSWorkspace.shared.open(url)
     }
 
     private func requestInsertionAccess(message: String = "Allow Accessibility access to type in other apps.") {
