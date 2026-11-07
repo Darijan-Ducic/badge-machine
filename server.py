@@ -1,5 +1,5 @@
-"""Local server: serves static/ plus the API for transcripts, SAM boxes, preheat clips, lip mode, dictation sessions
-and the clip explorer."""
+"""Local server: serves static/ plus the API for transcripts, SAM boxes, preheat clips, lip mode, dictation sessions,
+the clip explorer and training (runs, readiness, system versions)."""
 
 import functools
 import json
@@ -11,15 +11,19 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from asr import transcribe, transcribe_turns
-from clips import (DEFAULT_USER, backend, clip_detail, clip_list, label_clip, load, process_clip, process_turn, stats,
-                   vtt_clip)
+from clips import (DEFAULT_USER, backend, clip_detail, clip_list, label_clip, load, phrase_readiness, process_clip,
+                   process_turn, stats, vtt_clip)
+from runs import list_runs
 from sam import segment_image
 from scorers import load_phrases
 from sessions import get_session, list_sessions, session_video, start_session
+from versions import Registry
 
 PORT = int(os.environ.get("PORT", 8765))
 STORE = None  # clip store: None = MongoDB when MONGODB_URI is set, else data/clips (clips.backend)
 SESSIONS = None  # session store: None = MongoDB when MONGODB_URI is set, else data/sessions (sessions._backend)
+RUNS = None  # experiment runs: None = MongoDB when MONGODB_URI is set, else data/runs (runs._backend)
+VERSIONS = None  # system versions: None = MongoDB when MONGODB_URI is set, else data/versions (versions.Registry)
 TURNS = ThreadPoolExecutor(4)  # dictation turns are read here, after /dictation has answered
 CLIP_ROUTE = re.compile(r"^/clips/([^/]+)(/video)?$")
 SESSION_ROUTE = re.compile(r"^/sessions/([^/]+)(/video)?$")
@@ -63,7 +67,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         clip, session = CLIP_ROUTE.match(url.path), SESSION_ROUTE.match(url.path)
-        if url.path not in ("/phrases", "/stats", "/clips", "/sessions") and not clip and not session:
+        api = ("/phrases", "/stats", "/clips", "/sessions", "/runs", "/readiness", "/versions")
+        if url.path not in api and not clip and not session:
             super().do_GET()
             return
         user = parse_qs(url.query).get("user", [""])[0] or None  # none: the user of the latest clip / session
@@ -76,6 +81,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(200, clip_list(STORE, load_phrases(), user))
             elif url.path == "/sessions":
                 self.send_json(200, list_sessions(user, store=SESSIONS))
+            elif url.path == "/runs":
+                self.send_json(200, {"runs": list_runs(RUNS, user_id=user)})  # no user: every run
+            elif url.path == "/readiness":
+                self.send_json(200, phrase_readiness(STORE, load_phrases(), user))
+            elif url.path == "/versions":
+                self.send_json(200, Registry(VERSIONS).payload())
             elif session and session.group(2):
                 video = session_video(session.group(1), store=SESSIONS)  # (bytes, content type)
                 self.send_bytes(video[1], video[0]) if video else self.send_json(404, {"error": "no session"})
