@@ -3,7 +3,8 @@ labeled by STT on its own audio, and kept turns go to the clip pipeline in the b
 
 Store: MongoDB (collection `sessions`, recordings in GridFS bucket `sessions`) when MONGODB_URI is set, else
 data/sessions. Session status: recorded -> transcribed -> processing -> done | failed.
-Turn status: pending -> processed | skipped | failed, with a reason when not processed.
+Turn status: pending -> processed | skipped | failed, with a reason when not processed; a turn's `attempts` is how
+many tries its latest call took (its STT, then its clip processing once pending; 0 when nothing ran).
 """
 
 import functools
@@ -22,7 +23,9 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import httpx
 import numpy as np
+import openai
 import pymongo
 from gridfs import GridFSBucket
 from gridfs.errors import NoFile
@@ -38,6 +41,7 @@ MIN_PIECE_MS = 2000  # a dip cut leaves both pieces at least this long
 MIN_TURN_MS = 500  # shorter turns are skipped: "too short"
 MAX_TURN_MS = 8000  # turns are merged up to / cut down to this; longer ones are skipped: "over 8 s"
 DAILY_CAP = 50  # processed turns per user per local day; the rest are skipped: "daily cap"
+RETRY_DELAYS_S = (1, 4)  # a turn's STT or clip call that fails transiently is tried again after each of these waits
 
 DATA = Path("data/sessions")
 SAMPLE_RATE = 16000
@@ -272,13 +276,34 @@ def _reason(error: Exception) -> str:
     return f"{type(error).__name__}: {error}"
 
 
+def _transient(error: Exception) -> bool:
+    """A timeout, a dropped or refused connection, or an HTTP 5xx: worth trying again. Anything else fails again."""
+    if isinstance(error, (TimeoutError, ConnectionError, httpx.TransportError, openai.APIConnectionError)):
+        return True
+    status = getattr(error, "status_code", None) or getattr(getattr(error, "response", None), "status_code", None)
+    return isinstance(status, int) and status >= 500
+
+
+def _attempt(call, sleep) -> tuple:
+    """call(), tried again after each of RETRY_DELAYS_S while it fails transiently -> (result, None, attempts), or
+    (None, the last error, attempts)."""
+    for attempts, delay in enumerate((*RETRY_DELAYS_S, None), 1):
+        try:
+            return call(), None, attempts
+        except Exception as e:
+            if delay is None or not _transient(e):
+                return None, e, attempts
+            sleep(delay)
+
+
 # ---- sessions -------------------------------------------------------------------------------------------------------
 
 def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "stt_on", dataset: str | None = None,
                   source: str | None = None, start: float | None = None, process_turn, executor,
-                  transcribe=transcribe_turns, store=None) -> dict:
+                  transcribe=transcribe_turns, store=None, sleep=time.sleep) -> dict:
     """Store the recording, cut it into turns, STT the whole session and each turn, and return the session's STT text;
-    kept turns are submitted to `executor` for `process_turn`. `start` is the recording's offset in `source`, in s."""
+    kept turns are submitted to `executor` for `process_turn`. `start` is the recording's offset in `source`, in s.
+    A turn's STT and process_turn are retried on a transient failure, waiting with `sleep`."""
     store = _backend(store)
     session_id, container = uuid.uuid4().hex[:12], _container(recording)
     with tempfile.TemporaryDirectory() as tmp:
@@ -297,7 +322,8 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
             per_ms = SAMPLE_RATE // 1000
             with ThreadPoolExecutor(8) as pool:
                 whole = pool.submit(transcribe, wav.read_bytes())
-                heard = {i: pool.submit(transcribe, _wav_bytes(pcm[a * per_ms:b * per_ms]))
+                heard = {i: pool.submit(_attempt, functools.partial(transcribe, _wav_bytes(pcm[a * per_ms:b * per_ms])),
+                                        sleep)
                          for i, (a, b) in enumerate(segments) if _length_reason(a, b) is None}
                 text = whole.result()["text"]
         except Exception as e:
@@ -306,14 +332,12 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
 
     turns = []
     for i, (a, b) in enumerate(segments):
-        stt, error = None, None
+        stt, error, attempts = None, None, 0
         if i in heard:
-            try:
-                stt = heard[i].result()["text"]
-            except Exception as e:
-                error = _reason(e)
+            labeled, failure, attempts = heard[i].result()
+            stt, error = (labeled["text"], None) if failure is None else (None, _reason(failure))
         turns.append({"i": i, "start_ms": a, "end_ms": b, "stt": stt, "status": "failed" if error else None,
-                      "reason": error, **dict.fromkeys(TURN_RESULT)})
+                      "reason": error, "attempts": attempts, **dict.fromkeys(TURN_RESULT)})
     with _cap_lock:
         labeled = [t for t in turns if t["status"] is None]
         # Practice / emulated footage (a dataset session) is not held to the daily cap of a real user.
@@ -329,24 +353,27 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
         store.update(session_id, {"status": "done"})
     for turn in pending:
         executor.submit(_process_turn, store, session_id, recording, container, turn, boxes, user_id, mode,
-                        process_turn)
+                        process_turn, sleep)
     return {"session": session_id, "stt": text, "turns": len(turns)}
 
 
-def _process_turn(store, session_id, recording, container, turn, boxes, user_id, mode, process_turn) -> None:
+def _process_turn(store, session_id, recording, container, turn, boxes, user_id, mode, process_turn, sleep) -> None:
     store.update(session_id, {"status": "processing"})
+    attempts = 0
     try:
         with tempfile.TemporaryDirectory() as tmp:
             source, segment = Path(tmp, f"recording.{container}"), Path(tmp, f"turn-{turn['i']}.{container}")
             source.write_bytes(recording)
             _cut(source, turn["start_ms"], turn["end_ms"], container, segment)
-            result = process_turn(segment, transcript=turn["stt"],
-                                  boxes=slice_boxes(boxes, turn["start_ms"], turn["end_ms"]), user_id=user_id,
-                                  session_id=session_id, turn=turn["i"], mode=mode)
+            result, error, attempts = _attempt(functools.partial(
+                process_turn, segment, transcript=turn["stt"], boxes=slice_boxes(boxes, turn["start_ms"], turn["end_ms"]),
+                user_id=user_id, session_id=session_id, turn=turn["i"], mode=mode), sleep)
+        if error is not None:
+            raise error
         fields = {"status": "processed", "reason": None, **{k: result.get(k) for k in TURN_RESULT}}
     except Exception as e:
         fields = {"status": "failed", "reason": _reason(e)}
-    store.update(session_id, fields, turn=turn["i"])
+    store.update(session_id, {**fields, "attempts": attempts}, turn=turn["i"])
     if all(t["status"] in ("processed", "skipped", "failed") for t in store.get(session_id)["turns"]):
         store.update(session_id, {"status": "done"})
 
@@ -395,7 +422,8 @@ def get_session(session_id: str, store=None) -> dict | None:
                                        "covered_s", "lost_s")},
             "video": f"/sessions/{session_id}/video", "stt_text": record["stt_text"],
             "turns": [{"i": t["i"], "start": t["start_ms"] / 1000, "end": t["end_ms"] / 1000, "stt": t["stt"],
-                       "status": t["status"], "reason": t["reason"], **{k: t[k] for k in TURN_RESULT}}
+                       "status": t["status"], "reason": t["reason"], "attempts": t.get("attempts"),
+                       **{k: t[k] for k in TURN_RESULT}}
                       for t in record["turns"]]}
 
 
