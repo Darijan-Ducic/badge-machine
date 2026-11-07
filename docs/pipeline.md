@@ -10,7 +10,7 @@ flowchart TD
   TRK["Classical tracker, every frame, ~1-2 ms<br/>NCC on nose-to-chin anchor, lips masked + One-Euro smoothing"]
   TRIG{"Lost, big motion, scale jump over 15%,<br/>or 4 s since last anchor?"}
   SAM["SAM 3.1 re-anchor on 'face'<br/>$0.0025 per call"]
-  CROP["Muted mouth crop, scaled up"]
+  CROP["Muted mouth crop, 256 px<br/>server-side median of the tracker's boxes<br/>identical for dictation and lip mode"]
   QG{"Quality gate: too many<br/>occluded or blurred frames?"}
   REPEAT["Ask user to repeat<br/>free, before any model spend"]
   GEM["Gemini 4 Argon @ 24 fps, its max<br/>enum + logprobs → P(phrase)"]
