@@ -6,6 +6,21 @@ struct Shortcut: Codable {
     let modifiers: UInt32
     let label: String
 
+    static let fnKeyCode = UInt32(kVK_Function)
+    static let fn = Self(keyCode: fnKeyCode, modifiers: 0, label: "Fn")
+    var isFn: Bool { keyCode == Self.fnKeyCode && modifiers == 0 }
+
+    static func isFnPress(_ event: NSEvent) -> Bool {
+        event.type == .flagsChanged && UInt32(event.keyCode) == fnKeyCode
+            && event.modifierFlags.contains(.function)
+    }
+
+    private init(keyCode: UInt32, modifiers: UInt32, label: String) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+        self.label = label
+    }
+
     init?(event: NSEvent) {
         let flags = event.modifierFlags
         var modifiers: UInt32 = 0

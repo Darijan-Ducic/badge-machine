@@ -14,6 +14,9 @@ final class Studio: ObservableObject {
     @Published private(set) var pendingShortcut: Shortcut?
     private let camera = Capture()
     private let hotkey = GlobalShortcut()
+    private let fnMonitor = FnKeyMonitor()
+    private var fnArmed = false
+    private var requestedInputMonitoring = false
     private let gemini: Gemini?
     private let muse: MuseSpark?
     private var target: CursorTarget?
@@ -23,9 +26,13 @@ final class Studio: ObservableObject {
         gemini = keys.gemini.map(Gemini.init(key:))
         muse = keys.meta.map(MuseSpark.init(key:))
         hotkey.onRelease = { [weak self] in self?.toggle() }
+        fnMonitor.onChange = { [weak self] pressed in self?.handleFn(pressed: pressed) }
         if let data = UserDefaults.standard.data(forKey: "recordingShortcut"),
            let saved = try? JSONDecoder().decode(Shortcut.self, from: data) {
-            if hotkey.register(saved) {
+            if saved.isFn {
+                shortcut = saved
+                resumeFnMonitoring()
+            } else if hotkey.register(saved) {
                 shortcut = saved
             } else {
                 status = "Choose another shortcut. Your saved shortcut is unavailable."
@@ -44,16 +51,26 @@ final class Studio: ObservableObject {
 
     func chooseShortcut() {
         hotkey.unregister()
+        fnArmed = false
         choosing = true
         status = ""
+        if !fnMonitor.start() && !requestedInputMonitoring {
+            requestedInputMonitoring = true
+            if !CGRequestListenEventAccess() {
+                status = "Allow Input Monitoring to capture Fn."
+            }
+        }
     }
 
     func cancelChoosing() {
         choosing = false
         pendingShortcut = nil
         status = ""
-        if let shortcut, !hotkey.register(shortcut) {
-            status = "Your saved shortcut is unavailable. Choose another."
+        if shortcut?.isFn != true {
+            fnMonitor.stop()
+            if let shortcut, !hotkey.register(shortcut) {
+                status = "Your saved shortcut is unavailable. Choose another."
+            }
         }
     }
 
@@ -68,11 +85,49 @@ final class Studio: ObservableObject {
         status = ""
     }
 
+    func previewFn() {
+        guard choosing else { return }
+        pendingShortcut = .fn
+        status = "For Fn without emoji, set the Globe key to Do Nothing in Keyboard settings."
+    }
+
+    func resumeFnMonitoring() {
+        guard choosing || shortcut?.isFn == true else { return }
+        if fnMonitor.start() {
+            if status == "Allow Input Monitoring to capture Fn." { status = "" }
+        } else {
+            status = "Allow Input Monitoring to capture Fn."
+        }
+    }
+
+    private func handleFn(pressed: Bool) {
+        if choosing {
+            if pressed && NSApp.isActive { previewFn() }
+            return
+        }
+        guard shortcut?.isFn == true else { return }
+        if pressed {
+            fnArmed = true
+        } else if fnArmed {
+            fnArmed = false
+            toggle()
+        }
+    }
+
     func confirmShortcut() {
         guard let choice = pendingShortcut else { return }
-        guard hotkey.register(choice) else {
-            status = "That shortcut is already in use. Try another."
-            return
+        if choice.isFn {
+            guard fnMonitor.start() else {
+                _ = CGRequestListenEventAccess()
+                status = "Allow Input Monitoring to use Fn, then reopen Baijiu Machine."
+                return
+            }
+        } else {
+            guard hotkey.register(choice) else {
+                status = "That shortcut is already in use. Try another."
+                return
+            }
+            fnMonitor.stop()
         }
         shortcut = choice
         UserDefaults.standard.set(try? JSONEncoder().encode(choice), forKey: "recordingShortcut")

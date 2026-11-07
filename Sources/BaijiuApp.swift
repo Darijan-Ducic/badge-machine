@@ -52,7 +52,7 @@ struct StudioView: View {
                         .frame(maxWidth: .infinity, minHeight: 48)
                         .background(.white, in: RoundedRectangle(cornerRadius: 8))
                         .background {
-                            ShortcutKeyCapture(onKeyDown: studio.recordShortcut)
+                            ShortcutKeyCapture(onKeyDown: studio.recordShortcut, onFn: studio.previewFn)
                                 .accessibilityHidden(true)
                         }
 
@@ -84,6 +84,9 @@ struct StudioView: View {
         .frame(width: 370)
         .foregroundStyle(ink)
         .background(paper)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            studio.resumeFnMonitoring()
+        }
         .onDisappear {
             if studio.choosing { studio.cancelChoosing() }
         }
@@ -92,19 +95,23 @@ struct StudioView: View {
 
 private struct ShortcutKeyCapture: NSViewRepresentable {
     let onKeyDown: (NSEvent) -> Void
+    let onFn: () -> Void
 
     func makeNSView(context: Context) -> KeyView {
         let view = KeyView()
         view.onKeyDown = onKeyDown
+        view.onFn = onFn
         return view
     }
 
     func updateNSView(_ view: KeyView, context: Context) {
         view.onKeyDown = onKeyDown
+        view.onFn = onFn
     }
 
     final class KeyView: NSView {
         var onKeyDown: ((NSEvent) -> Void)?
+        var onFn: (() -> Void)?
         override var acceptsFirstResponder: Bool { true }
 
         override func viewDidMoveToWindow() {
@@ -117,6 +124,12 @@ private struct ShortcutKeyCapture: NSViewRepresentable {
 
         override func keyDown(with event: NSEvent) {
             onKeyDown?(event)
+        }
+
+        override func flagsChanged(with event: NSEvent) {
+            if Shortcut.isFnPress(event) {
+                onFn?()
+            }
         }
 
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
