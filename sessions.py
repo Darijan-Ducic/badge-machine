@@ -4,7 +4,8 @@ labeled by STT on its own audio, and kept turns go to the clip pipeline in the b
 Store: MongoDB (collection `sessions`, recordings in GridFS bucket `sessions`) when MONGODB_URI is set, else
 data/sessions. Session status: recorded -> transcribed -> processing -> done | failed.
 Turn status: pending -> processed | skipped | failed, with a reason when not processed; a turn's `attempts` is how
-many tries its latest call took (its STT, then its clip processing once pending; 0 when nothing ran).
+many tries its latest call took (its STT, then its clip processing once pending; 0 when nothing ran). After a restart,
+resume_pending queues the pending turns again from the stored recording and boxes.
 """
 
 import functools
@@ -54,6 +55,9 @@ CONTAINERS = {
 TURN_RESULT = ("clip_id", "vtt", "vtt_gemini", "vtt_muse", "correct")
 _lock = threading.RLock()  # file store: turns finish concurrently; read-modify-append must not interleave
 _cap_lock = threading.Lock()  # concurrent sessions of one user must not both spend the same daily-cap slots
+# This server process. A pending turn is claimed by the run that queued it; one claimed by an earlier run was lost with
+# that run's in-memory queue, so resume_pending takes it up again.
+_RUN = uuid.uuid4().hex
 
 
 # ---- segmentation ---------------------------------------------------------------------------------------------------
@@ -149,7 +153,7 @@ def used_today(sessions, user_id: str, now: float) -> int:
 
 class _FileStore:
     """Records as JSON lines in <root>/index.jsonl, each line a record's full latest state (the last line per id wins);
-    recordings as <root>/<id>.<webm|mp4>."""
+    recordings as <root>/<id>.<webm|mp4>, their boxes as <root>/<id>.boxes.json."""
 
     def __init__(self, root: Path):
         self.root = root
@@ -170,9 +174,10 @@ class _FileStore:
         with _lock, (self.root / "index.jsonl").open("a") as index:
             index.write(json.dumps(record) + "\n")
 
-    def insert(self, record: dict, recording: bytes) -> None:
+    def insert(self, record: dict, recording: bytes, boxes) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / f"{record['id']}.{record['container']}").write_bytes(recording)
+        (self.root / f"{record['id']}.boxes.json").write_text(json.dumps(boxes))
         self._append(record)
 
     def update(self, session_id: str, fields: dict, turn: int | None = None) -> None:
@@ -181,13 +186,27 @@ class _FileStore:
             (record if turn is None else record["turns"][turn]).update(fields)
             self._append(record)
 
+    def claim(self, session_id: str, turn: int, run: str) -> bool:
+        """Mark a pending turn as queued by `run`; False when it is no longer pending or `run` already has it."""
+        with _lock:
+            current = self.get(session_id)["turns"][turn]
+            if current["status"] != "pending" or current.get("claim") == run:
+                return False
+            self.update(session_id, {"claim": run}, turn=turn)
+            return True
+
     def recording(self, session_id: str) -> bytes | None:
         record = self.get(session_id)
         return None if record is None else (self.root / f"{session_id}.{record['container']}").read_bytes()
 
+    def boxes(self, session_id: str) -> list | None:
+        path = self.root / f"{session_id}.boxes.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
 
 class MongoStore:
-    """Records in the `sessions` collection, recordings in GridFS bucket `sessions` with the session id as file id."""
+    """Records in the `sessions` collection, recordings in GridFS bucket `sessions` with the session id as file id, their
+    boxes as JSON in the same bucket with file id "<session id>.boxes"."""
 
     def __init__(self, db):
         self.db = db
@@ -200,17 +219,31 @@ class MongoStore:
     def get(self, session_id: str) -> dict | None:
         return self.records.find_one({"id": session_id}, {"_id": False})
 
-    def insert(self, record: dict, recording: bytes) -> None:
+    def insert(self, record: dict, recording: bytes, boxes) -> None:
         self.recordings.upload_from_stream_with_id(record["id"], f"{record['id']}.{record['container']}", recording)
+        self.recordings.upload_from_stream_with_id(f"{record['id']}.boxes", f"{record['id']}.boxes.json",
+                                                   json.dumps(boxes).encode())
         self.records.insert_one(dict(record))  # insert_one writes _id into the dict it gets; keep the caller's clean
 
     def update(self, session_id: str, fields: dict, turn: int | None = None) -> None:
         prefix = "" if turn is None else f"turns.{turn}."
         self.records.update_one({"id": session_id}, {"$set": {prefix + k: v for k, v in fields.items()}})
 
+    def claim(self, session_id: str, turn: int, run: str) -> bool:
+        """Mark a pending turn as queued by `run`, atomically; False when it is no longer pending or `run` has it."""
+        at = f"turns.{turn}."
+        return self.records.update_one({"id": session_id, at + "status": "pending", at + "claim": {"$ne": run}},
+                                       {"$set": {at + "claim": run}}).modified_count == 1
+
     def recording(self, session_id: str) -> bytes | None:
         try:
             return self.recordings.open_download_stream(session_id).read()
+        except NoFile:
+            return None
+
+    def boxes(self, session_id: str) -> list | None:
+        try:
+            return json.loads(self.recordings.open_download_stream(f"{session_id}.boxes").read())
         except NoFile:
             return None
 
@@ -314,7 +347,7 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
         store.insert({"id": session_id, "t": time.time(), "user_id": user_id, "dataset": dataset, "source": source,
                       "start": 0.0 if start is None else float(start), "duration_ms": duration_ms,
                       "container": container, "mode": mode, "flags": flags, "status": "recorded", "reason": None,
-                      "stt_text": None, "turns": []}, recording)
+                      "stt_text": None, "turns": []}, recording, boxes)
         try:
             segments = plan_segments(duration_ms, _silences(wav, duration_ms), _levels(pcm))
             # The reply is one extra STT call on the whole session (full context, one round trip of latency);
@@ -337,7 +370,7 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
             labeled, failure, attempts = heard[i].result()
             stt, error = (labeled["text"], None) if failure is None else (None, _reason(failure))
         turns.append({"i": i, "start_ms": a, "end_ms": b, "stt": stt, "status": "failed" if error else None,
-                      "reason": error, "attempts": attempts, **dict.fromkeys(TURN_RESULT)})
+                      "reason": error, "attempts": attempts, "claim": None, **dict.fromkeys(TURN_RESULT)})
     with _cap_lock:
         labeled = [t for t in turns if t["status"] is None]
         # Practice / emulated footage (a dataset session) is not held to the daily cap of a real user.
@@ -346,6 +379,8 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
                            used_today=spent, cap=cap)
         for t, (status, reason) in zip(labeled, decisions):
             t["status"], t["reason"] = status, reason
+            if status == "pending":
+                t["claim"] = _RUN  # queued below, by this run: resume_pending must not queue it again
         store.update(session_id, {"status": "transcribed", "stt_text": text, "turns": turns})
 
     pending = [t for t in turns if t["status"] == "pending"]
@@ -355,6 +390,24 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
         executor.submit(_process_turn, store, session_id, recording, container, turn, boxes, user_id, mode,
                         process_turn, sleep)
     return {"session": session_id, "stt": text, "turns": len(turns)}
+
+
+def resume_pending(process_turn, executor, store=None, *, sleep=time.sleep) -> int:
+    """Submit to `executor` the pending turns of every unfinished session that this server run hasn't queued — the
+    queue a restart lost — from the stored recording and boxes; returns how many. Each turn is claimed first, so a
+    second call, or one while its turns are still queued or running, submits none of them again. Call at startup."""
+    store, submitted = _backend(store), 0
+    for record in store.all():
+        waiting = [t for t in record["turns"] if t["status"] == "pending" and t.get("claim") != _RUN]
+        if record["status"] in ("done", "failed") or not waiting:
+            continue
+        recording, boxes = store.recording(record["id"]), store.boxes(record["id"])
+        for turn in waiting:
+            if store.claim(record["id"], turn["i"], _RUN):
+                executor.submit(_process_turn, store, record["id"], recording, record["container"], turn, boxes,
+                                record["user_id"], record["mode"], process_turn, sleep)
+                submitted += 1
+    return submitted
 
 
 def _process_turn(store, session_id, recording, container, turn, boxes, user_id, mode, process_turn, sleep) -> None:
