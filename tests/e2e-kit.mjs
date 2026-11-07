@@ -78,6 +78,26 @@ export async function probeTake(file) {
   return { streams, video: streams.filter((s) => s.codec_type === 'video'), audio: streams.filter((s) => s.codec_type === 'audio'), pts, duration, meanVolumeDb };
 }
 
+// How well a recording's audio matches the wav it was captured from: the best normalized correlation of their 10 ms
+// loudness envelopes over every offset (speech from the wav ~0.8+; Chrome's fake beep or silence ~0).
+export async function audioMatch(file, wav) {
+  const env = async (f) => {
+    const b = await run('ffmpeg', ['-v', 'error', '-i', f, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', '-']), x = new Int16Array(b.buffer, b.byteOffset, b.length >> 1), e = [];
+    for (let i = 0; i + 80 <= x.length; i += 80) { let s = 0; for (let k = 0; k < 80; k++) s += Math.abs(x[i + k]); e.push(s / 80); }
+    return e;
+  };
+  const z = (v) => { const m = v.reduce((s, x) => s + x, 0) / v.length, sd = Math.sqrt(v.reduce((s, x) => s + (x - m) ** 2, 0) / v.length) || 1; return v.map((x) => (x - m) / sd); };
+  const rec = await env(file), ref = await env(wav), a = z(rec.slice(20, rec.length - 20)); // trim the recorder's edges
+  let best = -1;
+  for (let o = 0; o + a.length <= ref.length; o++) {
+    const b = z(ref.slice(o, o + a.length));
+    let s = 0;
+    for (let k = 0; k < a.length; k++) s += a[k] * b[k];
+    best = Math.max(best, s / a.length);
+  }
+  return best;
+}
+
 // Five boxes across the take, each against SAM's ground truth for the source frame that was actually recorded at
 // its time; draws the middle one (green) and the ground-truth lips (red) on that recorded frame into image.
 export async function boxesOnMouth(cam, file, pts, boxes, image) {
@@ -105,7 +125,9 @@ export async function boxesOnMouth(cam, file, pts, boxes, image) {
 // exceptions and failed loads, each tagged with the page that was open.
 export async function launch({ camera, wav, profile, base }) {
   const chrome = spawn(CHROME, ['--headless=new', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
-    `--use-file-for-fake-video-capture=${camera}`, ...(wav ? [`--use-file-for-fake-audio-capture=${wav}`] : []), '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+    `--use-file-for-fake-video-capture=${camera}`,
+    // the sandboxed audio service cannot read the wav and records silence (-91 dB) unless its sandbox is off
+    ...(wav ? [`--use-file-for-fake-audio-capture=${wav}`, '--disable-features=AudioServiceSandbox'] : []), '--remote-debugging-port=0', `--user-data-dir=${profile}`,
     '--window-size=1280,1000', '--no-first-run', '--no-default-browser-check', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const wsUrl = await new Promise((resolve, reject) => {
     let log = '';
