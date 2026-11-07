@@ -15,6 +15,7 @@ import scorer
 import visemes
 from candidates import FEATURES
 from clips import FileStore, _featurized, vocab_id
+from clips import clip_detail as clips_page
 from tests.fakes import v1_output
 from tests.simulator import simulate
 
@@ -81,9 +82,10 @@ def bucket_stream() -> list[dict]:
         says_call_mom(6, "stop stop"),  # ranked_wrong + stt_suspect: a doubled word
         says_call_mom(7, "..."),  # pool_miss + stt_suspect: empty after normalizing
         says_call_mom(8, "stop it stop it"),  # pool_miss + stt_suspect: a repeated phrase
+        abstains(9, "feed the dog"),  # pool_miss, not abstained: ∅ won but the STT text was never in the pool
     ]
-    # Correct clips after them, so the nine land in the train split (first 60% of 15 labeled clips).
-    return clips + [says_call_mom(9 + j, "call mom") for j in range(6)]
+    # Correct clips after them, so the ten land in the train split (first 60% of 17 labeled clips).
+    return clips + [says_call_mom(10 + j, "call mom") for j in range(7)]
 
 
 EXPECTED = {  # id -> (cause, flags)
@@ -95,6 +97,7 @@ EXPECTED = {  # id -> (cause, flags)
     "clip-006": ("ranked_wrong", {"stt_suspect"}),
     "clip-007": ("pool_miss", {"stt_suspect"}),
     "clip-008": ("pool_miss", {"stt_suspect"}),
+    "clip-009": ("pool_miss", set()),
 }
 
 
@@ -111,11 +114,11 @@ def test_each_failure_lands_in_its_cause_bucket_with_its_flags(bucket_report, cl
 
 def test_only_clips_where_vtt_differs_from_stt_are_failures(bucket_report):
     assert sorted(r["id"] for r in bucket_report["rows"]) == sorted(EXPECTED)
-    assert (bucket_report["scored"], bucket_report["failures"]) == (9, 8)
+    assert (bucket_report["scored"], bucket_report["failures"]) == (10, 9)
 
 
 def test_bucket_counts_come_first_and_add_up(bucket_report):
-    assert bucket_report["counts"] == {"pool_miss": 3, "ranked_wrong": 4, "abstained": 1, "bad_video": 2,
+    assert bucket_report["counts"] == {"pool_miss": 4, "ranked_wrong": 4, "abstained": 1, "bad_video": 2,
                                        "stt_suspect": 3}
 
 
@@ -123,7 +126,8 @@ def test_a_failure_row_shows_the_label_rank_and_p_and_the_top_three(bucket_repor
     rows = {r["id"]: r for r in bucket_report["rows"]}
     ranked = rows["clip-002"]  # STT "stop", VTT "call mom"
     assert (ranked["stt"], ranked["vtt"]) == ("stop", "call mom")
-    assert ranked["label_rank"] > 1 and 0 < ranked["label_p"] < ranked["top"][0]["p"]
+    # default weights: call mom 4.45 > play some music .16 > stop .12 > ∅ .05, so "stop" ranks third
+    assert ranked["label_rank"] == 3 and 0 < ranked["label_p"] < ranked["top"][0]["p"]
     assert ranked["top"][0]["text"] == "call mom" and len(ranked["top"]) == 3
     assert [t["p"] for t in ranked["top"]] == sorted((t["p"] for t in ranked["top"]), reverse=True)
     assert ranked["link"] == "http://localhost:8765/clips.html?clip=clip-002"
@@ -131,6 +135,7 @@ def test_a_failure_row_shows_the_label_rank_and_p_and_the_top_three(bucket_repor
     assert (miss["label_rank"], miss["label_p"]) == (None, None)  # the STT text is not a candidate
     abstained = rows["clip-003"]
     assert abstained["vtt"].startswith("∅") and abstained["top"][0]["text"].startswith("∅")
+    assert abstained["label_rank"] == 2  # ∅ .95 > yes please .04 + .25 > every other phrase .01 + .25
 
 
 # ---------------------------------------------------------------- no leak, and the test split stays closed
@@ -243,9 +248,16 @@ def test_recipe_shares_and_pool_recall():
 # ---------------------------------------------------------------- one clip's story
 
 
-def test_contributions_sum_to_the_score_and_differences_match_the_log_odds(world):
-    story = tool.clip_story(world, world[35]["id"])  # 35 labeled before it: core weights
-    assert story["stage"] == "core"
+@pytest.mark.parametrize("stream, i, stage", [
+    ("world", 35, "core"),  # 35 labeled before it: fitted core weights
+    ("world", 12, "temperature"),
+    ("buckets", 5, "defaults"),  # ∅ is the runner-up, with no_speech 0.5
+    ("buckets", 3, "defaults"),  # ∅ wins on none_closed
+])
+def test_contributions_sum_to_the_score_and_differences_match_the_log_odds(world, stream, i, stage):
+    records = world if stream == "world" else bucket_stream()
+    story = tool.clip_story(records, records[i]["id"])
+    assert story["stage"] == stage
     winner, runner = story["winner"], story["runner_up"]
     for side in (winner, runner):
         assert sum(side["contributions"].values()) == pytest.approx(side["score"], abs=1e-9)
@@ -296,6 +308,13 @@ def test_story_names_where_each_candidate_came_from():
     assert "gemini" in sources["yes please"] and "closed" not in sources["yes please"]
 
 
+def test_a_past_stt_text_is_proposed_by_the_bank():
+    earlier = says_call_mom(0, "feed the cat")  # not a phrase; said once, so it joins the next clip's bank
+    later = stored(1, [v1_output(("feed the cat", 0.8))], SURE, 0.05, GEMINI_SURE, "feed the cat")
+    sources = {c["text"]: c["sources"] for c in tool.clip_story([earlier, later], "clip-001")["pool"]}
+    assert sources["feed the cat"] == ["hypothesis", "slots", "bank"]  # its visemes are the observed ones exactly
+
+
 def test_every_candidate_has_a_source_and_three_come_from_the_bank(world):
     uncapped = 0
     for record in world[:12]:
@@ -306,6 +325,14 @@ def test_every_candidate_has_a_source_and_three_come_from_the_bank(world):
             uncapped += 1
             assert sum("bank" in c["sources"] for c in real) == 3
     assert uncapped
+
+
+def test_a_clips_story_is_scored_as_the_clips_page_scores_it(tmp_path, world):
+    _save(tmp_path, world)
+    for i in (12, 35):  # temperature and core models, trained on the clips before it
+        page = {c["text"]: c["p"] for c in clips_page(FileStore(tmp_path), world[i]["id"])["pool"]}
+        story = tool.clip_story(world, world[i]["id"])
+        assert {c["text"]: c["p"] for c in story["pool"]} == pytest.approx(page, abs=1e-12)
 
 
 def test_later_clips_do_not_change_a_clips_story(world):
