@@ -1,21 +1,28 @@
-"""Local server: serves static/ plus the API for transcripts, SAM boxes, preheat clips, lip mode and the clip
-explorer."""
+"""Local server: serves static/ plus the API for transcripts, SAM boxes, preheat clips, lip mode, dictation sessions
+and the clip explorer."""
 
+import functools
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from asr import transcribe
-from clips import DEFAULT_USER, backend, clip_detail, clip_list, label_clip, load, process_clip, stats, vtt_clip
+from asr import transcribe, transcribe_turns
+from clips import (DEFAULT_USER, backend, clip_detail, clip_list, label_clip, load, process_clip, process_turn, stats,
+                   vtt_clip)
 from sam import segment_image
 from scorers import load_phrases
+from sessions import get_session, list_sessions, session_video, start_session
 
 PORT = int(os.environ.get("PORT", 8765))
 STORE = None  # clip store: None = MongoDB when MONGODB_URI is set, else data/clips (clips.backend)
+SESSIONS = None  # session store: None = MongoDB when MONGODB_URI is set, else data/sessions (sessions._backend)
+TURNS = ThreadPoolExecutor(4)  # dictation turns are read here, after /dictation has answered
 CLIP_ROUTE = re.compile(r"^/clips/([^/]+)(/video)?$")
+SESSION_ROUTE = re.compile(r"^/sessions/([^/]+)(/video)?$")
 LABEL_ROUTE = re.compile(r"^/vtt/([^/]+)/label$")
 STATIC = Path(__file__).parent / "static"
 
@@ -55,11 +62,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
-        clip = CLIP_ROUTE.match(url.path)
-        if url.path not in ("/phrases", "/stats", "/clips") and not clip:
+        clip, session = CLIP_ROUTE.match(url.path), SESSION_ROUTE.match(url.path)
+        if url.path not in ("/phrases", "/stats", "/clips", "/sessions") and not clip and not session:
             super().do_GET()
             return
-        user = parse_qs(url.query).get("user", [""])[0] or None  # none: the user of the latest clip
+        user = parse_qs(url.query).get("user", [""])[0] or None  # none: the user of the latest clip / session
         try:
             if url.path == "/phrases":
                 self.send_json(200, {"phrases": load_phrases()})
@@ -67,6 +74,14 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(200, stats(load(STORE, user), load_phrases(), user=user))
             elif url.path == "/clips":
                 self.send_json(200, clip_list(STORE, load_phrases(), user))
+            elif url.path == "/sessions":
+                self.send_json(200, list_sessions(user, store=SESSIONS))
+            elif session and session.group(2):
+                video = session_video(session.group(1), store=SESSIONS)  # (bytes, content type)
+                self.send_bytes(video[1], video[0]) if video else self.send_json(404, {"error": "no session"})
+            elif session:
+                detail = get_session(session.group(1), store=SESSIONS)
+                self.send_json(200, detail) if detail is not None else self.send_json(404, {"error": "no session"})
             elif clip.group(2):
                 video = backend(STORE).video(clip.group(1))
                 self.send_bytes("video/mp4", video) if video is not None else self.send_json(404, {"error": "no clip"})
@@ -90,7 +105,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         url = urlparse(self.path)
         label = LABEL_ROUTE.match(url.path)
-        if url.path not in ("/transcribe", "/sam", "/preheat/clip", "/vtt") and not label:
+        if url.path not in ("/transcribe", "/sam", "/preheat/clip", "/vtt", "/dictation") and not label:
             self.send_error(404)
             return
         query = parse_qs(url.query)
@@ -113,6 +128,13 @@ class Handler(SimpleHTTPRequestHandler):
                 mouths, flags = tracker_headers(self.headers)
                 body = vtt_clip(data, load_phrases(), STORE, user_id=query.get("user", [""])[0] or DEFAULT_USER,
                                 mouths=mouths, tracker_flags=flags)
+            elif url.path == "/dictation":
+                # A dictation session -> its STT now; its turns are cut at the pauses and read as clips on TURNS.
+                boxes, flags = tracker_headers(self.headers)
+                turn = functools.partial(process_turn, phrases=load_phrases(), store=STORE)
+                body = start_session(data, user_id=query.get("user", [""])[0] or DEFAULT_USER, boxes=boxes,
+                                     flags=flags, process_turn=turn, executor=TURNS, transcribe=transcribe_turns,
+                                     store=SESSIONS)
             else:
                 # One JPEG/PNG frame -> SAM boxes [x, y, w, h] in that frame's pixels; ids are per-request ordinals.
                 prompt = query.get("prompt", [""])[0].strip()
