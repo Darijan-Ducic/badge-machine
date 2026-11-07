@@ -1,0 +1,10 @@
+# lab-features: lip measurements as Muse's input (paused for the demo, n=9)
+- Front end (`lipfeatures.py`): SAM 3.1 VIDEO mode "lips" boxes per frame at 24 fps ($0.03/turn), plus classical pixel tests inside the box: cavity (dark), teeth (bright, unsaturated), open height; normalized by the clip's median lip width. Viewed: `/tmp/lab-features/practice_obama-weekly_obama/plots/*-sheet.png` (boxes track the lips on 65/65 turns; teeth and closures are visible in the curves).
+- SAM's `<|mask;…|>` payload is an undocumented compressed encoding (a full rectangle is ~430 chars, so it is not a bitmap). NEVER spend time decoding it; reopen only if Meta documents it.
+- Lip-colour (redness/Otsu) segmentation failed on Obama: lips are the same hue as skin. Silhouettes use the box as an ellipse plus cavity and teeth.
+- Results (obama, n=9, K=1, VTT · Muse lift over impostors, viseme / word): base +0.011 / -0.012 ($0.025); sil +0.002 / +0.008 ($0.057); table+frames +0.013 / +0.010 ($0.060); text only +0.006 / +0.004 ($0.051). Every sign test p ≥ 0.5. All are **inconclusive** (runs `labfeatures-{sil,table,text}-*`).
+- Silhouette arm: Muse reads the drawings as a dental prompt ("show me your teeth please" on 3/9 turns) and raw viseme acc falls 0.30 → 0.20. Reopen it only with a drawing that has no teeth cue.
+- Text-only Muse costs about $0.021 a call, close to 46 images ($0.025), because output tokens dominate. The cost argument for features is weak.
+- (d) DTW on CREMA-D was not run because there are no SAM boxes for CREMA-D. `lipfeatures.matrix`, `dtw`, and `rank` are written but untested. Templates must come only from earlier clips.
+- Reopen: run ≥40 turns per arm on obama and fauci (fauci clips are cropped at `/tmp/lab-features/practice_fauci-messages_fauci`). Commands:
+  `uv run --env-file .env python tools/exp_features_fetch.py --user U [--pending]` → `tools/exp_features_sam.py <dir> --workers 3` → `tools/exp_features_view.py <dir>` → `tools/exp_features.py run <dir> --arms base,sil,table,text --n 40` → `tools/exp_features.py report <dir> --arms sil,table,text [--save --verdict V --reopen R]`
