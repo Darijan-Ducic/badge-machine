@@ -30,6 +30,7 @@ from math import log, prod
 import numpy as np
 
 from preheat import _normalize
+from sentence import read as read_sentence
 
 FEATURES = ["vote", "top_vote", "mean_score", "slot_support", "viseme_sim", "closed", "gemini", "prior", "in_bank",
             "is_none", "none_closed", "bad_quality", "no_speech"]
@@ -45,6 +46,8 @@ class Clip:
     stt: str | None
     gemini_pick: str | None  # Gemini's argmax phrase
     muse_pick: str | None  # most common top hypothesis across valid samples
+    sentence: str | None = None  # the sentence path's VTT (sentence.read) on a sentence turn, else None
+    sentence_p: float = 0.0  # its confidence
 
 
 def match(text: str, options: list[str]) -> int | None:
@@ -164,4 +167,5 @@ def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, ban
     votes = Counter(map(_normalize, named))
     muse_pick = max(named, key=lambda t: votes[_normalize(t)]) if named else None  # ties: first seen
     gemini_pick = _top(gemini, 1)[0] if gemini else None
-    return Clip(texts, features, label, stt, gemini_pick, muse_pick)
+    read = read_sentence(outputs, phrases)
+    return Clip(texts, features, label, stt, gemini_pick, muse_pick, *(read or (None, 0.0)))

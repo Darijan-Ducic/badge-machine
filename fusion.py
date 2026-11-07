@@ -22,7 +22,9 @@ def predict(features: np.ndarray, weights: np.ndarray, mask: np.ndarray | None =
     return np.exp(log_softmax(_logits(features, weights, mask), axis=1))
 
 
-def fit(features: np.ndarray, labels: np.ndarray, l2: float = 1e-3, mask: np.ndarray | None = None) -> np.ndarray:
+def fit(features: np.ndarray, labels: np.ndarray, l2: float = 1e-3, mask: np.ndarray | None = None,
+        bounds: list[tuple[float | None, float | None]] | None = None) -> np.ndarray:
+    """`bounds`: per-weight (low, high) limits, None for no limit (scipy L-BFGS-B bounds)."""
     rows = np.arange(len(labels))
 
     def loss(weights):
@@ -32,7 +34,7 @@ def fit(features: np.ndarray, labels: np.ndarray, l2: float = 1e-3, mask: np.nda
         nll = -log_probs[rows, labels].mean() + l2 * weights @ weights
         return nll, (expected - observed) / len(labels) + 2 * l2 * weights
 
-    return minimize(loss, np.ones(features.shape[2]), jac=True, method="L-BFGS-B").x
+    return minimize(loss, np.ones(features.shape[2]), jac=True, method="L-BFGS-B", bounds=bounds).x
 
 
 def gate_threshold(probs: np.ndarray, labels: np.ndarray, precision: float = 0.95) -> float:

@@ -505,13 +505,15 @@ def _read_back(record: dict, store) -> tuple[list[dict], dict, dict | None]:
     def said(text):
         return heard is not None and text is not None and match(heard, [text]) is not None
 
+    fused = ({"phrase": clip.sentence, "p": clip.sentence_p} if clip.sentence is not None  # a sentence turn
+             else {"phrase": _shown(clip, top), "p": float(probs[top])})
     read = {
-        "fused": {"phrase": _shown(clip, top), "p": float(probs[top])},
+        "fused": fused,
         "gemini": {"phrase": clip.gemini_pick, "p": float(gemini_output.get(clip.gemini_pick, 0.0))},
         "muse": _muse_read(clip, record["samples"]),
     }
     correct = None if heard is None else {
-        "fused": top != len(clip.pool) - 1 and said(clip.pool[top]),
+        "fused": said(clip.sentence) if clip.sentence is not None else top != len(clip.pool) - 1 and said(clip.pool[top]),
         "gemini": said(clip.gemini_pick),
         "muse": said(clip.muse_pick),
     }
