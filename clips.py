@@ -206,6 +206,7 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
     with tempfile.TemporaryDirectory() as tmp:
         source, clip = Path(tmp, "recording"), Path(tmp, "clip.mp4")
         source.write_bytes(recording)
+        crop_rect, _ = crop.rectangle(source, faces=faces, mouths=mouths)
         crop_id = crop.crop(source, clip, faces=faces, mouths=mouths)
         frames = crop.count_frames(clip)
         with ThreadPoolExecutor(4) as pool:
@@ -221,7 +222,8 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
         "prompted": prompted, "phrases": list(phrases), "vocab": vocab_id(phrases),
         "config": {**muse_sampler.CONFIG, "crop": crop_id, "k": k, "gemini_model": scorers.GEMINI_MODEL,
                    "viseme_costs": costs_hash()},
-        "tracker_flags": list(tracker_flags), "frames": frames, "label": {"stt_text": stt, "user_edit": None},
+        "tracker_flags": list(tracker_flags), "frames": frames, "crop_rect": crop_rect,
+        "label": {"stt_text": stt, "user_edit": None},
         "samples": samples, "closed": closed, "gemini": gemini_item, **(extra or {}),
     }
     return record, video
