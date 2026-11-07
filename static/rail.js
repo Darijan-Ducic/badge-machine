@@ -4,6 +4,7 @@
 (() => {
   const PAGES = [
     ["index.html", "Record", '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>'],
+    ["lipmode.html", "Lip mode", '<path d="M3 12c2.6-3.4 5.4-4.8 9-2.6 3.6-2.2 6.4-.8 9 2.6-2.6 3.6-5.6 5.2-9 5.2S5.6 15.6 3 12z"/><path d="M3 12h18"/>'],
     ["preheat.html", "Preheat", '<path d="M12 3.5v4M12 16.5v4M3.5 12h4M16.5 12h4M6 6l2.6 2.6M15.4 15.4 18 18M6 18l2.6-2.6M15.4 8.6 18 6"/>'],
     ["clips.html", "Clips", '<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M10 9.5v5l4-2.5z"/>'],
     ["stats.html", "Stats", '<path d="M5 20V12M12 20V5M19 20v-5"/>'],
