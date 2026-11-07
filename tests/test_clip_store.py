@@ -14,7 +14,7 @@ from clips import MongoStore, backend, load, process_clip, record_clip, vocab_id
 from tests.fakes import PHRASES, Gemini, readers
 
 RECORD_KEYS = {"record", "id", "t", "user_id", "mode", "fps", "prompted", "phrases", "vocab", "config",
-               "tracker_flags", "frames", "label", "samples", "closed", "gemini"}
+               "tracker_flags", "frames", "crop_rect", "label", "samples", "closed", "gemini"}
 
 
 def record(recording, said, store=None, user="local", **kw):

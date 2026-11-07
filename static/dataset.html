@@ -45,6 +45,22 @@
     .mark.yes { color: var(--onplan-ink); } .mark.no { color: var(--near-ink); }   /* green = said, yellow = never said, app.css:174-178 */
     .turns-head { display: grid; grid-template-columns: 24px 104px minmax(0, 1fr) 128px; gap: 12px; padding: 0 10px; margin-top: 14px; font-size: 12px; color: var(--ink-3); }
     .empty-detail { color: var(--ink-3); }
+    /* reader inputs: exactly what each lip reader received for a turn, rebuilt from the stored crop */
+    .inputs-toggle { margin: 0 0 8px 150px; font-size: 12px; color: var(--coach-ink); }
+    .inputs { margin: 0 0 14px; padding: 16px; border-radius: 16px; background: var(--well); display: grid; gap: 22px; }
+    .inputs section { display: grid; gap: 10px; }
+    .inputs h3 { margin: 0; font-size: 14px; font-weight: 500; }
+    .inputs h3 small { font-weight: 400; color: var(--ink-3); }
+    .inputs .facts { grid-template-columns: 128px minmax(0, 1fr); font-size: 13px; }
+    .inputs video, .inputs img { display: block; max-width: 100%; border-radius: 10px; background: #000; }
+    .inputs figure { margin: 0; display: grid; gap: 4px; align-content: start; }
+    .inputs figcaption { font-size: 11.5px; color: var(--ink-3); }
+    .inputs .notrep { margin: 0; font-size: 13px; color: var(--near-ink); }
+    .inputs details summary { cursor: pointer; font-size: 12.5px; color: var(--coach-ink); }
+    .frame { position: relative; display: inline-block; max-width: 100%; }
+    .frame .rect { position: absolute; outline: 2px solid var(--coach); outline-offset: -1px; border-radius: 2px; }
+    .grids { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+    pre.prompt { margin: 0; padding: 12px 14px; background: var(--card); border-radius: 12px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 340px; overflow: auto; }
     @media (max-width: 1100px) { .explorer, .two { grid-template-columns: minmax(0, 1fr); } .list { position: static; max-height: none; } }   /* app.css:558-559 */
   </style>
 </head>
@@ -171,9 +187,81 @@
         marks(t.correct), open ? h("span", { class: "open" }, `open ${t.clip_id} →`) : null);
       const cells = [h("span", { class: "n" }, String(t.i + 1)), h("span", { class: "when" }, `${clock(t.start)}–${clock(t.end)}`),
         VTT.pair(t.stt, t.vtt ? t.vtt.text : null), side];
-      return h("li", { "data-i": t.i, "data-status": t.status }, open
+      const li = h("li", { "data-i": t.i, "data-status": t.status }, open
         ? h("a", { class: "turn", href: `clips.html?clip=${encodeURIComponent(t.clip_id)}`, title: `Open clip ${t.clip_id}` }, cells)
         : h("div", { class: "turn" }, cells));
+      if (t.clip_id) li.append(...inputsToggle(t.clip_id));
+      return li;
+    }
+
+    // ---- what each lip reader received for a turn: GET /clips/<id>/inputs, rebuilt from the stored crop ($0) ----
+    function inputsToggle(clip) {
+      const panel = h("div", { class: "inputs", hidden: true });
+      const button = h("button", { type: "button", class: "inputs-toggle", "aria-expanded": "false" }, "Reader inputs");
+      button.addEventListener("click", async () => {
+        const open = button.getAttribute("aria-expanded") !== "true";
+        button.setAttribute("aria-expanded", String(open));
+        button.textContent = open ? "Hide reader inputs" : "Reader inputs";
+        panel.hidden = !open;
+        if (!open || panel.dataset.loaded) return;
+        panel.dataset.loaded = "1";
+        panel.replaceChildren(h("p", { class: "eyebrow" }, "Rebuilding the inputs from the stored crop…"));
+        try { panel.replaceChildren(...inputsView(await getJSON(`/clips/${encodeURIComponent(clip)}/inputs`))); }
+        catch (err) { delete panel.dataset.loaded; panel.replaceChildren(h("p", { class: "msg error" }, err.message)); }
+      });
+      return [button, panel];
+    }
+
+    const facts = (...pairs) => h("dl", { class: "facts" }, pairs.flatMap(([k, v]) => [h("dt", null, k), h("dd", null, v ?? "—")]));
+    const NOT_REPRODUCIBLE = "Not reproducible from what's stored: recorded with other settings (above).";
+    const promptBox = (text) => (text == null ? h("p", { class: "notrep" }, NOT_REPRODUCIBLE) : h("pre", { class: "prompt" }, text));
+    const schemaBox = (name, s) => (s == null ? null : h("details", null, h("summary", null, `Response schema · ${name}`), h("pre", { class: "prompt" }, JSON.stringify(s, null, 2))));
+    const span = (frames) => (frames.length > 1 ? `frames ${frames[0]}–${frames[frames.length - 1]}` : `frame ${frames[0]}`);
+
+    function cropOnFrame(turn, rect) {
+      // the turn's middle frame of the session video, with the crop rectangle drawn where it was cut
+      const box = h("span", { class: "rect" }), mid = (turn.start + turn.end) / 2;
+      const img = h("img", { src: `${turn.video.replace(/\/video$/, "/frame.jpg")}?t=${mid.toFixed(3)}`, alt: `Session frame at ${clock(mid)} with the crop rectangle` });
+      img.addEventListener("load", () => {
+        const [x, y, w, hh] = rect, W = img.naturalWidth, H = img.naturalHeight;
+        Object.assign(box.style, { left: `${x / W * 100}%`, top: `${y / H * 100}%`, width: `${w / W * 100}%`, height: `${hh / H * 100}%` });
+      });
+      return h("figure", null, h("span", { class: "frame" }, img, box),
+        h("figcaption", null, `Session frame at ${clock(mid)}; the crop is [x ${rect[0]}, y ${rect[1]}, w ${rect[2]}, h ${rect[3]}] in recording pixels`));
+    }
+
+    function inputsView(d) {
+      const c = d.crop, o = d.muse_open, k = d.muse_closed, g = d.gemini, t = d.turn;
+      const head = h("p", { class: "eyebrow" }, h("b", null, "What each reader received"),
+        "· rebuilt from the stored crop by the readers' own request builders, no model call");
+      const drift = d.not_reproducible.length ? h("p", { class: "notrep" }, `Recorded with other settings than the code builds now: ${d.not_reproducible.join("; ")}`) : null;
+      const rect = c.rect == null ? h("p", { class: "notrep" }, "Crop rectangle: not recorded (this clip was read before clips stored it).")
+        : t?.video ? cropOnFrame(t, c.rect) : facts(["crop rectangle", `[x ${c.rect[0]}, y ${c.rect[1]}, w ${c.rect[2]}, h ${c.rect[3]}]`]);
+      const crop = h("section", null, h("h3", null, "Mouth crop ", h("small", null, "· the muted video every reader got")),
+        h("div", { class: "two" },
+          h("figure", null, h("video", { controls: true, loop: true, muted: true, playsinline: true, preload: "metadata", src: c.video }),
+            facts(["crop", c.crop_id], ["frames", `${c.frames} at ${c.fps} fps (${(c.frames / c.fps).toFixed(2)} s)`], ["size", `${c.width} × ${c.height} px`])),
+          rect));
+      const cut = t && h("section", null, h("h3", null, "Turn cut ", h("small", null, "· the span of the session this clip was cut from")),
+        facts(["span", t.start == null ? "session not found" : `${clock(t.start)}–${clock(t.end)} (${(t.end - t.start).toFixed(2)} s)`],
+          ["tracker boxes", t.boxes == null ? "not stored (session recorded before sessions kept its boxes)" : `${t.boxes} in this span`],
+          ["flags", t.flags == null ? "—" : `${Object.entries(t.flags.counts).map(([f, n]) => `${f} × ${n}`).join(", ") || "none"} · over the whole session (${t.flags.frames} frames); flags carry no frame times, so not per span`]));
+      const muse = h("section", null, h("h3", null, "VTT · Muse, open ", h("small", null, `· ${o.k} samples, each sent this same request`)),
+        facts(["model", o.model], ["temperature", o.temperature], ["effort", o.effort], ["images", o.grids ? `${o.grids.length} (at most ${o.max_images}), ${o.grid} grids of ${o.tile_width} px tiles` : `at most ${o.max_images}, ${o.grid} grids of ${o.tile_width} px tiles`],
+          ["frames", `${o.n_frames} at ${o.fps} fps, numbered on every tile`]),
+        o.grids ? h("div", { class: "grids" }, o.grids.map((gr, n) => h("figure", null, h("img", { src: gr.url, loading: "lazy", alt: `Grid ${n + 1}, ${span(gr.frames)}` }), h("figcaption", null, `${n + 1} · ${span(gr.frames)}`))))
+          : h("p", { class: "notrep" }, NOT_REPRODUCIBLE),
+        promptBox(o.prompt), schemaBox(o.schema_name, o.schema));
+      const closed = h("section", null, h("h3", null, "VTT · Muse, closed ", h("small", null, `· 1 call, the same ${o.grids ? o.grids.length + " " : ""}grid images`)),
+        facts(["model", k.model], ["temperature", k.temperature], ["effort", k.effort], ["phrases scored", `${k.phrases.length}: ${k.phrases.join(" · ")} · plus “none of these”`]),
+        promptBox(k.prompt), schemaBox(k.schema_name, k.schema));
+      const gemini = h("section", null, h("h3", null, "VTT · Gemini ", h("small", null, "· 1 call, the crop as video")),
+        h("div", { class: "two" },
+          g.video ? h("figure", null, h("video", { controls: true, loop: true, muted: true, playsinline: true, preload: "metadata", src: g.video }), h("figcaption", null, `the exact ${g.mime} bytes sent (${(g.bytes / 1024).toFixed(1)} KB), sampled at ${g.fps} fps`))
+            : h("p", { class: "notrep" }, NOT_REPRODUCIBLE),
+          facts(["model", g.model], ["video", `${g.mime}, sampled at ${g.fps} fps`], ["answer", `one of ${g.enum.join(", ")} (${g.response_mime_type}), top ${g.logprobs} logprobs`])),
+        promptBox(g.prompt));
+      return [head, drift, crop, cut, muse, closed, gemini].filter(Boolean);
     }
 
     $("user").addEventListener("change", () => loadList($("user").value));

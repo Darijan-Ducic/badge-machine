@@ -206,6 +206,7 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
     with tempfile.TemporaryDirectory() as tmp:
         source, clip = Path(tmp, "recording"), Path(tmp, "clip.mp4")
         source.write_bytes(recording)
+        crop_rect, _ = crop.rectangle(source, faces=faces, mouths=mouths)
         crop_id = crop.crop(source, clip, faces=faces, mouths=mouths)
         frames = crop.count_frames(clip)
         with ThreadPoolExecutor(4) as pool:
@@ -221,7 +222,8 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
         "prompted": prompted, "phrases": list(phrases), "vocab": vocab_id(phrases),
         "config": {**muse_sampler.CONFIG, "crop": crop_id, "k": k, "gemini_model": scorers.GEMINI_MODEL,
                    "viseme_costs": costs_hash()},
-        "tracker_flags": list(tracker_flags), "frames": frames, "label": {"stt_text": stt, "user_edit": None},
+        "tracker_flags": list(tracker_flags), "frames": frames, "crop_rect": crop_rect,
+        "label": {"stt_text": stt, "user_edit": None},
         "samples": samples, "closed": closed, "gemini": gemini_item, **(extra or {}),
     }
     return record, video
@@ -383,6 +385,95 @@ def clip_detail(store, clip_id: str) -> dict | None:
         "gemini": {"top": [{"phrase": p, "p": v} for p, v in sorted(gemini.items(), key=lambda kv: -kv[1])[:5]]},
         "vtt_muse": {"text": muse["phrase"], "p": muse["p"]},
     }
+
+
+# ---------------------------------------------------------------- reader inputs, rebuilt from the stored crop
+
+GRID_KEYS = ("grid", "tile_width", "fps")  # recorded config that shapes the grid images (and the prompts' frame note)
+PROMPT_KEYS = ("prompt_id", "schema", "visemes")  # ... that shapes the Muse prompts and schemas
+
+
+@functools.lru_cache(maxsize=4)
+def _requests(video: bytes, phrases: tuple[str, ...]) -> tuple:
+    """(crop size, grids, open request, closed request, Gemini request) for this stored crop, built by the readers'
+    own builders from the same bytes they were handed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp, "clip.mp4")
+        clip.write_bytes(video)
+        grids = muse_sampler.reader_grids(clip)
+        return (crop._size(clip), grids, muse_sampler.open_request(grids),
+                muse_sampler.closed_request(grids, list(phrases)), scorers.gemini_request(clip, list(phrases)))
+
+
+def _rebuilt(store, clip_id: str):
+    """(record, the inputs the code would send for it now, which recorded settings differ from the code now)."""
+    store = backend(store)
+    record = store.get(clip_id)
+    if record is None or record.get("record") != V1:
+        return None
+    config, now = record["config"], {**muse_sampler.CONFIG, "gemini_model": scorers.GEMINI_MODEL}
+    changed = {key: (config.get(key), now[key]) for key in (*GRID_KEYS, *PROMPT_KEYS, "gemini_model")
+               if config.get(key) != now[key]}
+    return record, _requests(store.video(clip_id), tuple(record["phrases"])), changed
+
+
+def clip_inputs(store, clip_id: str) -> dict | None:
+    """GET /clips/<id>/inputs: what each lip reader was sent for this clip, rebuilt from the stored crop by the
+    readers' own request builders ($0, no model call). The call settings shown are the recorded ones; an input the
+    recording settings built differently than the code builds it now is None, its reason in `not_reproducible`."""
+    rebuilt = _rebuilt(store, clip_id)
+    if rebuilt is None:
+        return None
+    record, ((width, height), grids, open_request, closed_request, gemini_request), changed = rebuilt
+    config = record["config"]
+    grids_ok = not changed.keys() & set(GRID_KEYS)
+    prompts_ok = grids_ok and not changed.keys() & set(PROMPT_KEYS)  # the prompts count the grids and frames
+    gemini_ok = not changed.keys() & {"fps", "gemini_model"}
+    muse_call = {key: config[key] for key in ("model", "temperature", "effort")}
+
+    def muse(request, **fields):
+        spec = request["response_format"]["json_schema"]
+        return {**muse_call, **fields, "schema_name": spec["name"],
+                "prompt": request["messages"][0]["content"][0]["text"] if prompts_ok else None,
+                "schema": spec["schema"] if prompts_ok else None}
+
+    video, text = gemini_request["contents"].parts
+    gemini_config = gemini_request["config"]
+    return {
+        "clip": clip_id,
+        "not_reproducible": [f"{key}: recorded {was!r}, the code now builds {now!r}"
+                             for key, (was, now) in changed.items()],
+        "crop": {"video": f"/clips/{clip_id}/video", "crop_id": config["crop"], "frames": record["frames"],
+                 "fps": config["fps"], "width": width, "height": height, "rect": record.get("crop_rect")},
+        "muse_open": muse(open_request, k=config["k"], max_images=muse_sampler.MAX_IMAGES, grid=config["grid"],
+                          tile_width=config["tile_width"], fps=config["fps"], n_frames=grids.n_frames,
+                          grids=[{"url": f"/clips/{clip_id}/grids/{n}.jpg", "frames": frames}
+                                 for n, frames in enumerate(grids.frames)] if grids_ok else None),
+        "muse_closed": muse(closed_request, phrases=record["phrases"]),
+        "gemini": {"model": config["gemini_model"], "video": f"/clips/{clip_id}/gemini.mp4" if gemini_ok else None,
+                   "mime": video.inline_data.mime_type, "fps": video.video_metadata.fps,
+                   "bytes": len(video.inline_data.data) if gemini_ok else None,
+                   "prompt": text.text if gemini_ok else None, "enum": gemini_config.response_schema["enum"],
+                   "response_mime_type": gemini_config.response_mime_type, "logprobs": gemini_config.logprobs},
+        "turn": {"session": record["session_id"], "i": record["turn"]} if "session_id" in record else None,
+    }
+
+
+def clip_grid(store, clip_id: str, n: int) -> bytes | None:
+    """GET /clips/<id>/grids/<n>.jpg: grid image n exactly as both Muse calls sent it, or None."""
+    rebuilt = _rebuilt(store, clip_id)
+    if rebuilt is None or rebuilt[2].keys() & set(GRID_KEYS):
+        return None
+    images = rebuilt[1][1].images
+    return images[n] if 0 <= n < len(images) else None
+
+
+def clip_gemini_video(store, clip_id: str) -> bytes | None:
+    """GET /clips/<id>/gemini.mp4: the mp4 bytes Gemini was sent, or None."""
+    rebuilt = _rebuilt(store, clip_id)
+    if rebuilt is None or rebuilt[2].keys() & {"fps", "gemini_model"}:
+        return None
+    return rebuilt[1][4]["contents"].parts[0].inline_data.data
 
 
 # ---------------------------------------------------------------- preheat

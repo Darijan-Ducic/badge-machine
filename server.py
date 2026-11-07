@@ -4,18 +4,22 @@ the clip explorer and training (runs, readiness, system versions)."""
 import json
 import os
 import re
+import subprocess
+import tempfile
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import sessions
 from asr import transcribe, transcribe_turns
-from clips import (DEFAULT_USER, backend, clip_detail, clip_list, label_clip, load, phrase_readiness, process_clip,
-                   process_turn, stats, vtt_clip)
+from clips import (DEFAULT_USER, backend, clip_detail, clip_gemini_video, clip_grid, clip_inputs, clip_list,
+                   label_clip, load, phrase_readiness, process_clip, process_turn, stats, vtt_clip)
 from runs import list_runs
 from sam import segment_image
 from scorers import load_phrases
-from sessions import get_session, list_sessions, resume_pending, session_video, start_session
+from sessions import get_session, list_sessions, resume_pending, session_video, slice_boxes, start_session
 from versions import Registry
 
 PORT = int(os.environ.get("PORT", 8765))
@@ -23,9 +27,10 @@ STORE = None  # clip store: None = MongoDB when MONGODB_URI is set, else data/cl
 SESSIONS = None  # session store: None = MongoDB when MONGODB_URI is set, else data/sessions (sessions._backend)
 RUNS = None  # experiment runs: None = MongoDB when MONGODB_URI is set, else data/runs (runs._backend)
 VERSIONS = None  # system versions: None = MongoDB when MONGODB_URI is set, else data/versions (versions.Registry)
-TURNS = ThreadPoolExecutor(4)  # dictation turns are read here, after /dictation has answered
+TURNS = ThreadPoolExecutor(16)  # dictation turns are read here, after /dictation has answered
 CLIP_ROUTE = re.compile(r"^/clips/([^/]+)(/video)?$")
-SESSION_ROUTE = re.compile(r"^/sessions/([^/]+)(/video)?$")
+INPUT_ROUTE = re.compile(r"^/clips/([^/]+)/(inputs|gemini\.mp4|grids/(\d+)\.jpg)$")  # what each lip reader was sent
+SESSION_ROUTE = re.compile(r"^/sessions/([^/]+)(/video|/frame\.jpg)?$")
 LABEL_ROUTE = re.compile(r"^/vtt/([^/]+)/label$")
 STATIC = Path(__file__).parent / "static"
 
@@ -38,6 +43,33 @@ def read_turn(segment: Path, **turn) -> dict:
 def resume_turns() -> int:
     """Queue again the pending dictation turns a restart lost, with the adapter and pool /dictation uses."""
     return resume_pending(read_turn, TURNS, SESSIONS)
+
+
+def turn_cut(session: str, i: int) -> dict:
+    """A dictation turn's cut: its span of the session and how many tracker boxes fall in it (None: the session was
+    recorded before sessions kept its boxes). Flags carry no frame times, so they are counted over the session."""
+    store = sessions._backend(SESSIONS)  # the stored boxes have no public reader
+    record = store.get(session)
+    if record is None:
+        return {"session": session, "i": i, "start": None, "end": None, "video": None, "boxes": None, "flags": None}
+    turn, boxes, flags = record["turns"][i], store.boxes(session), record.get("flags") or []
+    return {"session": session, "i": i, "start": turn["start_ms"] / 1000, "end": turn["end_ms"] / 1000,
+            "video": f"/sessions/{session}/video",
+            "boxes": None if boxes is None else len(slice_boxes(boxes, turn["start_ms"], turn["end_ms"])),
+            "flags": {"frames": len(flags), "counts": dict(Counter(map(str, flags)))}}
+
+
+def session_frame(session_id: str, t: float) -> bytes | None:
+    """The session video's frame at `t` s as a JPEG in the recording's own pixels (where crop rectangles live)."""
+    video = session_video(session_id, store=SESSIONS)
+    if not video:
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp, "session")
+        source.write_bytes(video[0])
+        # -ss after -i decodes from the start: frame-accurate, and MediaRecorder webm has no cues to seek by
+        return subprocess.run(["ffmpeg", "-loglevel", "error", "-i", source, "-ss", f"{t:.3f}", "-frames:v", "1",
+                               "-f", "image2", "-c:v", "mjpeg", "pipe:1"], capture_output=True, check=True).stdout
 
 
 def practice_dataset(user_id: str) -> str | None:
@@ -82,8 +114,9 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         clip, session = CLIP_ROUTE.match(url.path), SESSION_ROUTE.match(url.path)
+        inputs = INPUT_ROUTE.match(url.path)
         api = ("/phrases", "/stats", "/clips", "/sessions", "/runs", "/readiness", "/versions")
-        if url.path not in api and not clip and not session:
+        if url.path not in api and not clip and not session and not inputs:
             super().do_GET()
             return
         user = parse_qs(url.query).get("user", [""])[0] or None  # none: the user of the latest clip / session
@@ -102,12 +135,26 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(200, phrase_readiness(STORE, load_phrases(), user))
             elif url.path == "/versions":
                 self.send_json(200, Registry(VERSIONS).payload())
+            elif session and session.group(2) == "/frame.jpg":
+                frame = session_frame(session.group(1), float(parse_qs(url.query).get("t", ["0"])[0]))
+                self.send_bytes("image/jpeg", frame) if frame else self.send_json(404, {"error": "no session"})
             elif session and session.group(2):
                 video = session_video(session.group(1), store=SESSIONS)  # (bytes, content type)
                 self.send_bytes(video[1], video[0]) if video else self.send_json(404, {"error": "no session"})
             elif session:
                 detail = get_session(session.group(1), store=SESSIONS)
                 self.send_json(200, detail) if detail is not None else self.send_json(404, {"error": "no session"})
+            elif inputs and inputs.group(2) == "inputs":
+                body = clip_inputs(STORE, inputs.group(1))
+                if body is not None and body["turn"] is not None:
+                    body["turn"] = turn_cut(**body["turn"])
+                self.send_json(200, body) if body is not None else self.send_json(404, {"error": "no clip"})
+            elif inputs and inputs.group(3) is not None:
+                image = clip_grid(STORE, inputs.group(1), int(inputs.group(3)))
+                self.send_bytes("image/jpeg", image) if image is not None else self.send_json(404, {"error": "no grid"})
+            elif inputs:
+                video = clip_gemini_video(STORE, inputs.group(1))
+                self.send_bytes("video/mp4", video) if video is not None else self.send_json(404, {"error": "no clip"})
             elif clip.group(2):
                 video = backend(STORE).video(clip.group(1))
                 self.send_bytes("video/mp4", video) if video is not None else self.send_json(404, {"error": "no clip"})
