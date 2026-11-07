@@ -50,7 +50,8 @@ def _grids(clip: Path, max_images: int = 48) -> list[str]:
         return ["data:image/jpeg;base64," + base64.b64encode(files[i].read_bytes()).decode() for i in keep]
 
 
-def gemini_scores(clip: Path, phrases: list[str], fps: int = FPS) -> np.ndarray:
+def gemini_scores(clip: Path, phrases: list[str], fps: int = FPS, usage: dict | None = None) -> np.ndarray:
+    """P(phrase) over `phrases`; pass a dict as `usage` to receive the response's token counts."""
     ids = IDS[: len(phrases)]
     client = genai.Client()  # keep a reference: a garbage-collected Client closes its HTTP connection mid-request
     response = client.models.generate_content(
@@ -65,6 +66,8 @@ def gemini_scores(clip: Path, phrases: list[str], fps: int = FPS) -> np.ndarray:
             response_mime_type="text/x.enum", response_schema={"type": "STRING", "enum": ids},
         ),
     )
+    if usage is not None and response.usage_metadata is not None:
+        usage.update(response.usage_metadata.model_dump(mode="json", exclude_none=True))
     scores = np.zeros(len(ids))
     for candidate in response.candidates[0].logprobs_result.top_candidates[0].candidates:
         if candidate.token.strip() in ids:

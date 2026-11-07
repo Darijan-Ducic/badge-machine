@@ -266,16 +266,20 @@ def _request(prompt: str, grids: Grids, name: str, schema: dict) -> dict:
 
 
 def _call(client, call: str, sample_idx: int, request: dict, finish) -> dict:
-    """One API call as a sample item; `finish(raw) -> (output, error)` post-processes the parsed JSON."""
-    start = time.perf_counter()
+    """One API call as a sample item; `finish(raw) -> (output, error)` post-processes the parsed JSON. The item gets
+    `usage` (the API's token counts) whenever the API returned them."""
+    start, usage = time.perf_counter(), None
     try:
         response = client.chat.completions.create(**request)
         latency_ms = round((time.perf_counter() - start) * 1000)
+        if getattr(response, "usage", None) is not None:
+            usage = response.usage.model_dump(mode="json", exclude_none=True)
         output, error = finish(json.loads(response.choices[0].message.content))
     except Exception as e:  # one failed call must not sink the clip
         latency_ms = round((time.perf_counter() - start) * 1000)
         output, error = None, f"{type(e).__name__}: {e}"
-    return {"call": call, "sample_idx": sample_idx, "latency_ms": latency_ms, "output": output, "error": error}
+    item = {"call": call, "sample_idx": sample_idx, "latency_ms": latency_ms, "output": output, "error": error}
+    return item if usage is None else {**item, "usage": usage}
 
 
 def sample_open(clip: Path, k: int) -> list[dict]:
