@@ -71,6 +71,15 @@ _RAW = ("samples", "closed", "gemini", "bank", "stt")
 _DERIVED = ("order", "hash")  # in a run's stored config, not knobs
 
 
+def load_records(path: str | Path) -> list[dict]:
+    """Raw clip records from a file, in replay order: one JSON array (tools/compare.py --export) or JSON lines.
+    The one `--records` format of tools/experiment.py, tools/iterate.py and tools/compare.py."""
+    text = Path(path).read_text()
+    if text.lstrip().startswith("["):
+        return json.loads(text)
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
 # ---------------------------------------------------------------- config
 
 

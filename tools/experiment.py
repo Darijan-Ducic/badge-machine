@@ -6,7 +6,8 @@ Usage:
   uv run python tools/experiment.py --records clips.jsonl --dataset ID --variant NAME=SPEC [--variant ...]
 
 SPEC (and --baseline) is inline JSON or a path to a JSON file of knobs, e.g. '{"drop": ["viseme_sim"]}'.
---records is JSON lines of raw clip records in the design-doc shape, in replay order. --simulate uses
+--records is raw clip records in the design-doc shape, in replay order: one JSON array (a tools/compare.py --export
+snapshot) or JSON lines (experiment.load_records). --simulate uses
 tests/simulator.py (no network) with real viseme codes; --sim-knobs are `simulate` keyword arguments.
 --hypothesis / --candidate-version: once for every variant, or once per variant in --variant order.
 Runs are saved to --store DIR when given, else MongoDB `runs` when MONGODB_URI is set (uv run --env-file .env),
@@ -73,14 +74,13 @@ def _records(args) -> tuple[list[dict], str]:
         knobs = json.loads(args.sim_knobs) if args.sim_knobs else {}
         records = simulate(seed, n, **knobs, to_visemes=visemes.to_visemes)
         return records, args.dataset or f"sim:seed={seed}:n={n}:{json.dumps(knobs, sort_keys=True)}"
-    lines = Path(args.records).read_text().splitlines()
-    return [json.loads(line) for line in lines if line.strip()], args.dataset or Path(args.records).stem
+    return experiment.load_records(args.records), args.dataset or Path(args.records).stem
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--records", help="JSON lines of raw clip records, in replay order")
+    source.add_argument("--records", help="raw clip records, a JSON array or JSON lines, in replay order")
     source.add_argument("--simulate", metavar="SEED:N", help="N simulated clips from tests/simulator.py")
     parser.add_argument("--sim-knobs", metavar="JSON", help="keyword arguments for simulate()")
     parser.add_argument("--dataset", help="dataset id (default: from the source)")
