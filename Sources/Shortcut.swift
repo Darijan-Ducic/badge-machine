@@ -62,21 +62,23 @@ struct Shortcut: Codable {
 
 @MainActor
 final class GlobalShortcut {
+    private let signature: OSType
     private var handler: EventHandlerRef?
     private var registration: EventHotKeyRef?
     private var nextID: UInt32 = 0
     private var activeID: UInt32 = 0
     var onRelease: (() -> Void)?
 
-    init() {
+    init(signature: OSType) {
+        self.signature = signature
         var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))
         InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let event, let context else { return OSStatus(eventNotHandledErr) }
             var id = EventHotKeyID()
             guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
-                                    nil, MemoryLayout<EventHotKeyID>.size, nil, &id) == noErr,
-                  id.signature == 0x4241494A else { return OSStatus(eventNotHandledErr) }
+                                    nil, MemoryLayout<EventHotKeyID>.size, nil, &id) == noErr else { return OSStatus(eventNotHandledErr) }
             let owner = Unmanaged<GlobalShortcut>.fromOpaque(context).takeUnretainedValue()
+            guard id.signature == owner.signature else { return OSStatus(eventNotHandledErr) }
             let releasedID = id.id
             DispatchQueue.main.async {
                 if owner.activeID == releasedID { owner.onRelease?() }
@@ -89,7 +91,7 @@ final class GlobalShortcut {
         guard handler != nil else { return false }
         nextID &+= 1
         var candidate: EventHotKeyRef?
-        let id = EventHotKeyID(signature: 0x4241494A, id: nextID)
+        let id = EventHotKeyID(signature: signature, id: nextID)
         guard RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, id,
                                   GetApplicationEventTarget(), 0, &candidate) == noErr,
               let candidate else { return false }

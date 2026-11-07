@@ -23,6 +23,9 @@ struct BaijiuApp: App {
 
         MenuBarExtra {
             if !studio.status.isEmpty { Text(studio.status) }
+            Button(studio.phase == .handCursor ? "Stop Moving Cursor" : "Start Moving Cursor",
+                   action: studio.toggleHandCursor)
+                .disabled(!studio.canToggleHandCursor)
             Button("Open Baijiu Machine") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "studio")
@@ -30,8 +33,8 @@ struct BaijiuApp: App {
             Button("Quit") { NSApp.terminate(nil) }
         } label: {
             Image(nsImage: menuMark)
-                .opacity(studio.phase == .recording ? 0.55 : 1)
-                .accessibilityLabel(studio.phase == .recording ? "Baijiu Machine, recording" : "Baijiu Machine")
+                .opacity(studio.phase == .recording || studio.phase == .handCursor ? 0.55 : 1)
+                .accessibilityLabel(studio.phase == .handCursor ? "Baijiu Machine, moving pointer" : studio.phase == .recording ? "Baijiu Machine, recording" : "Baijiu Machine")
         }
     }
 }
@@ -44,7 +47,9 @@ struct StudioView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if studio.choosing {
+            if let mode = studio.editingMode {
+                Text(mode.rawValue)
+                    .font(.system(size: 14, weight: .semibold))
                 VStack(spacing: 14) {
                     Text(studio.pendingShortcut?.label ?? "Press a key…")
                         .font(.system(size: 24, weight: .medium, design: .monospaced))
@@ -63,15 +68,31 @@ struct StudioView: View {
                     }
                 }
             } else {
-                HStack(spacing: 10) {
-                    Text("Keyboard shortcut").font(.system(size: 14, weight: .medium))
-                    Spacer()
-                    Button(studio.shortcut?.label ?? "Choose Shortcut", action: studio.chooseShortcut)
+                ForEach(Studio.Mode.allCases, id: \.self) { mode in
+                    if mode == .cursor { Divider() }
+                    HStack(alignment: .center, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(mode.rawValue).font(.system(size: 14, weight: .semibold))
+                            Text(mode.description)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                        let shortcut = studio.shortcuts[mode]
+                        Button(shortcut?.label ?? "Choose Shortcut") {
+                            studio.chooseShortcut(for: mode)
+                        }
                         .buttonStyle(.borderedProminent)
                         .tint(ink)
-                        .accessibilityLabel(studio.shortcut.map { "Change shortcut, currently \($0.label)" } ?? "Choose Shortcut")
+                        .accessibilityLabel(shortcut.map { "Change \(mode.rawValue) shortcut, currently \($0.label)" }
+                            ?? "Choose Shortcut for \(mode.rawValue)")
                         .disabled(studio.phase != .ready)
+                    }
                 }
+                Text("Press a shortcut to start. Press it again to stop.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
 
             if !studio.status.isEmpty {
@@ -81,7 +102,7 @@ struct StudioView: View {
             }
         }
         .padding(22)
-        .frame(width: 370)
+        .frame(width: 435)
         .foregroundStyle(ink)
         .background(paper)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
