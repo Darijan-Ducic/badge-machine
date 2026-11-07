@@ -65,6 +65,9 @@ struct StudioView: View {
                         Button("Confirm", action: studio.confirmShortcut)
                             .buttonStyle(.borderedProminent)
                             .tint(ink)
+                    } else {
+                        Button("Use Fn", action: studio.previewFn)
+                            .buttonStyle(.link)
                     }
                 }
             } else {
@@ -93,6 +96,17 @@ struct StudioView: View {
                 Text("Press a shortcut to start. Press it again to stop.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+            }
+
+            if studio.needsFnSetup {
+                Divider()
+                Text("Finish setting up Fn")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("macOS requires Input Monitoring so Baijiu Machine can detect Fn while you use another app.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open Input Monitoring", action: studio.openInputMonitoring)
             }
 
             if !studio.status.isEmpty {

@@ -42,7 +42,7 @@ final class Studio: ObservableObject {
     ]
     private let fnMonitor = FnKeyMonitor()
     private var fnArmed = false
-    private var requestedInputMonitoring = false
+    @Published private(set) var fnMonitoringReady = false
     private let gemini: Gemini?
     private let muse: MuseSpark?
     private var target: CursorTarget?
@@ -65,6 +65,8 @@ final class Studio: ObservableObject {
     private var fnMode: Mode? {
         Mode.allCases.first { shortcuts[$0]?.isFn == true }
     }
+
+    var needsFnSetup: Bool { !choosing && fnMode != nil && !fnMonitoringReady }
 
     private func activate(_ mode: Mode) {
         switch mode {
@@ -155,19 +157,14 @@ final class Studio: ObservableObject {
         fnArmed = false
         editingMode = mode
         status = ""
-        if !fnMonitor.start() && !requestedInputMonitoring {
-            requestedInputMonitoring = true
-            if !CGRequestListenEventAccess() {
-                status = "Allow Input Monitoring to capture Fn."
-            }
-        }
+        resumeFnMonitoring()
     }
 
     func cancelChoosing() {
         editingMode = nil
         pendingShortcut = nil
         status = ""
-        if fnMode == nil { fnMonitor.stop() }
+        resumeFnMonitoring()
         for mode in Mode.allCases { restoreShortcut(for: mode) }
     }
 
@@ -185,16 +182,22 @@ final class Studio: ObservableObject {
     func previewFn() {
         guard choosing else { return }
         pendingShortcut = .fn
-        status = "For Fn without emoji, set the Globe key to Do Nothing in Keyboard settings."
+        status = ""
     }
 
     func resumeFnMonitoring() {
-        guard choosing || fnMode != nil else { return }
-        if fnMonitor.start() {
-            if status == "Allow Input Monitoring to capture Fn." { status = "" }
+        if choosing || fnMode != nil {
+            fnMonitoringReady = fnMonitor.start()
         } else {
-            status = "Allow Input Monitoring to capture Fn."
+            fnMonitor.stop()
+            fnMonitoringReady = false
         }
+    }
+
+    func openInputMonitoring() {
+        if !CGPreflightListenEventAccess() { _ = CGRequestListenEventAccess() }
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!
+        NSWorkspace.shared.open(url)
     }
 
     private func handleFn(pressed: Bool) {
@@ -219,13 +222,7 @@ final class Studio: ObservableObject {
             status = "That shortcut is already set for \(conflict.key.rawValue)."
             return
         }
-        if choice.isFn {
-            guard fnMonitor.start() else {
-                _ = CGRequestListenEventAccess()
-                status = "Allow Input Monitoring to use Fn, then reopen Baijiu Machine."
-                return
-            }
-        } else if hotkeys[mode]?.register(choice) != true {
+        if !choice.isFn && hotkeys[mode]?.register(choice) != true {
             status = "That shortcut is already in use. Try another."
             return
         }
@@ -234,10 +231,8 @@ final class Studio: ObservableObject {
         UserDefaults.standard.set(try? JSONEncoder().encode(choice), forKey: mode.preferenceKey)
         editingMode = nil
         pendingShortcut = nil
-        if fnMode == nil { fnMonitor.stop() }
-        requestInsertionAccess(message: mode == .cursor
-            ? "Allow Accessibility access to move the pointer."
-            : "Allow Accessibility access to type in other apps.")
+        status = ""
+        resumeFnMonitoring()
         for other in Mode.allCases where other != mode { restoreShortcut(for: other) }
     }
 
