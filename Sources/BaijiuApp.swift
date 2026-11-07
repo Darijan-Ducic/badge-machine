@@ -24,8 +24,8 @@ struct BaijiuApp: App {
         MenuBarExtra {
             if !studio.status.isEmpty { Text(studio.status) }
             Button("Open Baijiu Machine") {
-                openWindow(id: "studio")
                 NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "studio")
             }
             Button("Quit") { NSApp.terminate(nil) }
         } label: {
@@ -38,25 +38,34 @@ struct BaijiuApp: App {
 
 struct StudioView: View {
     @ObservedObject var studio: Studio
-    @State private var keyMonitor: Any?
 
     private let ink = Color(white: 0.08)
     private let paper = Color(red: 0.965, green: 0.965, blue: 0.953)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Text("Keyboard shortcut").font(.system(size: 14, weight: .medium))
-                Spacer()
-
-                if studio.choosing {
+            if studio.choosing {
+                VStack(spacing: 14) {
                     Text(studio.pendingShortcut?.label ?? "Press a key…")
-                        .font(.system(size: 13, design: .monospaced))
-                    Button("Confirm", action: studio.confirmShortcut)
-                        .buttonStyle(.borderedProminent)
-                        .tint(ink)
-                        .disabled(studio.pendingShortcut == nil)
-                } else {
+                        .font(.system(size: 24, weight: .medium, design: .monospaced))
+                        .accessibilityLabel(studio.pendingShortcut.map { "Selected key: \($0.label)" } ?? "Press a key")
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 8))
+                        .background {
+                            ShortcutKeyCapture(onKeyDown: studio.recordShortcut)
+                                .accessibilityHidden(true)
+                        }
+
+                    if studio.pendingShortcut != nil {
+                        Button("Confirm", action: studio.confirmShortcut)
+                            .buttonStyle(.borderedProminent)
+                            .tint(ink)
+                    }
+                }
+            } else {
+                HStack(spacing: 10) {
+                    Text("Keyboard shortcut").font(.system(size: 14, weight: .medium))
+                    Spacer()
                     Button(studio.shortcut?.label ?? "Choose Shortcut", action: studio.chooseShortcut)
                         .buttonStyle(.borderedProminent)
                         .tint(ink)
@@ -75,17 +84,45 @@ struct StudioView: View {
         .frame(width: 370)
         .foregroundStyle(ink)
         .background(paper)
-        .onAppear {
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard studio.choosing else { return event }
-                studio.recordShortcut(event)
-                return nil
-            }
-        }
         .onDisappear {
-            if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
-            keyMonitor = nil
             if studio.choosing { studio.cancelChoosing() }
+        }
+    }
+}
+
+private struct ShortcutKeyCapture: NSViewRepresentable {
+    let onKeyDown: (NSEvent) -> Void
+
+    func makeNSView(context: Context) -> KeyView {
+        let view = KeyView()
+        view.onKeyDown = onKeyDown
+        return view
+    }
+
+    func updateNSView(_ view: KeyView, context: Context) {
+        view.onKeyDown = onKeyDown
+    }
+
+    final class KeyView: NSView {
+        var onKeyDown: ((NSEvent) -> Void)?
+        override var acceptsFirstResponder: Bool { true }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(self)
+        }
+
+        override func keyDown(with event: NSEvent) {
+            onKeyDown?(event)
+        }
+
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            guard window?.firstResponder === self else { return false }
+            onKeyDown?(event)
+            return true
         }
     }
 }
