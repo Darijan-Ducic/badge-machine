@@ -108,8 +108,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class PAID,FREE,GATE,ERR,AGENT,VER built
-  class SETS,REFIT building
+  class PAID,FREE,VER built
+  class SETS,REFIT,ERR,AGENT,GATE building
 ```
 
 ### Agent iteration
@@ -139,8 +139,9 @@ sequenceDiagram
   L-->>R: run record: config hash, metrics, per-clip wins/losses
   R-->>A: evidence
   alt session judges: held-out VTT accuracy up
+    A->>V: adopt: current → candidate version
     R-->>H: proposed promotion + curve vs baseline (Training page)
-    H->>V: approve → new system version
+    H->>V: approve → live = current
     A->>S: re-fit every user's personal layers
   else not better
     R-->>A: logged as a failed idea, reverted

@@ -33,8 +33,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STREAM,FAIL building
-  class AGENT,CHANGE,CAND,GATE,ADOPT,ROLL,TEST planned
+  class CAND,ADOPT,ROLL,TEST built
+  class STREAM,FAIL,AGENT,CHANGE,GATE building
 ```
 
 ## Performance is versioning
