@@ -45,7 +45,7 @@ S1 = record(1, {
     "speech": {"present": True, "frames": [0, 20]},
     "quality": {"mouth_visible": "partial", "blur": "low", "occluded_frames": [[5, 9]]},
     "visemes": visemes(["g", "o", "u", "p"]),
-    "slots": [slot(("go", 0.9)), slot(("up", 0.6), ("on", 0.4))],
+    "slots": [slot(("go", 0.9)), slot(("up", 0.6), ("on", 0.4), ("in", 0.2))],
     "hypotheses": hyps(("go up", 0.5), ("go on", 0.4), ("Go on.", 0.1)),
 })
 FAILED = record(2, None, error="timeout")
@@ -59,7 +59,7 @@ S2 = record(3, {
     "hypotheses": hyps(("no", 0.7), ("go on", 0.2)),
 })
 SAMPLES = [S0, S1, FAILED, S2]
-CLOSED = {"scores": {"go on": 0.5, "go up": 0.2, "no": 0.1, "stop": 0.15, "help me": 0.08}, "none": 0.3}
+CLOSED = {"scores": {"go on": 0.5, "go up": 0.2, "no": 0.1, "stop": 0.15, "wait": 0.12, "help me": 0.08}, "none": 0.3}
 GEMINI = {"go on": 0.5, "go up": 0.1, "no": 0.15, "stop": 0.25}
 # Bank entries: 4 phrases + past STT texts "help me" and "wait" -> bank size 6; total count 3+1+2+1 = 7.
 # prior denominator = total + bank size + 1 = 7 + 6 + 1 = 14.
@@ -68,8 +68,9 @@ BANK = {"phrases": ["go on", "go up", "no", "stop"], "counts": {"go on": 3, "no"
 # Pool, in insertion order:
 #   hypotheses:      go on, no (S0); go up (S1; "go on"/"Go on." are duplicates); S2 adds nothing
 #   recombinations:  S0 top-2 alts per slot: go/no x on/up -> go on .40, go up .32, no on .10, (no up .08 dropped)
-#                    -> adds "no on"; S1 adds nothing; S2: no .7, go .2 -> adds "go"
-#   closed top 3:    go on .5, go up .2, stop .15 -> adds "stop"
+#                    -> adds "no on"; S1: go x up/on (its 3rd alt "in" is outside the top 2) -> go up .54, go on .36
+#                    -> adds nothing; S2: no .7, go .2 -> adds "go"
+#   closed top 3:    go on .5, go up .2, stop .15 -> adds "stop" (4th, "wait" .12, stays out)
 #   Gemini top 3:    go on .5, stop .25, no .15 -> adds nothing
 #   bank nearest 3:  min distance over samples (observed g o n / g o u p / h e l p):
 #                    go on 0, go up 0, help me 2/6 (vs h e l p), no 2/3, stop 3/4, wait 1 -> adds "help me"
