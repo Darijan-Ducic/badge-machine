@@ -17,9 +17,14 @@
   `awk '/^```mermaid/{n++;f=1;next}/^```/{f=0}f{print > ("/tmp/pipeline-" n ".mmd")}' docs/pipeline.md && for f in /tmp/pipeline-*.mmd; do mmdc -q -i "$f" -o /tmp/check.svg || echo "BROKEN: $f"; done`
 
 ## Self-improvement
-- The iterating agent is a Claude Code session, not a hard-coded loop — it reads VTT vs STT results, decides what to
-  change (code, prompts, features, costs, thresholds), and records each change as a version in `versions.py`.
+- A local Claude Code session is the iteration agent for BOTH loops — the system (training) loop and each user's
+  personal (preheat) loop — because an agent that understands the system makes better changes than a hard-coded
+  loop. NEVER use Muse as the iteration agent; Muse agents are reserved for the product, later.
+- NOTHING optimizes on its own: no per-clip auto re-fit, no unattended loop. Scripts, including `iterate.py`'s
+  self-optimization loop, are instruments the session runs and checks; the session decides what to change (code,
+  prompts, features, costs, thresholds) and records each change as a version in `versions.py`.
 - ALWAYS add iteration capability as an agent-usable script that reports evidence (paired per-clip wins/losses,
   held-out delta, cost) plus a section in the skill book; NEVER as a new knob enum, fixed adopt threshold, or
   in-code proposer. The agent never tunes on the test split.
-- Update the skill book in the same commit as any change to the iteration scripts.
+- The skill book is the agent's cookbook: the history of what was tried (runs, evidence, parked levers) and every
+  tunable post-processing knob, ranked by impact. Update it in the same commit as any change to the iteration scripts.
