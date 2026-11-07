@@ -1,0 +1,8 @@
+{
+  "_doc": "visemes-v1 edit costs for visemes.viseme_distance(a, b). sub keys are '<code in a>|<code in b>' (e.g. \"P|F\": 0.6); an entry also covers the reverse unless the reverse is listed. Unlisted pairs cost default_sub; same code costs 0. ins = code only in b, del = code only in a. All costs in [0, 1].",
+  "alphabet": "visemes-v1",
+  "default_sub": 1,
+  "ins": 1,
+  "del": 1,
+  "sub": {}
+}
