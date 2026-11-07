@@ -124,3 +124,30 @@ def press_text(html: str) -> str:
     parser = _Press()
     parser.feed(html)
     return " ".join(parser.paragraphs)
+
+
+def repeats(hyp: list[str], alignment: Alignment, longest: int = 4) -> int:
+    """Words of spurious immediate phrase repeats ("road to road to" -> 2): an n-gram (n <= longest) said again right
+    after itself where the alignment marks a word of either copy as inserted, i.e. the reference has it once."""
+    ops, k, count = alignment.ops, 1, 0
+    while k < len(hyp):
+        for n in range(min(longest, k, len(hyp) - k), 0, -1):
+            if hyp[k:k + n] == hyp[k - n:k] and "i" in ops[k - n:k + n]:
+                count, k = count + n, k + n
+                break
+        else:
+            k += 1
+    return count
+
+
+def collapse_repeats(ws: list[str], longest: int = 4) -> list[str]:
+    """Drop the second copy of every immediately repeated n-gram (n <= longest, longest first): "road to road to" ->
+    "road to". The candidate label fix; it also drops a repeat that was really spoken."""
+    out = []
+    for w in ws:
+        out.append(w)
+        for n in range(min(longest, len(out) // 2), 0, -1):
+            if out[-n:] == out[-2 * n:-n]:
+                del out[-n:]
+                break
+    return out
