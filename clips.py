@@ -27,7 +27,7 @@ import crop
 import muse_sampler
 import scorers
 import visemes
-from candidates import FEATURES, featurize, match
+from candidates import FEATURES, NONE, featurize, match
 from scorer import STAGES, auto_send, predict, prequential, stage_for, train
 
 DATA = Path("data/clips")
@@ -436,6 +436,27 @@ def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=Non
         "read": read,
         "correct": correct,
         "stats": stats(records, phrases, user=user_id),
+    }
+
+
+def process_turn(segment: Path, *, transcript: str | None, boxes: list | None, user_id: str, session_id: str,
+                 turn: int, mode: str, phrases: list[str], store=None, sample_open=None, score_closed=None,
+                 gemini=None) -> dict:
+    """Dictation: one session turn (sessions.start_session's `process_turn`) as a clip labeled by the turn's own STT,
+    cropped with the turn's boxes and read back like process_clip; returns the fields sessions.TURN_RESULT keeps.
+    A ∅ VTT pick is "∅" (candidates.NONE), which static/vtt.js shows as none of these."""
+    record = record_clip(Path(segment).read_bytes(), phrases=phrases, user_id=user_id, mode=mode, k=PREHEAT_K,
+                         transcript=transcript, mouths=boxes, extra={"session_id": session_id, "turn": turn},
+                         store=store, sample_open=sample_open, score_closed=score_closed, gemini=gemini)
+    _, read, correct = _read_back(record, store)
+    vtt, gemini_read, muse = read["fused"], read["gemini"], read["muse"]
+    return {
+        "clip_id": record["id"],
+        "vtt": {"text": NONE if vtt["phrase"] == NONE_TEXT else vtt["phrase"], "p": vtt["p"]},
+        "vtt_gemini": {"text": gemini_read["phrase"], "p": gemini_read["p"]},
+        "vtt_muse": {"text": muse["phrase"], "p": muse["p"]},
+        "correct": None if correct is None else {"vtt": correct["fused"], "gemini": correct["gemini"],
+                                                 "muse": correct["muse"]},
     }
 
 
