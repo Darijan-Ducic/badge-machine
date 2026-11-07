@@ -30,6 +30,7 @@ CORE = ["vote", "top_vote", "mean_score", "closed", "gemini", "is_none", "none_c
 DEFAULT_WEIGHTS = np.array([{"vote": 1.0, "top_vote": 1.0, "mean_score": 1.0, "closed": 1.0, "gemini": 1.0,
                              "none_closed": 1.0, "no_speech": 1.0}.get(name, 0.0) for name in FEATURES])
 _CORE_COLUMNS = [FEATURES.index(name) for name in CORE]
+TEMPERATURE_MIN = 1e-2  # the temperature scale stays positive, so it never reverses the default ranking
 
 
 @dataclass
@@ -58,7 +59,8 @@ def _fit(stage: str, features: np.ndarray, mask: np.ndarray, labels: np.ndarray)
     if stage == "defaults":
         return DEFAULT_WEIGHTS.copy()
     if stage == "temperature":
-        return fit((features @ DEFAULT_WEIGHTS)[..., None], labels, mask=mask)[0] * DEFAULT_WEIGHTS
+        scale = fit((features @ DEFAULT_WEIGHTS)[..., None], labels, mask=mask, bounds=[(TEMPERATURE_MIN, None)])[0]
+        return scale * DEFAULT_WEIGHTS
     columns = _CORE_COLUMNS if stage == "core" else list(range(len(FEATURES)))
     weights = np.zeros(len(FEATURES))
     weights[columns] = fit(features[..., columns], labels, mask=mask)
@@ -78,9 +80,15 @@ def auto_send(model: Model, probs: np.ndarray) -> bool:
     return int(np.argmax(probs)) != len(probs) - 1 and float(np.max(probs)) >= model.threshold
 
 
+def trains(clip: Clip) -> bool:
+    """A labeled clip trains the phrase scorer, except a sentence turn whose STT missed the pool: a dictation sentence
+    is almost never an exact candidate, so its ∅ label would only teach that ∅ wins."""
+    return clip.label is not None and not (clip.sentence is not None and clip.label == len(clip.pool) - 1)
+
+
 def train(clips: list[Clip], precision: float = 0.9, gate: bool = True, stages: list[tuple[int, str]] = STAGES
           ) -> Model:
-    labeled = [c for c in clips if c.label is not None]
+    labeled = [c for c in clips if trains(c)]
     stage = stage_for(len(labeled), stages)
     if stage == "defaults":
         return Model(stage, DEFAULT_WEIGHTS.copy(), np.inf)
@@ -117,9 +125,11 @@ def prequential(clips: list[Clip], stages: list[tuple[int, str]] = STAGES) -> li
         probs = predict(model, [clip])[0]
         top, none = int(probs.argmax()), len(clip.pool) - 1
         labeled = clip.label is not None
+        fused = _matches(clip.stt, clip.sentence) if clip.sentence is not None else (
+            top != none and _matches(clip.stt, clip.pool[top]))
         history.append({
             "stage": model.stage,
-            "fused": (top != none and _matches(clip.stt, clip.pool[top])) if labeled else None,
+            "fused": fused if labeled else None,
             "gemini": _matches(clip.stt, clip.gemini_pick) if labeled else None,
             "muse": _matches(clip.stt, clip.muse_pick) if labeled else None,
             "confidence": float(probs.max()),

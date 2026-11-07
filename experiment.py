@@ -251,11 +251,14 @@ def _score(records: list[dict], clips: list[Clip], split: str, plan) -> tuple[di
     for clip, p in zip(scored, probs):
         none = len(clip.pool) - 1
         ranked = [int(j) for j in np.argsort(-p, kind="stable") if j != none]
-        vtts.append("" if int(p.argmax()) == none else clip.pool[int(p.argmax())])
+        if clip.sentence is not None:  # a sentence turn: the sentence path is its VTT
+            vtts.append(clip.sentence)
+        else:
+            vtts.append("" if int(p.argmax()) == none else clip.pool[int(p.argmax())])
         top3.append(any(_matches(clip.stt, clip.pool[j]) for j in ranked[:3]))
-    history = [{"fused": int(p.argmax()) != len(c.pool) - 1 and _matches(c.stt, c.pool[int(p.argmax())]),
+    history = [{"fused": bool(vtt) and _matches(c.stt, vtt),
                 "gemini": _matches(c.stt, c.gemini_pick), "muse": _matches(c.stt, c.muse_pick)}
-               for c, p in zip(scored, probs)]
+               for c, vtt in zip(scored, vtts)]
     stts = [c.stt for c in scored]
     sent_correct = [h["fused"] for h, send in zip(history, sent or []) if send]
     metrics = {

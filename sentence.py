@@ -6,10 +6,13 @@ Every function works on word lists; `words(text)` normalizes with preheat._norma
 
 align(a, b)                 a minimum unit-cost edit alignment of two word lists: (x, y) pairs, None for a gap
 mbr(hyps, weights, dist)    index of the hypothesis with the least weighted distance to all of them (ties: first)
-rover(hyps, weights, gaps)  a confusion network built by aligning each hypothesis in turn; per column the word with
-                            the most weight wins, the gap included as a competitor when gaps=True (ties: first seen)
+network(hyps, weights)      the confusion network: each hypothesis aligned in turn, columns {word or None: weight}
+rover(hyps, weights, gaps)  per network column the word with the most weight wins, the gap included as a competitor
+                            when gaps=True (ties: first seen)
 slot_words(output)          one sample's best slot alternative per slot, in slot order
 """
+
+from statistics import median
 
 from preheat import _normalize
 
@@ -71,14 +74,17 @@ def mbr(hyps: list[list[str]], weights: list[float] | None = None, distance=None
     return min(range(len(hyps)), key=lambda i: (risks[i], i))
 
 
-def rover(hyps: list[list[str]], weights: list[float] | None = None, gaps: bool = True) -> list[str]:
+def network(hyps: list[list[str]], weights: list[float] | None = None) -> list[dict]:
+    """The confusion network: columns {word (None = gap): weight}, in first-seen order, aligning each hypothesis in
+    turn to the network so far (a column already holding a gap is skipped for free; a word no column has is a new
+    column, where every earlier hypothesis holds a gap)."""
     weights = [1.0] * len(hyps) if weights is None else weights
-    columns: list[dict] = []  # word (None = gap) -> weight, in first-seen order
+    columns: list[dict] = []
     before = 0.0  # total weight of the hypotheses already in the network
     for hyp, weight in zip(hyps, weights):
-        def cost(c, j):
+        def cost(c, j, hyp=hyp, columns=columns):
             if c is None:
-                return 1  # a word no column has: a new column
+                return 1
             return int(None not in columns[c]) if j is None else int(hyp[j] not in columns[c])
 
         merged = []
@@ -88,13 +94,44 @@ def rover(hyps: list[list[str]], weights: list[float] | None = None, gaps: bool 
             column[key] = column.get(key, 0.0) + weight
             merged.append(column)
         columns, before = merged, before + weight
+    return columns
+
+
+def rover(hyps: list[list[str]], weights: list[float] | None = None, gaps: bool = True) -> list[str]:
     out = []
-    for column in columns:
+    for column in network(hyps, weights):
         options = [(key, w) for key, w in column.items() if gaps or key is not None]
         best = max(options, key=lambda item: item[1])[0]  # max keeps the first of equal weights
         if best is not None:
             out.append(best)
     return out
+
+
+def _top_words(output: dict) -> tuple[list[str], float] | None:
+    hyps = [(words(h["text"]), h["s"]) for h in output.get("hypotheses") or []]
+    hyps = [h for h in hyps if h[0]]
+    return max(hyps, key=lambda h: h[1]) if hyps else None  # max keeps the first of equal scores
+
+
+def read(outputs: list[dict], phrases: list[str]) -> tuple[str, float] | None:
+    """The sentence path for one clip's valid open outputs, or None when the clip belongs on the phrase path.
+
+    A clip is a sentence turn when the median word count of its samples' top hypotheses exceeds the longest phrase in
+    the phrase list. Its sentence is the ROVER (gaps on) of those top hypotheses, highest score first; its confidence
+    is the mean share of its column's weight each chosen word holds."""
+    tops = [t for t in map(_top_words, outputs) if t is not None]
+    longest = max((len(words(p)) for p in phrases), default=0)
+    if not tops or median(len(t[0]) for t in tops) <= longest:
+        return None
+    tops.sort(key=lambda t: -t[1])  # stable: equal scores keep sample order
+    shares = []
+    for column in network([t[0] for t in tops]):
+        word, weight = max(column.items(), key=lambda item: item[1])
+        if word is not None:
+            shares.append((word, weight / sum(column.values())))
+    if not shares:
+        return None
+    return " ".join(w for w, _ in shares), sum(s for _, s in shares) / len(shares)
 
 
 def slot_words(output: dict) -> list[str]:
