@@ -90,6 +90,18 @@ def test_history_reports_the_spec_accuracy_definitions():
     assert (second["fused"], second["gemini"], second["muse"], second["pool_hit"]) == (True, False, True, True)
 
 
+def test_an_unlabeled_clip_gets_no_verdict_and_is_no_pool_hit():
+    # A lip-mode clip before the user labels it: no STT, so nothing to be right or wrong about.
+    hit = hand_clip([{"vote": 1.0}], {}, label=0, stt="go on", pool=["go on"], gemini_pick="go on", muse_pick="go on")
+    unlabeled = hand_clip([{"vote": 1.0}], {}, label=None, stt=None, pool=["go on"], gemini_pick="go on",
+                          muse_pick="go on")
+
+    history = prequential([hit, unlabeled, hit])
+
+    verdicts = [(h["fused"], h["gemini"], h["muse"], h["pool_hit"]) for h in history]
+    assert verdicts == [(True, True, True, True), (None, None, None, None), (True, True, True, True)]
+
+
 def test_accuracy_climbs_once_a_feature_the_defaults_ignore_carries_the_signal():
     clips = featurized(simulate(4, 140, muse=0.5, closed=0.5, gemini=0.5, visemes=0.8))
 
