@@ -6,10 +6,13 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import gridfs
+import httpx
+import openai
 import pymongo
 import pytest
 
@@ -23,7 +26,8 @@ SUMMARY_KEYS = {"id", "t", "user_id", "dataset", "source", "start", "end", "dura
                 "skipped", "vtt_correct", "speech_s", "covered_s", "lost_s"}
 DETAIL_KEYS = {"id", "t", "user_id", "dataset", "source", "start", "end", "status", "video", "stt_text", "turns",
                "speech_s", "covered_s", "lost_s"}
-TURN_KEYS = {"i", "start", "end", "stt", "status", "reason", "clip_id", "vtt", "vtt_gemini", "vtt_muse", "correct"}
+TURN_KEYS = {"i", "start", "end", "stt", "status", "reason", "attempts", "clip_id", "vtt", "vtt_gemini", "vtt_muse",
+             "correct"}
 
 
 # ---- pure helpers: segmentation -------------------------------------------------------------------------------------
@@ -167,7 +171,8 @@ def audio_seconds(recording: bytes) -> float:
 
 
 class FakeSTT:
-    """transcribe_turns stand-in: answers by the length of the audio it gets (the whole session vs each turn)."""
+    """transcribe_turns stand-in: answers by the length of the audio it gets (the whole session vs each turn). An answer
+    may be a list of answers, given one per call; the last one repeats."""
 
     def __init__(self, by_seconds):
         self.by_seconds, self.calls = by_seconds, []
@@ -176,6 +181,8 @@ class FakeSTT:
         seconds = audio_seconds(recording)
         self.calls.append(seconds)
         text = self.by_seconds[min(self.by_seconds, key=lambda s: abs(s - seconds))]
+        if isinstance(text, list):
+            text = text.pop(0) if len(text) > 1 else text[0]
         if isinstance(text, Exception):
             raise text
         return {"text": text, "turns": [{"start_ms": 0, "end_ms": round(seconds * 1000), "text": text}] if text else []}
@@ -190,22 +197,26 @@ def probe(path) -> dict:
 
 
 class FakeClips:
-    """process_turn stand-in: records each call (and probes its segment), returns the real result shape."""
+    """process_turn stand-in: records each call (and probes its segment), returns the real result shape. `raises`
+    {turn: [errors]} makes that turn's calls raise each error in turn, then succeed."""
 
-    def __init__(self, fail_turn=None, gate=None, during=None, probe_segments=False):
+    def __init__(self, fail_turn=None, gate=None, during=None, probe_segments=False, raises=None):
         self.fail_turn, self.gate, self.during, self.probe_segments = fail_turn, gate, during, probe_segments
-        self.calls = {}
+        self.raises, self.calls, self.count = raises or {}, {}, Counter()
 
     def __call__(self, segment_path, *, transcript, boxes, user_id, session_id, turn, mode):
         if self.gate is not None:
             self.gate.wait(3)
         if self.during is not None:
             self.during(session_id)
+        self.count[turn] += 1
         self.calls[turn] = {"path": segment_path, "transcript": transcript, "boxes": boxes, "user_id": user_id,
                             "session_id": session_id, "mode": mode,
                             **(probe(segment_path) if self.probe_segments else {})}
         if turn == self.fail_turn:
             raise RuntimeError("muse 503")
+        if self.raises.get(turn):
+            raise self.raises[turn].pop(0)
         # Verdicts differ per reader (VTT right on even turns, Gemini never, Muse always) so counts can't mix them up.
         return {"clip_id": f"clip-{session_id}-{turn}",
                 "vtt": {"text": transcript, "p": 0.81}, "vtt_gemini": {"text": transcript, "p": 0.64},
@@ -322,6 +333,98 @@ def test_when_the_session_stt_fails_the_session_is_kept_as_failed_and_the_error_
 
     (session,) = list_sessions("u1", store=store)["sessions"]
     assert session["status"] == "failed"
+
+
+# ---- retries: a transient failure (timeout, connection error, HTTP 5xx) is tried again after 1 s, then 4 s -----------
+
+REQUEST = httpx.Request("POST", "https://api.example.test/v1/responses")
+
+
+def http_error(status, message=None):
+    return httpx.HTTPStatusError(message or f"HTTP {status}", request=REQUEST,
+                                 response=httpx.Response(status, request=REQUEST))
+
+
+TRANSIENT = {
+    "httpx read timeout": lambda: httpx.ReadTimeout("timed out", request=REQUEST),
+    "httpx connect error": lambda: httpx.ConnectError("connection refused", request=REQUEST),
+    "http 503": lambda: http_error(503),
+    "openai 500": lambda: openai.InternalServerError("server error", response=httpx.Response(500, request=REQUEST),
+                                                     body=None),
+    "openai connection error": lambda: openai.APIConnectionError(request=REQUEST),
+    "timeout": lambda: TimeoutError("timed out"),
+}
+DETERMINISTIC = {"value error": lambda: ValueError("no mouth boxes"), "http 400": lambda: http_error(400)}
+
+
+def attempts(session_id, store):
+    return [t["attempts"] for t in get_session(session_id, store=store)["turns"]]
+
+
+def test_a_transient_clip_failure_is_retried_after_1_s_then_4_s_until_it_succeeds(store, recording):
+    clips, sleeps = FakeClips(raises={0: [http_error(503), httpx.ConnectError("reset", request=REQUEST)]}), []
+
+    result = run(recording, store, clips=clips, sleep=sleeps.append)
+
+    assert statuses(result["session"], store)[0] == ("processed", None)
+    assert (clips.count[0], sleeps) == (3, [1, 4])
+    assert [attempts(result["session"], store)[i] for i in (0, 3)] == [3, 1]
+
+
+@pytest.mark.parametrize("error", TRANSIENT.values(), ids=TRANSIENT.keys())
+def test_each_kind_of_transient_clip_error_is_retried(store, recording, error):
+    clips, sleeps = FakeClips(raises={0: [error()]}), []
+
+    result = run(recording, store, clips=clips, sleep=sleeps.append)
+
+    assert (statuses(result["session"], store)[0], clips.count[0], sleeps) == (("processed", None), 2, [1])
+
+
+def test_a_turn_whose_clip_fails_every_try_fails_after_3_attempts_with_the_last_error(store, recording):
+    errors = [httpx.ReadTimeout("first try", request=REQUEST), http_error(502), http_error(503, "third try")]
+    clips, sleeps = FakeClips(raises={0: errors}), []
+
+    result = run(recording, store, clips=clips, sleep=sleeps.append)
+
+    (status, reason) = statuses(result["session"], store)[0]
+    assert (status, attempts(result["session"], store)[0], clips.count[0], sleeps) == ("failed", 3, 3, [1, 4])
+    assert "third try" in reason
+    assert get_session(result["session"], store=store)["status"] == "done"
+
+
+@pytest.mark.parametrize("error", DETERMINISTIC.values(), ids=DETERMINISTIC.keys())
+def test_a_deterministic_clip_error_is_not_retried(store, recording, error):
+    clips, sleeps = FakeClips(raises={0: [error()]}), []
+
+    result = run(recording, store, clips=clips, sleep=sleeps.append)
+
+    assert statuses(result["session"], store)[0][0] == "failed"
+    assert (attempts(result["session"], store)[0], clips.count[0], sleeps) == (1, 1, [])
+
+
+def stt_calls(stt, seconds):
+    return sum(round(s, 1) == seconds for s in stt.calls)
+
+
+def test_a_transient_turn_stt_failure_is_retried(store, recording):
+    stt, sleeps = FakeSTT({**STT, 1.0: [httpx.ReadTimeout("timed out", request=REQUEST), "yes"]}), []
+
+    result = run(recording, store, stt, sleep=sleeps.append)
+
+    turn = get_session(result["session"], store=store)["turns"][3]
+    assert (turn["stt"], turn["status"]) == ("yes", "processed")
+    assert (stt_calls(stt, 1.0), sleeps) == (2, [1])
+
+
+def test_a_turn_whose_stt_fails_every_try_fails_after_3_attempts_with_the_last_error(store, recording):
+    errors = [http_error(503), httpx.ConnectError("refused", request=REQUEST), http_error(504, "third try")]
+    stt, sleeps = FakeSTT({**STT, 1.0: errors}), []
+
+    result = run(recording, store, stt, sleep=sleeps.append)
+
+    (status, reason) = statuses(result["session"], store)[3]
+    assert (status, attempts(result["session"], store)[3], stt_calls(stt, 1.0), sleeps) == ("failed", 3, 3, [1, 4])
+    assert "third try" in reason
 
 
 def test_the_daily_cap_spans_the_users_sessions_and_not_other_users(monkeypatch, store, recording):
