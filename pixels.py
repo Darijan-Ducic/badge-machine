@@ -29,6 +29,7 @@ class Spec:
     contrast: bool = False  # local contrast (wide unsharp mask) + a 1 % autocontrast stretch
     sharpen: float = 0.0  # unsharp-mask amount at radius 2 px of the output (1.5 = 150 %); 0 = off
     crf: int | None = None  # libx264 CRF; None = the encoder default (23), as crop.crop
+    sam_lips: bool = False  # centre the (tracker-sized) box on SAM 3.1's "lips" boxes instead of the tracker's
 
     def tag(self) -> str:
         parts = [f"w{self.width}"] if self.width != crop.WIDTH else []
@@ -39,6 +40,7 @@ class Spec:
 
     def crop_id(self) -> str:
         base = f"{STABILIZED}-s{self.window}" if self.stabilize else crop.TRACKER_MEDIAN
+        base += "-sam-lips" if self.sam_lips else ""
         return f"{base}+{self.tag()}" if self.tag() else base
 
 
@@ -61,13 +63,30 @@ def stabilized_track(boxes: list[list[float]], window: int = 5) -> list[list[flo
     return [[float(t), float(x - w / 2), float(y - h / 2), float(w), float(h)] for t, x, y in zip(b[:, 0], cx, cy)]
 
 
+def recentre(boxes: list[list[float]], lips: dict, times: list[float]) -> list[list[float]]:
+    """Tracker-sized boxes centred on SAM lips: for each source frame i with lips (`lips` = sam.parse()["frames"]),
+    [times[i], x, y, w, h] with w, h the median tracker size, centred on the lips box nearest the tracker's centre."""
+    b = np.asarray(boxes, float)
+    w, h = float(np.median(b[:, 3])), float(np.median(b[:, 4]))
+    out = []
+    for i, t in enumerate(times):
+        if not lips.get(i):
+            continue
+        tx = np.interp(t, b[:, 0], b[:, 1] + b[:, 3] / 2)
+        ty = np.interp(t, b[:, 0], b[:, 2] + b[:, 4] / 2)
+        x, y, lw, lh = min((o["box"] for o in lips[i]),
+                           key=lambda q: (q[0] + q[2] / 2 - tx) ** 2 + (q[1] + q[3] / 2 - ty) ** 2)
+        out.append([float(t), x + lw / 2 - w / 2, y + lh / 2 - h / 2, w, h])
+    return out
+
+
 def enhance(image: Image.Image, spec: Spec) -> Image.Image:
     """One resized crop frame through the spec's gray -> contrast -> sharpen; unchanged with every option off."""
     if spec.gray:
         image = image.convert("L").convert("RGB")
     if spec.contrast:
-        image = image.filter(ImageFilter.UnsharpMask(radius=max(4, image.width // 16), percent=60, threshold=0))
-        image = ImageOps.autocontrast(image, cutoff=1)
+        image = image.filter(ImageFilter.UnsharpMask(radius=max(4, image.width // 16), percent=40, threshold=0))
+        image = ImageOps.autocontrast(image, cutoff=1, preserve_tone=True)  # one stretch for all bands: no hue shift
     if spec.sharpen:
         image = image.filter(ImageFilter.UnsharpMask(radius=2, percent=round(100 * spec.sharpen), threshold=0))
     return image
@@ -127,11 +146,17 @@ def render(source: Path, target: Path, boxes: list[list[float]], spec: Spec) -> 
                     *quality, "-movflags", "+faststart", target], input=b"".join(encoded), check=True)
 
 
-def cropper(spec: Spec):
-    """A crop.crop-compatible function rendering `spec`; without tracker boxes it falls back to crop.crop."""
+def cropper(spec: Spec, segment_video=None):
+    """A crop.crop-compatible function rendering `spec`; without tracker boxes it falls back to crop.crop. With
+    `spec.sam_lips` it runs `segment_video(source, "lips")` (default sam.segment_video) and recentres the boxes;
+    without any lips found it keeps the tracker's boxes."""
     def crop_fn(source: Path, target: Path, faces=None, mouths=None) -> str:
         if not mouths:
             return crop.crop(source, target, faces=faces, mouths=mouths)
+        if spec.sam_lips:
+            import sam
+            lips = (segment_video or sam.segment_video)(source, "lips")["frames"]
+            mouths = recentre(mouths, lips, list(_frames(Path(source))[0])) or mouths
         render(source, target, mouths, spec)
         return spec.crop_id()
     return crop_fn
