@@ -15,7 +15,7 @@ export const CONFIG = Object.freeze({
   T_OUTSIDE: 0.1, // fraction of the area outside the (padded) face that changed = new face / motion outside
   OUTSIDE_PAD: 0.5, // face box grows by this fraction of its size on every side before "outside" is measured
   T_SCALE: 0.15, // anchor size change since its keyframe (relative)
-  T_REFRESH: 2, // s; drift insurance
+  T_REFRESH: 4, // s; drift insurance (replay sweep: fewer SAM calls at equal or better error than 2 s on synthetic and talking-head clips)
   SAM_MIN_GAP: 0.25, // s; min time between triggered SAM calls (cost cap; forced calls ignore it)
   SNAP_TOL: 0.15, // face widths; a confident track within this of SAM's anchor is kept on a keyframe (0 = always snap to SAM)
   MOTION_PIX: 16, // gray levels; a quarter-res pixel changing more than this counts as motion

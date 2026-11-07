@@ -7,8 +7,8 @@ Green = built and verified · amber = being built · grey dashed = planned. The 
 ```mermaid
 flowchart TD
   CAM["Webcam in browser<br/>request 30 fps, show actual"]
-  TRK["Classical tracker, every frame<br/>NCC on nose-to-chin anchor + Kalman smoothing"]
-  TRIG{"Lost, big motion, scale jump over 15%,<br/>or 2 s since last anchor?"}
+  TRK["Classical tracker, every frame, ~1-2 ms<br/>NCC on nose-to-chin anchor, lips masked + One-Euro smoothing"]
+  TRIG{"Lost, big motion, scale jump over 15%,<br/>or 4 s since last anchor?"}
   SAM["SAM 3.1 re-anchor on 'face'<br/>$0.0025 per call"]
   CROP["Muted mouth crop, scaled up"]
   QG{"Quality gate: too many<br/>occluded or blurred frames?"}
@@ -35,8 +35,8 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class CAM,GEM,GATE,SAM built
-  class TRK,TRIG,CROP,QG,REPEAT,MUSEK,MUSEC,POOL,FEAT,FUSE building
+  class CAM,GEM,GATE,SAM,TRK,TRIG,QG,REPEAT built
+  class CROP,MUSEK,MUSEC,POOL,FEAT,FUSE building
   class SEND,CONFIRM planned
 ```
 
@@ -73,8 +73,8 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STT,MATCH,GT,STORE,UI built
-  class REPLAY,KNOBS,CLIP,STAGES,PREQ,FUSE building
+  class STT,MATCH,GT,STORE,UI,REPLAY,KNOBS built
+  class CLIP,STAGES,PREQ,FUSE building
   class CONF,AGENT,PROMPTS planned
 ```
 
