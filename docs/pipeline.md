@@ -37,8 +37,7 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class CAM,GEM,GATE,SAM,TRK,TRIG,QG,REPEAT,CROP,MUSEK,MUSEC,POOL,FEAT,FUSE built
-  class SEND,CONFIRM building
+  class CAM,GEM,GATE,SAM,TRK,TRIG,QG,REPEAT,CROP,MUSEK,MUSEC,POOL,FEAT,FUSE,SEND,CONFIRM built
 ```
 
 ## Learning: how it gets better
@@ -108,8 +107,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class LBL,BANK,W,TH built
-  class USE,IN,READY building
+  class LBL,BANK,W,TH,USE built
+  class IN,READY building
   class FEW,CAL,OUT,AG planned
 ```
 
@@ -173,8 +172,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class C2 built
-  class C1,C3,C4,M1,O1,P1,P2 building
+  class C1,C2 built
+  class C3,C4,M1,O1,P1,P2 building
 ```
 
 ## Versioning: what every clip, model, and run records

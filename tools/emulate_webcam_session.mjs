@@ -183,11 +183,13 @@ async function main() {
     const tracks = await page.evaluate(`(() => { const s = ${STREAM};
       return { video: s.getVideoTracks()[0].getSettings(), audio: s.getAudioTracks()[0].getSettings(), userAgent: navigator.userAgent }; })()`);
     for (const t of Object.values(tracks)) if (t && typeof t === 'object') { delete t.deviceId; delete t.groupId; }
-    const uploaded = () => [...page.posts.values()].find((p) => p.done);
+    // The take's upload: the first finished POST that isn't the tracker's SAM re-anchor (pages POST /sam while live).
+    const isTake = (p) => p.done && new URL(p.url).pathname !== '/sam';
+    const uploaded = () => [...page.posts.values()].find(isTake);
     if (!(await page.waitFor(async () => uploaded() && (!stub || stub.upload()), timing.recordFor + 240000, 100))) {
       throw new Error('no upload finished');
     }
-    const [requestId, post] = [...page.posts.entries()].find(([, p]) => p.done);
+    const [requestId, post] = [...page.posts.entries()].find(([, p]) => isTake(p));
     const body = await page.send('Network.getResponseBody', { requestId }).then((r) => r.body.slice(0, 2000), () => null);
     const stopAt = await page.evaluate('window.__emu.stopAt');
     const recorder = await page.evaluate(`typeof recorder !== 'undefined' && recorder ? { mimeType: recorder.mimeType,
