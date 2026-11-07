@@ -209,3 +209,14 @@ test('i2: a refresh keyframe whose SAM box is off by twice SNAP_TOL re-places th
   const k = Math.round(0.5 * FPS);
   results.slice(k).forEach((r, i) => assert.ok(dist(mid(r.anchor), trueAnchorCenter(shifted)) <= 1.5, `frame ${k + i}: anchor ${r.anchor} did not follow SAM`));
 });
+
+test('j: a template cut from a blank warm-up frame is replaced at the next keyframe', async () => {
+  const face = makeFace(180, 220, 7);
+  const frames = clip(30, (i) => (i === 0 ? [] : [{ face, x: STILL[0], y: STILL[1] }]));
+  frames[0].data.fill(128); // cameras often deliver a flat frame first; SAM may still answer with a box
+  const { sam } = fakeSam(() => [STILL]);
+  const { results } = await trackClip(frames, sam, { T_REFRESH: Infinity });
+  const settled = Math.ceil(C.SAM_MIN_GAP * FPS) + 1; // first frame after one SAM cost-cap gap
+  results.slice(settled).forEach((r, i) =>
+    assert.ok(r.conf >= C.T_CONF && r.flags.length === 0, `frame ${settled + i}: conf ${r.conf.toFixed(2)}, flags ${r.flags}`));
+});
