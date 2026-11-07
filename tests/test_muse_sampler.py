@@ -380,6 +380,40 @@ def images_of(request) -> list:
 
 
 ITEM_KEYS = {"call", "sample_idx", "latency_ms", "output", "error"}
+FAKE_USAGE = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}  # what FakeMuse reports
+
+
+def test_open_samples_keep_the_token_usage_the_api_reports(short_clip, muse):
+    usage = {"prompt_tokens": 5587, "completion_tokens": 912, "total_tokens": 6499,
+             "completion_tokens_details": {"reasoning_tokens": 640}}
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
+    real_create = fake.create
+
+    def create(**request):
+        response = real_create(**request)
+        return response.model_copy(update={"usage": type(response.usage).model_validate(usage)})
+
+    fake.chat.completions.create = create
+
+    items = sample_open(short_clip, 2)
+
+    assert [item["usage"] for item in items] == [usage, usage]
+
+
+def test_closed_call_keeps_the_token_usage_the_api_reports(short_clip, muse):
+    muse(lambda request: {"1_scores": {"1": 0.7, "2": 0.1}, "2_none": 0.2})
+
+    item = score_closed(short_clip, ["yes", "no"])
+
+    assert item["usage"] == FAKE_USAGE
+
+
+def test_a_failed_call_reports_no_usage(short_clip, muse):
+    muse(connection_error)
+
+    [item] = sample_open(short_clip, 1)
+
+    assert "usage" not in item
 
 
 def test_a_raised_api_error_becomes_an_error_item(short_clip, muse):
@@ -429,7 +463,7 @@ def test_valid_open_output_has_no_error(short_clip, muse):
     [item] = sample_open(short_clip, 1)
 
     assert item == {"call": "open", "sample_idx": 0, "latency_ms": item["latency_ms"],
-                    "output": in_range_sample(29), "error": None}
+                    "output": in_range_sample(29), "error": None, "usage": FAKE_USAGE}
     assert isinstance(item["latency_ms"], int) and item["latency_ms"] >= 0
 
 
@@ -515,7 +549,7 @@ def test_closed_scores_map_back_to_phrases_with_spaces(short_clip, muse):
 
     item = score_closed(short_clip, TWELVE)
 
-    assert set(item) == ITEM_KEYS and item["call"] == "closed" and item["error"] is None
+    assert set(item) == ITEM_KEYS | {"usage"} and item["call"] == "closed" and item["error"] is None
     assert item["output"] == {"scores": truth, "none": 0.2}
 
 
