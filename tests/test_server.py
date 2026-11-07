@@ -1,11 +1,14 @@
-"""HTTP contract of /stats, /clips, /clips/<id>, /clips/<id>/video, /preheat/clip, /vtt and /vtt/<id>/label, served
-from a real ThreadingHTTPServer over each store backend — model calls are fakes, no network."""
+"""HTTP contract of /stats, /clips, /clips/<id>, /clips/<id>/video, /preheat/clip, /vtt, /vtt/<id>/label, /dictation
+and /sessions, served from a real ThreadingHTTPServer over each store backend — model calls are fakes, no network."""
 
 import json
 import math
 import subprocess
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import httpx
 import pytest
@@ -14,9 +17,11 @@ import clips
 import muse_sampler
 import scorers
 import server
+import sessions
 from candidates import FEATURES
 from clips import backend, load, record_clip
 from tests.fakes import PHRASES, Gemini, SampleOpen, ScoreClosed, readers, v1_output
+from tests.test_sessions import media
 
 OLD_STATS_KEYS = {"labeled", "clips", "stage", "next_stage", "threshold", "camera_fps", "window", "accuracy", "history"}
 LIST_KEYS = {"id", "t", "user_id", "mode", "stt", "top", "action", "correct", "pool_hit", "stage"}
@@ -369,3 +374,91 @@ def test_label_route_is_404_for_an_unknown_clip(api):
     response = api.post("/vtt/no-such-clip/label", json={"text": "yes", "source": "edit"})
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------- /dictation and /sessions
+
+
+@pytest.fixture(scope="module")
+def session_recording(tmp_path_factory) -> bytes:
+    """Speech at 0.5-2.5 s and 9.0-11.0 s: two turns (together they would be over 8 s)."""
+    return media(tmp_path_factory.mktemp("session") / "session.webm", 11.5, [(0.5, 2.5), (9.0, 11.0)])
+
+
+@pytest.fixture
+def dictation(api, store, fake_calls, monkeypatch, tmp_path):
+    """/dictation over fake STT and readers; turns run on a pool that is drained before the fakes are undone."""
+    turns = ThreadPoolExecutor(2)
+    monkeypatch.setattr(server, "TURNS", turns)
+    monkeypatch.setattr(server, "SESSIONS", tmp_path / "sessions" if isinstance(store, Path)
+                        else sessions.MongoStore(store.db))
+    monkeypatch.setattr(server, "transcribe_turns", lambda wav: {"text": "yes", "turns": []})
+    yield
+    turns.shutdown(wait=True)
+
+
+def post_dictation(api, video, **headers) -> dict:
+    response = api.post("/dictation?user=ann", content=video, headers={"Content-Type": "video/webm", **headers})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def finished(api, session_id: str) -> dict:
+    for _ in range(300):
+        detail = get(api, f"/sessions/{session_id}")
+        if detail["status"] in ("done", "failed"):
+            return detail
+        time.sleep(0.1)
+    raise AssertionError(f"session {session_id} still {detail['status']}")
+
+
+def test_dictation_route_answers_the_session_its_stt_and_its_turn_count(api, dictation, session_recording):
+    body = post_dictation(api, session_recording)
+
+    assert set(body) == {"session", "stt", "turns"}
+    assert (body["stt"], body["turns"]) == ("yes", 2)
+    assert get(api, f"/sessions/{body['session']}")["user_id"] == "ann"
+
+
+def test_dictation_turns_become_clips_of_that_session_read_by_every_model(api, store, dictation, fake_calls,
+                                                                         session_recording):
+    session = post_dictation(api, session_recording)["session"]
+
+    turns = finished(api, session)["turns"]
+
+    assert [(t["i"], t["status"], t["stt"]) for t in turns] == [(0, "processed", "yes"), (1, "processed", "yes")]
+    assert [(backend(store).get(t["clip_id"])["session_id"], backend(store).get(t["clip_id"])["turn"])
+            for t in turns] == [(session, 0), (session, 1)]
+    assert all(t["vtt"]["text"] == "yes" and t["correct"] == {"vtt": True, "gemini": True, "muse": True}
+               for t in turns)
+    assert [call[1] for call in fake_calls["sample_open"].calls] == [5, 5]
+
+
+def test_sessions_route_lists_the_users_sessions_and_serves_the_recording(api, dictation, session_recording):
+    session = post_dictation(api, session_recording)["session"]
+    finished(api, session)
+
+    listing = get(api, "/sessions?user=ann")
+    video = api.get(f"/sessions/{session}/video")
+
+    assert [s["id"] for s in listing["sessions"]] == [session] and listing["users"] == [{"id": "ann", "sessions": 1}]
+    assert (video.status_code, video.headers["content-type"]) == (200, "video/webm")
+    assert video.content == session_recording
+
+
+def test_unknown_sessions_are_an_api_404(api, dictation):
+    for path in ("/sessions/no-such-session", "/sessions/no-such-session/video"):
+        response = api.get(path)
+        # the API's JSON error, not static/'s "no such file" page
+        assert (response.status_code, response.headers["content-type"]) == (404, "application/json"), path
+
+
+def test_a_29_s_session_of_tracker_boxes_fits_in_one_header(api, store, dictation, session_recording):
+    # 29 s at 30 fps with every number at its widest for a 1280x960 camera; timed after this 11.5 s recording ends,
+    # so no turn crops with them
+    boxes = json.dumps([[12000 + round(i * 1000 / 30), 1279, 959, 1280, 960] for i in range(870)])
+    assert len(boxes) > 20_000
+
+    session = post_dictation(api, session_recording, **{"X-Tracker-Boxes": boxes})["session"]
+
+    assert [t["status"] for t in finished(api, session)["turns"]] == ["processed", "processed"]
