@@ -70,8 +70,8 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STT,MATCH,PREQ,STAGES,FUSE,CLIP,GT built
-  class STORE,REPLAY,KNOBS,UI building
+  class STT,MATCH,PREQ,STAGES,FUSE,CLIP,GT,STORE built
+  class REPLAY,KNOBS,UI building
   class CONF,AGENT,PROMPTS planned
 ```
 

@@ -7,11 +7,13 @@ dependencies = [
     "httpx>=0.28.1",
     "numpy>=2.5.4",
     "openai>=3.46.0",
+    "pymongo>=4.19.0",
     "scipy>=1.18.1",
 ]
 
 [dependency-groups]
 dev = [
+    "mongomock>=4.3.0",
     "pytest>=9.2.0",
 ]
 

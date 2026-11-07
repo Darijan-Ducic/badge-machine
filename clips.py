@@ -1,13 +1,19 @@
 """Clip store for preheat: keep each STT-labeled clip with both lip readers' scores, and report training stats."""
 
+import functools
 import hashlib
 import json
+import os
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
+import pymongo
+from gridfs import GridFSBucket
 
 from preheat import STAGES, match_phrase, predict, prequential, stage_for, train
 from scorers import gemini_scores, muse_scores
@@ -21,9 +27,66 @@ def vocab_id(phrases: list[str]) -> str:
     return hashlib.sha1("\n".join(phrases).encode()).hexdigest()[:8]
 
 
-def load(store: Path = DATA) -> list[dict]:
-    index = store / "index.jsonl"
-    return [json.loads(line) for line in index.read_text().splitlines()] if index.exists() else []
+class _FileStore:
+    """Records as JSON lines in <root>/index.jsonl, clip bytes as <root>/<id>.webm."""
+
+    def __init__(self, root: Path):
+        self.root = root
+
+    def load(self) -> list[dict]:
+        index = self.root / "index.jsonl"
+        return [json.loads(line) for line in index.read_text().splitlines()] if index.exists() else []
+
+    def append(self, record: dict) -> None:
+        with (self.root / "index.jsonl").open("a") as index:
+            index.write(json.dumps(record) + "\n")
+
+    @contextmanager
+    def clip_file(self, clip_id: str, recording: bytes):
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / f"{clip_id}.webm"
+        path.write_bytes(recording)
+        yield path
+
+
+class MongoStore:
+    """Records in the `clip_records` collection, clip bytes in GridFS bucket `clips` with the clip id as file id."""
+
+    def __init__(self, db):
+        self.db = db
+        self.records = db["clip_records"]
+        self.clips = GridFSBucket(db, bucket_name="clips")
+
+    def load(self) -> list[dict]:
+        # _id is an ObjectId minted per insert, increasing within a process, so it replays insertion order.
+        return list(self.records.find({}, {"_id": False}).sort("_id", pymongo.ASCENDING))
+
+    def append(self, record: dict) -> None:
+        self.records.insert_one(dict(record))  # insert_one writes _id into the dict it gets; keep the caller's clean
+
+    @contextmanager
+    def clip_file(self, clip_id: str, recording: bytes):
+        self.clips.upload_from_stream_with_id(clip_id, f"{clip_id}.webm", recording)
+        with tempfile.NamedTemporaryFile(suffix=".webm") as local:  # the scorers run ffmpeg on a path
+            local.write(recording)
+            local.flush()
+            yield Path(local.name)
+
+
+@functools.cache
+def _mongo_client(uri: str):
+    return pymongo.MongoClient(uri)  # one client, and so one connection pool, per process
+
+
+def _backend(store):
+    if store is None:  # default: MongoDB when MONGODB_URI is set, else the local data dir
+        uri = os.environ.get("MONGODB_URI")
+        store = MongoStore(_mongo_client(uri)[os.environ.get("MONGODB_DB") or "badge_machine"]) if uri else DATA
+    return _FileStore(store) if isinstance(store, Path) else store
+
+
+def load(store: Path | MongoStore | None = None) -> list[dict]:
+    return _backend(store).load()
 
 
 def _arrays(labeled: list[dict], n_phrases: int):
@@ -56,28 +119,25 @@ def stats(records: list[dict], phrases: list[str], window: int = 20) -> dict:
     }
 
 
-def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store: Path = DATA,
+def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store: Path | MongoStore | None = None,
                  gemini=gemini_scores, muse=muse_scores) -> dict:
     """STT-label one recording, read its lips with both models, score them against the label, and store it."""
     clip_id = str(time.time_ns())
-    store.mkdir(parents=True, exist_ok=True)
-    path = store / f"{clip_id}.webm"
-    path.write_bytes(recording)
-    with ThreadPoolExecutor(3) as pool:
+    store = _backend(store)
+    with store.clip_file(clip_id, recording) as path, ThreadPoolExecutor(3) as pool:
         heard = pool.submit(transcribe, recording)
         gemini_probs, muse_probs = pool.submit(gemini, path, phrases), pool.submit(muse, path, phrases)
         heard, gemini_probs, muse_probs = heard.result(), gemini_probs.result(), muse_probs.result()
     label = match_phrase(heard, phrases)
 
     with _lock:
-        records = [r for r in load(store) if r["vocab"] == vocab_id(phrases)]
+        records = [r for r in store.load() if r["vocab"] == vocab_id(phrases)]
         # Predict, then train: this clip is read by a model that has never seen its label.
         model = train(*_arrays([r for r in records if r["label"] is not None], len(phrases)), gate=False)
         fused = predict(model, gemini_probs[None], muse_probs[None])[0]
         record = {"id": clip_id, "t": time.time(), "fps": fps, "prompted": prompted, "stt": heard, "label": label,
                   "vocab": vocab_id(phrases), "gemini": gemini_probs.tolist(), "muse": muse_probs.tolist()}
-        with (store / "index.jsonl").open("a") as index:
-            index.write(json.dumps(record) + "\n")
+        store.append(record)
         summary = stats(records + [record], phrases)
 
     reads = {"fused": fused, "gemini": gemini_probs, "muse": muse_probs}

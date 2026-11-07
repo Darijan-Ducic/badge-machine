@@ -14,8 +14,8 @@ def peaked(index, n=len(PHRASES)):
     return probs
 
 
-def run(tmp_path, said, gemini_pick, muse_pick, phrases=PHRASES, fps=30.0):
-    return process_clip(b"webm-bytes", fps, 0, transcribe=lambda _: said, phrases=phrases, store=tmp_path,
+def run(store, said, gemini_pick, muse_pick, phrases=PHRASES, fps=30.0):
+    return process_clip(b"webm-bytes", fps, 0, transcribe=lambda _: said, phrases=phrases, store=store,
                         gemini=lambda clip, ps: peaked(gemini_pick, len(ps)), muse=lambda clip, ps: peaked(muse_pick, len(ps)))
 
 
@@ -28,8 +28,8 @@ def test_empty_stats_follow_the_frontend_contract():
     assert s["accuracy"]["recent"] == {"fused": None, "gemini": None, "muse": None}
 
 
-def test_clip_is_labeled_by_stt_and_each_reader_is_scored_against_it(tmp_path):
-    result = run(tmp_path, "Turn on the lights.", gemini_pick=2, muse_pick=3)
+def test_clip_is_labeled_by_stt_and_each_reader_is_scored_against_it(store):
+    result = run(store, "Turn on the lights.", gemini_pick=2, muse_pick=3)
 
     assert set(result) == CLIP_KEYS
     assert (result["label"], result["label_phrase"]) == (2, "turn on the lights")
@@ -37,26 +37,26 @@ def test_clip_is_labeled_by_stt_and_each_reader_is_scored_against_it(tmp_path):
     assert result["read"]["muse"]["phrase"] == "turn off the lights"
     assert result["correct"]["gemini"] is True and result["correct"]["muse"] is False
     assert (result["stats"]["labeled"], result["stats"]["camera_fps"]) == (1, 30.0)
-    assert len(load(tmp_path)) == 1
+    assert len(load(store)) == 1
 
 
-def test_off_list_speech_is_stored_but_not_scored(tmp_path):
-    result = run(tmp_path, "what a lovely afternoon", gemini_pick=0, muse_pick=0)
+def test_off_list_speech_is_stored_but_not_scored(store):
+    result = run(store, "what a lovely afternoon", gemini_pick=0, muse_pick=0)
 
     assert (result["label"], result["correct"]) == (None, None)
     assert (result["stats"]["clips"], result["stats"]["labeled"]) == (1, 0)
 
 
-def test_accuracy_counts_every_labeled_clip(tmp_path):
-    run(tmp_path, "yes", gemini_pick=0, muse_pick=1)
-    result = run(tmp_path, "no", gemini_pick=0, muse_pick=1)
+def test_accuracy_counts_every_labeled_clip(store):
+    run(store, "yes", gemini_pick=0, muse_pick=1)
+    result = run(store, "no", gemini_pick=0, muse_pick=1)
 
     assert result["stats"]["accuracy"]["all"]["gemini"] == 0.5
     assert result["stats"]["accuracy"]["all"]["muse"] == 0.5
     assert [h["i"] for h in result["stats"]["history"]] == [0, 1]
 
 
-def test_clips_from_a_different_phrase_list_are_ignored(tmp_path):
-    run(tmp_path, "yes", gemini_pick=0, muse_pick=0)
+def test_clips_from_a_different_phrase_list_are_ignored(store):
+    run(store, "yes", gemini_pick=0, muse_pick=0)
 
-    assert stats(load(tmp_path), ["hello", "goodbye"])["clips"] == 0
+    assert stats(load(store), ["hello", "goodbye"])["clips"] == 0
