@@ -10,7 +10,7 @@
 // Per clip and tracker: centre error and size error of the mouth box (GT mouth widths; mean and p95), the centre error
 // on fast-head frames (GT head speed > FAST mouth widths/s) and the lag there, recovery time after jumps/occlusions,
 // quality-gate precision/recall on labelled bad frames (stress clips) or the flagged share (natural clips), crop
-// coverage of the GT lips (per-frame crop and the server's median crop), SAM calls/s, $/min and ms/frame.
+// coverage of the GT lips: frames fully inside / mean area kept, for the per-frame crop and the server's median crop, SAM calls/s, $/min and ms/frame.
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
@@ -18,7 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { plan, applyFrame } from './tracker_augment.mjs';
 import {
-  centre, mouthFromCrop, frameErrors, headSpeed, lagMs, jumpEvents, recoveryMs, gatePR, inside, medianBox, mean, quantile,
+  centre, mouthFromCrop, frameErrors, headSpeed, lagMs, jumpEvents, recoveryMs, gatePR, inside, areaInside, medianBox, mean, quantile,
 } from './tracker_metrics.mjs';
 import * as V1 from '../static/tracker.js';
 
@@ -172,7 +172,8 @@ async function runClip(clip, trackers, opts) {
   const truth = frames.map((f) => f.mouth);
   const speed = headSpeed(truth, gt.fps), fast = speed.map((v) => v != null && v > FAST);
   const occEnds = frames.flatMap((f, j) => (j && frames[j - 1].cover >= 0.5 && f.cover < 0.5 ? [j] : []));
-  const events = [...new Set([...jumpEvents(truth, 1), ...occEnds])].sort((a, b) => a - b);
+  // an event in the clip's last second (e.g. the next camera shot starting on the final frame) cannot show a recovery
+  const events = [...new Set([...jumpEvents(truth, 1), ...occEnds])].filter((e) => e + gt.fps <= n).sort((a, b) => a - b);
   const labelled = !!(clip.augment?.occlude || clip.augment?.blur);
   return {
     clip: clip.name, split: clip.split, address: clip.address, frames: n, seconds: n / gt.fps, gtFrames: truth.filter(Boolean).length,
@@ -202,6 +203,7 @@ function score(run, frames, truth, fast, events, labelled, fps, n) {
     gate: { labelled, ...gate, flagged: rows.filter((r) => r.flagged).length / n },
     coverage: withGt.filter(([b, c]) => c && inside(b, c)).length / withGt.length,
     medianCoverage: med ? withGt.filter(([b]) => inside(b, med)).length / withGt.length : 0,
+    kept: mean(withGt.map(([b, c]) => (c ? areaInside(b, c) : 0))), medianKept: med ? mean(withGt.map(([b]) => areaInside(b, med))) : 0,
     samCalls: calls, samByPrompt: { ...run.calls }, samPerSec: calls / (n / fps), usdPerMin: (calls * SAM_USD) / (n / fps / 60),
     msMedian: quantile(ms, 0.5), msP95: quantile(ms, 0.95),
   };
@@ -212,11 +214,11 @@ const f3 = (x) => (Number.isFinite(x) ? x.toFixed(3) : '–');
 const f0 = (x) => (Number.isFinite(x) ? x.toFixed(0) : '–');
 const f2 = (x) => (Number.isFinite(x) ? x.toFixed(2) : '–');
 const pct = (x) => (Number.isFinite(x) ? `${(100 * x).toFixed(0)}%` : '–');
-const HEAD = ['clip', 'tracker', 'centre', 'p95', 'size', 'fast(n)', 'lag ms', 'recov ms', 'gate P/R | flagged', 'cover', 'med cover', 'SAM/s', 'ms/frame'];
+const HEAD = ['clip', 'tracker', 'centre', 'p95', 'size', 'fast(n)', 'lag ms', 'recov ms', 'gate P/R | flagged', 'cover/kept', 'median crop', 'SAM/s', 'ms/frame'];
 function row(c, r) {
   const gate = r.gate.labelled ? `${pct(r.gate.precision)}/${pct(r.gate.recall)}` : `${pct(r.gate.flagged)} flagged`;
   return [c.clip, r.tracker, f3(r.centre), f3(r.centreP95), f3(r.size), `${f3(r.fast)}(${c.fastFrames})`, f0(r.lagMs),
-    c.events ? `${f0(r.recoveryMs)}${r.unrecovered ? ` (${r.unrecovered} never)` : ''}` : '–', gate, pct(r.coverage), pct(r.medianCoverage),
+    c.events ? `${f0(r.recoveryMs)}${r.unrecovered ? ` (${r.unrecovered} never)` : ''}` : '–', gate, `${pct(r.coverage)}/${pct(r.kept)}`, `${pct(r.medianCoverage)}/${pct(r.medianKept)}`,
     f2(r.samPerSec), `${f2(r.msMedian)}/${f2(r.msP95)}`];
 }
 
@@ -237,6 +239,7 @@ function summarize(clips, label) {
       gate: { precision: tp + fp ? tp / (tp + fp) : NaN, recall: tp + fn ? tp / (tp + fn) : NaN, tp, fp, fn,
         naturalFlagged: nat.length ? mean(nat.map(({ r }) => r.gate.flagged)) : NaN },
       coverage: wmean('coverage', (c) => c.gtFrames), medianCoverage: wmean('medianCoverage', (c) => c.gtFrames),
+      kept: wmean('kept', (c) => c.gtFrames), medianKept: wmean('medianKept', (c) => c.gtFrames),
       samPerSec: wmean('samPerSec', (c) => c.seconds), usdPerMin: wmean('usdPerMin', (c) => c.seconds),
       msMedian: wmean('msMedian', (c) => c.frames), msP95: wmean('msP95', (c) => c.frames), label,
     });
@@ -264,7 +267,7 @@ function printSummary(sums) {
   for (const s of sums) {
     const gate = `gate P/R ${pct(s.gate.precision)}/${pct(s.gate.recall)} (tp ${s.gate.tp} fp ${s.gate.fp} fn ${s.gate.fn}), natural flagged ${pct(s.gate.naturalFlagged)}`;
     console.log(`  ${s.label.padEnd(10)} ${s.tracker.padEnd(14)} centre ${f3(s.centre)} p95 ${f3(s.centreP95)}  size ${f3(s.size)}  fast ${f3(s.fast)}  lag ${f0(s.lagMs)} ms  `
-      + `recovery ${f0(s.recoveryMs)} ms (${s.unrecovered} never)  ${gate}  cover ${pct(s.coverage)} / median ${pct(s.medianCoverage)}  `
+      + `recovery ${f0(s.recoveryMs)} ms (${s.unrecovered} never)  ${gate}  lips fully in crop ${pct(s.coverage)} (area kept ${pct(s.kept)}) / median crop ${pct(s.medianCoverage)} (${pct(s.medianKept)})  `
       + `SAM ${f2(s.samPerSec)}/s ($${f3(s.usdPerMin)}/min)  ${f2(s.msMedian)}/${f2(s.msP95)} ms`
       + (s.vsBase ? `  | vs ${s.vsBase.base}: lower centre on ${s.vsBase.centreWins}/${s.vsBase.clips} clips, lower fast on ${s.vsBase.fastWins}/${s.vsBase.fastClips}` : ''));
   }

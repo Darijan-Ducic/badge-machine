@@ -108,6 +108,13 @@ export function gatePR(flagged, bad) {
 // Is box a entirely within box b?
 export const inside = (a, b) => a[0] >= b[0] && a[1] >= b[1] && a[0] + a[2] <= b[0] + b[2] && a[1] + a[3] <= b[1] + b[3];
 
+// Share of box a's area that lies within box b (how much of the GT mouth a crop keeps).
+export function areaInside(a, b) {
+  const ix = Math.max(0, Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]));
+  const iy = Math.max(0, Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]));
+  return (ix * iy) / (a[2] * a[3]);
+}
+
 const median = (xs) => {
   const s = [...xs].sort((a, b) => a - b), m = s.length >> 1;
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;

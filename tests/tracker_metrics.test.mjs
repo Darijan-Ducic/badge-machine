@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mouthFromCrop, frameErrors, headSpeed, lagMs, jumpEvents, recoveryMs, gatePR, inside, medianBox,
+  mouthFromCrop, frameErrors, headSpeed, lagMs, jumpEvents, recoveryMs, gatePR, inside, areaInside, medianBox,
 } from '../tools/tracker_metrics.mjs';
 
 const FPS = 30;
@@ -65,6 +65,12 @@ test('gatePR counts flagged frames against bad frames; frames without a label ar
 test('inside: a GT mouth fully within the crop counts, one poking out by a pixel does not', () => {
   assert.equal(inside([10, 10, 30, 20], [0, 0, 100, 50]), true);
   assert.equal(inside([71, 10, 30, 20], [0, 0, 100, 50]), false);
+});
+
+test('areaInside: the share of the GT mouth area that the crop keeps', () => {
+  assert.equal(areaInside([10, 10, 30, 20], [0, 0, 100, 50]), 1);
+  assert.equal(areaInside([80, 10, 40, 20], [0, 0, 100, 50]), 0.5); // 20 of 40 px wide stay in
+  assert.equal(areaInside([200, 10, 40, 20], [0, 0, 100, 50]), 0);
 });
 
 test('medianBox: per-coordinate median of the boxes, skipping missing frames', () => {
