@@ -72,8 +72,9 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STT,MATCH,GT,STORE,UI,REPLAY,KNOBS,CLIP,STAGES,PREQ,FUSE built
-  class CONF,AGENT,PROMPTS planned
+  class STT,MATCH,GT,STORE,UI,REPLAY,KNOBS,CLIP,STAGES,PREQ,FUSE,AGENT built
+  class PROMPTS building
+  class CONF planned
 ```
 
 ## Personal loop: learns from each user's own dictation
@@ -128,9 +129,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class PAID,FREE,GATE built
-  class SETS,VER,REFIT building
-  class ERR,AGENT planned
+  class PAID,FREE,GATE,ERR,AGENT,VER built
+  class SETS,REFIT building
 ```
 
 ## Update cadence: when each piece learns
@@ -165,9 +165,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class C2,C3,M1 built
-  class C1,C4,O1,P2 building
-  class P1 planned
+  class C2,C3,M1,O1 built
+  class C1,C4,P1,P2 building
 ```
 
 ## Versioning: what every clip, model, and run records

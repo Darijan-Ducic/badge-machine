@@ -5,3 +5,4 @@ __pycache__/
 data/clips/
 .tasks/HANDOFF-*.md
 data/runs/
+data/versions/
