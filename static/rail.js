@@ -6,6 +6,7 @@
     ["index.html", "Record", '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>'],
     ["preheat.html", "Preheat", '<path d="M12 3.5v4M12 16.5v4M3.5 12h4M16.5 12h4M6 6l2.6 2.6M15.4 15.4 18 18M6 18l2.6-2.6M15.4 8.6 18 6"/>'],
     ["clips.html", "Clips", '<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M10 9.5v5l4-2.5z"/>'],
+    ["dataset.html", "Dataset", '<ellipse cx="12" cy="6" rx="7" ry="2.5"/><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/>'],
     ["stats.html", "Stats", '<path d="M5 20V12M12 20V5M19 20v-5"/>'],
     ["training.html", "Training", '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'],
     ["pipeline.html", "Pipeline", '<rect x="3.5" y="3.5" width="7" height="6" rx="2"/><rect x="13.5" y="14.5" width="7" height="6" rx="2"/><path d="M7 9.5V15a2.5 2.5 0 0 0 2.5 2.5h4"/>'],

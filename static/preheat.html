@@ -31,7 +31,7 @@
       <p class="meta">STT on: what you say labels each clip, and the lip readers are scored against it.</p>
     </header>
     <section class="stats summary" aria-live="polite">
-      <div class="stat"><small id="s-acc-label">Video only vs STT</small><div id="s-acc">—</div></div>
+      <div class="stat"><small id="s-acc-label">VTT vs STT</small><div id="s-acc">—</div></div>
       <div class="stat"><small>Labeled clips</small><div id="s-labeled">—</div></div>
       <div class="stat"><small>Training stage</small><div id="s-stage">—</div></div>
     </section>
@@ -69,7 +69,7 @@
     const value = (target, main, sub) => { target.replaceChildren(main, ...(sub ? [" ", el("span", "sub", sub)] : [])); };
 
     function showStats(s) {
-      $("s-acc-label").textContent = `Video only vs STT · last ${s.window} clips`;
+      $("s-acc-label").textContent = `VTT vs STT · last ${s.window} clips`;
       value($("s-acc"), pct(s.accuracy.recent.fused), s.accuracy.recent.fused == null ? "no labeled clips yet" : null);
       value($("s-labeled"), String(s.labeled), `of ${s.clips} clips`);
       value($("s-stage"), s.stage, s.next_stage ? `next: ${s.next_stage.name} at ${s.next_stage.at}` : "final stage");
@@ -168,7 +168,7 @@
         const heard = el("p", "heard", "STT heard");
         if (data.label == null) heard.append(el("span", "chip near", "off-list"));
         const list = el("ul", "saidlist");
-        for (const [key, name] of [["fused", "Video read"], ["gemini", "Gemini"], ["muse", "Muse"]]) {
+        for (const [key, name] of [["fused", "VTT"], ["gemini", "VTT · Gemini"], ["muse", "VTT · Muse"]]) {
           const ok = data.correct ? data.correct[key] : null;
           const li = el("li", ok == null ? "offlist" : ok ? "" : "unsaid");
           const text = el("span");

@@ -34,6 +34,49 @@
     .diagram { margin: 18px 0 0; display: grid; justify-items: safe center; overflow-x: auto; }
     .diagram svg { height: auto; flex: none; }
     .diagram pre.msg { justify-self: stretch; max-width: none; white-space: pre-wrap; font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; }
+    /* runs: one row per run, its hypothesis as the headline; pick one to overlay its curve on its baseline's */
+    .runlist { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 2px; }   /* .log, app.css:207 */
+    .run { width: 100%; display: grid; gap: 8px; padding: 14px 16px; border-radius: 16px; text-align: left; transition: background .15s; }   /* .recent li button, app.css:86 */
+    .run:hover { background: var(--well); }
+    .run[aria-pressed="true"] { background: var(--well); box-shadow: 0 0 0 1.5px rgba(17, 17, 17, .14); }   /* .preset.on, app.css:327 */
+    .run .hyp { font-size: 18px; line-height: 1.35; letter-spacing: -0.01em; }   /* .tip-text, app.css:125 */
+    .run .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .run code { font: 500 12px/1 var(--font); background: var(--card); padding: 2px 7px; border-radius: 999px; }   /* code, app.css:26 */
+    .mgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px 16px; margin-top: 2px; }
+    .mgrid small { display: block; font-size: 12px; color: var(--ink-3); }   /* .stat small, app.css:475 */
+    .mgrid b { font-size: 17px; font-weight: 500; letter-spacing: -0.01em; font-variant-numeric: proportional-nums; }
+    .delta { font-size: 12px; margin-left: 4px; }
+    .delta.up { color: var(--onplan-ink); } .delta.down { color: var(--near-ink); }   /* green = on plan, yellow = heads-up */
+    .overlay { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--hair); }   /* .c-moments .m rule, app.css:139 */
+    .overlay .legend span { display: inline-flex; align-items: center; }
+    .prose h1 { margin: 0 0 4px; font-size: 30px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.15; }   /* .panel-head h3, app.css:383 */
+    #tabs { margin-bottom: 22px; }   /* .board gap, app.css:502 */
+    .panel { display: flex; flex-direction: column; gap: 22px; }   /* .col, app.css:503 */
+    /* the versions chart: staircase = VTT word accuracy of the adopted line (blue, as VTT everywhere); dots carry status
+       twice — green filled circle = adopted, red cross = rolled back, hollow ring = candidate — because red/green alone
+       fails color-blind separation */
+    .vchart .stair { fill: none; stroke: var(--coach); stroke-width: 2; stroke-linejoin: round; }
+    .vchart .ptr { font-size: 11px; fill: var(--ink); font-weight: 500; }
+    .vchart .kind { font-size: 10.5px; }
+    .vchart .hit { fill: transparent; cursor: pointer; }
+    .vchart .hit:focus-visible { outline: none; stroke: var(--ink); stroke-width: 1.5; }
+    .vchart .sel { stroke: var(--ink); stroke-width: 1.5; fill: none; }
+    .vtip { max-width: 340px; white-space: normal; }
+    .vlegend > span { display: inline-flex; align-items: center; gap: 6px; }   /* .tag gap, app.css:44 */
+    .vlegend .mk { display: inline-block; width: 10px; height: 10px; }
+    .vlegend .mk.adopted { border-radius: 50%; background: var(--onplan); }
+    .vlegend .mk.rejected { background: linear-gradient(45deg, transparent 42%, var(--over) 42% 58%, transparent 58%), linear-gradient(-45deg, transparent 42%, var(--over) 42% 58%, transparent 58%); }
+    .vlegend .mk.candidate { border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+    .vlegend .lk { margin-right: 0; }
+    .vdetail { margin-top: 18px; padding: 16px 18px; border-radius: 20px; background: var(--well); display: grid; gap: 8px; font-size: 14px; }   /* .line pad/radius, app.css:418 */
+    .vdetail .hyp { font-size: 18px; letter-spacing: -0.01em; line-height: 1.35; }   /* .tip-text, app.css:125 */
+    .vdetail code { font: 500 12px/1 var(--font); background: var(--card); padding: 2px 7px; border-radius: 999px; }   /* code, app.css:26 */
+    .vdetail a { color: var(--coach-ink); }
+    .grid-table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 14px; }   /* .drill dl, app.css:554 */
+    .grid-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--ink-3); }   /* .stat small, app.css:475 */
+    .grid-table th, .grid-table td { padding: 9px 14px 9px 0; border-bottom: 1px solid var(--hair); vertical-align: top; }   /* .beatlist rule, app.css:440 */
+    .grid-table td.num { font-variant-numeric: tabular-nums; }
+    .tableview { margin-top: 14px; font-size: 13px; color: var(--ink-3); } .tableview summary { cursor: pointer; }   /* as on Stats */
   </style>
 </head>
 <body>
@@ -41,21 +84,53 @@
   <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
   <main class="section"><div class="page">
     <header class="top">
-      <h1 id="title">Training</h1>
-      <p class="meta"><span>Live from <b>docs/training-v1.md</b></span><i></i><span>edit the file and reload</span></p>
+      <h1>Training</h1>
+      <p class="meta"><span>Docs render live from <b>docs/</b></span><i></i><span>edit a file and reload</span></p>
     </header>
-    <article class="card prose" id="sheet"><p class="eyebrow">Loading the sheet…</p></article>
+    <div class="opts" id="tabs" role="tablist" aria-label="Training views">
+      <button class="opt" type="button" role="tab" data-tab="sheet">v1 sheet</button>
+      <button class="opt" type="button" role="tab" data-tab="self">Self-improvement</button>
+      <button class="opt" type="button" role="tab" data-tab="runs">Runs</button>
+    </div>
+    <section class="panel" id="panel-sheet" role="tabpanel">
+      <article class="card prose" id="sheet"><p class="eyebrow">Loading docs/training-v1.md…</p></article>
+    </section>
+    <section class="panel" id="panel-self" role="tabpanel" hidden>
+      <article class="card prose" id="self-doc"><p class="eyebrow">Loading docs/self-improvement.md…</p></article>
+      <article class="card" id="versions-card">
+        <p class="eyebrow"><b>Every version, in order</b><span id="versions-sub">· held-out VTT word accuracy · loading /versions…</span></p>
+        <p class="legend vlegend" id="vlegend"></p>
+        <div class="chart-wrap" id="vchart"></div>
+        <div class="vdetail" id="vdetail" hidden></div>
+        <details class="tableview"><summary>Table view</summary><table class="grid-table" id="vtable"></table></details>
+      </article>
+      <article class="card" id="vmetrics-card">
+        <p class="eyebrow"><b>First vs live vs current</b><span>· held-out split</span></p>
+        <table class="grid-table" id="vmetrics"></table>
+      </article>
+    </section>
+    <section class="panel" id="panel-runs" role="tabpanel" hidden>
+    <article class="card runs" id="runs">
+      <p class="eyebrow"><b>Runs</b><span>· every training run, newest first · pick one to compare its curve with its baseline</span></p>
+      <ol class="runlist" id="runlist"><li class="eyebrow">Loading runs…</li></ol>
+      <div class="overlay" id="overlay" hidden>
+        <p class="eyebrow" id="overlay-title"></p>
+        <p class="legend" id="overlay-legend"></p>
+        <div class="chart-wrap" id="overlay-chart"></div>
+      </div>
+    </article>
+    </section>
   </div></main>
+  <script src="linechart.js"></script>
   <script src="vendor/marked.umd.js"></script>
   <script src="vendor/mermaid.min.js"></script>
   <script>
-    const DOC = "/docs/training-v1.md";
     const $ = (id) => document.getElementById(id);
     const FONT = getComputedStyle(document.documentElement).getPropertyValue("--font").trim();
     mermaid.initialize({ startOnLoad: false, fontFamily: FONT, themeVariables: { fontFamily: FONT }, securityLevel: "strict", suppressErrorRendering: true });
 
     // ```mermaid blocks become placeholders; everything else is plain GFM (tables, code, task lists).
-    const diagrams = [];
+    let diagrams = [], seq = 0;
     marked.use({ gfm: true, renderer: {
       code(token) {
         if (token.lang !== "mermaid") return false;
@@ -64,20 +139,19 @@
       },
     } });
 
-    async function load() {
+    // A doc from docs/, fetched uncached and rendered into its card, so an edit shows on reload.
+    async function renderDoc(url, box) {
       try {
-        const res = await fetch(DOC, { cache: "no-store" });
+        const res = await fetch(url, { cache: "no-store" });
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-        diagrams.length = 0;
-        $("sheet").innerHTML = marked.parse(await res.text());   // the doc is our own repo file
-        const h1 = $("sheet").querySelector("h1");
-        if (h1) { $("title").textContent = h1.textContent; document.title = h1.textContent; h1.remove(); }
+        diagrams = [];
+        box.innerHTML = marked.parse(await res.text());   // the doc is our own repo file; parse is synchronous
+        const mine = diagrams;
         await document.fonts.load(`16px ${FONT}`);   // mermaid measures labels with the font, so load it first
-        let seq = 0;
-        for (const slot of $("sheet").querySelectorAll("[data-diagram]")) {
-          const id = `sheet-diagram-${++seq}`;
+        for (const slot of box.querySelectorAll("[data-diagram]")) {
+          const id = `doc-diagram-${++seq}`;
           try {
-            slot.innerHTML = (await mermaid.render(id, diagrams[+slot.dataset.diagram])).svg;
+            slot.innerHTML = (await mermaid.render(id, mine[+slot.dataset.diagram])).svg;
             const svg = slot.querySelector("svg");   // natural size (mermaid's max-width), scrolling sideways, so wide LR labels stay legible
             svg.style.width = svg.style.maxWidth;
             svg.style.maxWidth = "none";
@@ -92,11 +166,239 @@
       } catch (err) {
         const p = document.createElement("p");
         p.className = "msg error";
-        p.textContent = `Couldn't load ${DOC.slice(1)}: ${err.message}`;
-        $("sheet").replaceChildren(p);
+        p.textContent = `Couldn't load ${url.slice(1)}: ${err.message}`;
+        box.replaceChildren(p);
       }
     }
-    load();
+    renderDoc("/docs/training-v1.md", $("sheet"));
+    renderDoc("/docs/self-improvement.md", $("self-doc"));
+
+    // ---- runs (GET /runs) ----
+    const pctv = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
+    const make = (tag, cls, ...kids) => { const e = document.createElement(tag); if (cls) e.className = cls; e.append(...kids.filter((k) => k != null)); return e; };
+    const GATE = { pass: ["gate pass", "chip onplan"], fail: ["gate fail", "chip over"] };
+    let runs = [], picked = null;
+
+    function delta(v, base) {
+      if (v == null || base == null) return null;
+      const d = Math.round((v - base) * 100);
+      return make("span", `delta ${d > 0 ? "up" : d < 0 ? "down" : ""}`, `${d > 0 ? "+" : d < 0 ? "−" : "±"}${Math.abs(d)} pts`);
+    }
+    function metric(label, value, base) {
+      return make("div", null, make("small", null, label), make("b", null, value), base);
+    }
+
+    function runRow(r) {
+      const base = runs.find((x) => x.id === r.baseline), m = r.metrics, bm = base?.metrics;
+      const chips = make("span", "chips",
+        make("span", r.author === "agent" ? "chip coach" : "chip", r.author === "agent" ? "agent" : "human"),
+        r.system_version ? make("span", "chip", `system ${r.system_version}`) : null,
+        GATE[r.gate] ? make("span", GATE[r.gate][1], GATE[r.gate][0]) : make("span", "chip", "no gate"),
+        r.gate === "pass" && !r.system_version ? make("span", "chip near", "proposed — awaiting approval") : null);
+      const meta = make("span", "meta",
+        make("span", null, make("b", null, r.name), ` · ${r.id}`), make("i"),
+        make("span", null, `${r.dataset} · ${m.clips} clips`), make("i"),
+        make("span", null, "commit ", make("code", null, (r.code_commit || "—").slice(0, 7))), make("i"),
+        make("span", null, base ? `vs ${base.name} (${base.id})` : r.baseline ? `vs ${r.baseline}` : "no baseline"), make("i"),
+        make("span", null, new Date(r.t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })));
+      const grid = make("span", "mgrid",
+        metric("VTT · all", pctv(m.vtt_acc), delta(m.vtt_acc, bm?.vtt_acc)),
+        metric("VTT · held-out", pctv(m.vtt_acc_heldout), delta(m.vtt_acc_heldout, bm?.vtt_acc_heldout)),
+        metric("VTT · Gemini", pctv(m.gemini_acc)),
+        metric("VTT · Muse", pctv(m.muse_acc)),
+        metric("Pool recall", pctv(m.pool_recall), delta(m.pool_recall, bm?.pool_recall)),
+        metric("Auto-send precision", pctv(m.autosend_precision), delta(m.autosend_precision, bm?.autosend_precision)),
+        metric("Auto-send coverage", pctv(m.autosend_coverage), delta(m.autosend_coverage, bm?.autosend_coverage)));
+      const btn = make("button", "run", make("span", "hyp", r.hypothesis || r.name), chips, meta, grid);
+      btn.type = "button";
+      btn.dataset.id = r.id;
+      btn.setAttribute("aria-pressed", "false");
+      btn.addEventListener("click", () => pick(r.id));
+      return make("li", null, btn);
+    }
+
+    function pick(id) {
+      picked = runs.find((r) => r.id === id);
+      for (const b of document.querySelectorAll(".run")) b.setAttribute("aria-pressed", String(b.dataset.id === id));
+      const base = runs.find((x) => x.id === picked.baseline);
+      const series = [{ name: `${picked.name} · VTT`, color: "var(--coach)", points: picked.curve.map((c) => ({ x: c.i, y: c.vtt })) }];
+      if (base) series.push({ name: `${base.name} · VTT`, color: "var(--ink-3)", points: base.curve.map((c) => ({ x: c.i, y: c.vtt })) });
+      $("overlay").hidden = false;
+      $("overlay-title").replaceChildren(make("b", null, "VTT learning curve"), ` · ${picked.name}${base ? ` vs its baseline ${base.name}` : " (no baseline)"}`);
+      $("overlay-legend").replaceChildren(...series.map((x) => make("span", null, LineChart.lineKey(x.color), x.name)));
+      LineChart.draw($("overlay-chart"), { series, xLabel: "clip", label: `VTT accuracy by clip: ${series.map((x) => `${x.name} ends at ${pctv(x.points[x.points.length - 1]?.y)}`).join("; ")}` });
+    }
+
+    (async () => {
+      try {
+        const r = await fetch("/runs", { cache: "no-store" });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        runs = [...d.runs].sort((a, b) => b.t - a.t);
+        $("runlist").replaceChildren(...(runs.length ? runs.map(runRow) : [make("li", "eyebrow", "No runs yet.")]));
+        const first = runs.find((x) => x.baseline) || runs[0];
+        if (first) pick(first.id);
+      } catch (err) {
+        $("runlist").replaceChildren(make("li", "msg error", `Couldn't load runs: ${err.message}`));
+      }
+    })();
+
+    // ---- self-improvement: every system version (GET /versions) ----
+    const NS = "http://www.w3.org/2000/svg";
+    const sv = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; return e; };
+    const ADOPTED = new Set(["adopted", "live", "current"]);
+    const pts = (d) => (d == null ? "" : `${d > 0 ? "+" : d < 0 ? "−" : "±"}${Math.abs(Math.round(d * 1000) / 10)} pts`);
+    const money = (x) => (x == null ? "—" : `$${x.toFixed(2)}`);
+    const changeText = (c) => Object.entries(c || {}).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
+    let vdata = null, vsel = null;
+
+    function vstate(v) { return v.status === "rejected" ? "rejected" : v.status === "candidate" ? "candidate" : "adopted"; }
+
+    function drawVersions() {
+      const box = $("vchart");
+      if (!vdata || box.offsetParent === null) return;   // drawn when its tab is visible
+      const vs = [...vdata.versions].sort((a, b) => a.t - b.t);
+      const W = box.clientWidth, H = 320, M = { l: 44, r: 150, t: 34, b: 50 }, iw = W - M.l - M.r, ih = H - M.t - M.b;
+      if (iw < 40) return;
+      const held = (v) => v.metrics?.heldout?.word_acc ?? null;
+      const test = vs.find((v) => v.id === vdata.current)?.metrics?.test?.word_acc ?? null;
+      const vals = [...vs.map(held), test].filter((x) => x != null);
+      const lo = Math.max(0, Math.floor((Math.min(...vals) - 0.04) * 20) / 20), hi = Math.min(1, Math.ceil((Math.max(...vals) + 0.04) * 20) / 20);
+      const X = (k) => M.l + (vs.length === 1 ? iw / 2 : (k / (vs.length - 1)) * iw), Y = (y) => M.t + (1 - (y - lo) / (hi - lo)) * ih;
+      const root = sv("svg", { class: "chart vchart", width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "group",
+        "aria-label": `Held-out VTT word accuracy across ${vs.length} versions; current ${vdata.current}, live ${vdata.live}` });
+      const step = (hi - lo) > 0.3 ? 0.1 : 0.05;
+      for (let y = lo; y <= hi + 1e-9; y += step) {
+        root.append(sv("line", { x1: M.l, x2: M.l + iw, y1: Y(y), y2: Y(y), stroke: Math.abs(y - lo) < 1e-9 ? "var(--hair-2)" : "var(--hair)" }));
+        root.append(sv("text", { x: M.l - 8, y: Y(y) + 4, "text-anchor": "end" }, `${Math.round(y * 100)}%`));
+      }
+      // the staircase: each adopted version holds the line until the next one is adopted
+      let path = "", level = null;
+      vs.forEach((v, k) => {
+        if (!ADOPTED.has(v.status) || held(v) == null) return;
+        path += level == null ? `M${X(k)},${Y(held(v))}` : ` H${X(k)} V${Y(held(v))}`;
+        level = held(v);
+      });
+      if (level != null) path += ` H${X(vs.length - 1)}`;
+      root.append(sv("path", { class: "stair", d: path }));
+      // the final test number beside the last step
+      if (test != null) {
+        const t = sv("text", { class: "end", x: M.l + iw + 14, y: Y(level) + 4 });
+        t.append(sv("tspan", { class: "v" }, `${Math.round(test * 100)}%`), sv("tspan", {}, " final test"));
+        root.append(t, sv("text", { class: "end", x: M.l + iw + 14, y: Y(level) + 20 }, `held-out ${Math.round(level * 100)}%`));
+      }
+      const tip = document.createElement("div");
+      tip.className = "event tip vtip";
+      tip.hidden = true;
+      vs.forEach((v, k) => {
+        const s = vstate(v), x = X(k), y = held(v) != null ? Y(held(v)) : Y(level ?? lo);   // a candidate waits on the current level
+        const g = sv("g", { "data-id": v.id, "data-state": s });
+        if (s === "adopted") g.append(sv("circle", { cx: x, cy: y, r: 5, fill: "var(--onplan)", stroke: "var(--card)", "stroke-width": 2 }));
+        else if (s === "rejected") g.append(sv("path", { d: `M${x - 4.5},${y - 4.5} L${x + 4.5},${y + 4.5} M${x + 4.5},${y - 4.5} L${x - 4.5},${y + 4.5}`, stroke: "var(--over)", "stroke-width": 2.5, "stroke-linecap": "round" }));
+        else g.append(sv("circle", { cx: x, cy: y, r: 5, fill: "var(--card)", stroke: "var(--ink-3)", "stroke-width": 1.5, "stroke-dasharray": "2 2" }));
+        for (const [ptr, dy] of [[vdata.current, -14], [vdata.live, -26]]) if (v.id === ptr) g.append(sv("text", { class: "ptr", x, y: y + dy, "text-anchor": "middle" }, ptr === vdata.current ? "current" : "live"));
+        if (v.id === vdata.current && v.id === vdata.live) g.lastChild.textContent = "live · current";
+        g.append(sv("text", { x, y: H - 26, "text-anchor": "middle" }, `#${k}`), sv("text", { class: "kind", x, y: H - 12, "text-anchor": "middle" }, v.kind));
+        const hit = sv("circle", { class: "hit", cx: x, cy: y, r: 12, tabindex: 0, role: "button", "aria-label": `${v.id}, ${v.kind}, ${v.status}: ${v.hypothesis}` });
+        const show = () => {
+          tip.replaceChildren(...[
+            [`${v.id} · ${v.status} · ${v.kind}`, true], [v.hypothesis], [changeText(v.change)],
+            [held(v) == null ? "held-out: not scored yet" : `held-out ${Math.round(held(v) * 100)}% · ${pts(v.delta?.word_acc)} vs ${v.parent ?? "—"} · ${money(v.cost_usd)}`],
+          ].map(([text, strong]) => { const sp = document.createElement("span"); if (strong) { const b = document.createElement("b"); b.textContent = text; sp.append(b); } else sp.textContent = text; return sp; }));
+          tip.hidden = false;
+          const tw = tip.offsetWidth;
+          tip.style.left = `${x + 16 + tw > W ? x - 16 - tw : x + 16}px`;
+          tip.style.top = `${Math.max(0, y - 30)}px`;
+        };
+        hit.addEventListener("pointerenter", show);
+        hit.addEventListener("focus", show);
+        hit.addEventListener("pointerleave", () => { tip.hidden = true; });
+        hit.addEventListener("blur", () => { tip.hidden = true; });
+        hit.addEventListener("click", () => detail(v.id));
+        hit.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); detail(v.id); } });
+        g.append(hit);
+        if (v.id === vsel) g.append(sv("circle", { class: "sel", cx: x, cy: y, r: 9 }));
+        root.append(g);
+      });
+      box.replaceChildren(root, tip);
+    }
+
+    function detail(id) {
+      vsel = id;
+      const v = vdata.versions.find((x) => x.id === id), held = v.metrics?.heldout, box = $("vdetail");
+      const row = (label, ...kids) => { const p = document.createElement("p"); p.className = "meta"; const s = document.createElement("span"); s.textContent = label; p.append(s, ...kids); return p; };
+      const txt = (t) => { const b = document.createElement("b"); b.textContent = t; return b; };
+      const chips = make("span", "chips", make("span", ADOPTED.has(v.status) ? "chip onplan" : v.status === "rejected" ? "chip over" : "chip", v.status),
+        make("span", "chip", v.kind), make("span", v.author === "agent" ? "chip coach" : "chip", v.author),
+        v.id === vdata.current ? make("span", "chip", "current") : null, v.id === vdata.live ? make("span", "chip", "live") : null);
+      const links = (v.failures_cited || []).flatMap((c, i) => { const a = document.createElement("a"); a.href = `clips.html?clip=${encodeURIComponent(c)}`; a.textContent = c; return i ? [", ", a] : [a]; });
+      box.replaceChildren(make("span", "hyp", v.hypothesis), chips,
+        row("change", txt(changeText(v.change) || "—")),
+        row("held-out", txt(held ? `word ${pctv(held.word_acc)} · sentence ${pctv(held.sentence_acc)} · viseme ${pctv(held.viseme_acc)} · top-3 ${pctv(held.top3_acc)}` : "not scored yet")),
+        row("vs parent", txt(v.parent ? `${v.parent}: word ${pts(v.delta?.word_acc) || "—"} · viseme ${pts(v.delta?.viseme_acc) || "—"}` : "first version")),
+        row("cost", txt(`${money(v.cost_usd)} to try · ${money(held?.cost_per_clip)} per clip`)),
+        row("built from", make("code", null, v.config_hash), make("code", null, (v.code_commit || "").slice(0, 7))),
+        row("failures cited", ...(links.length ? links : [txt("—")])));
+      box.hidden = false;
+      drawVersions();
+    }
+
+    function versionsTable(vs) {
+      const tr = (cells, th) => { const r = document.createElement("tr"); for (const c of cells) { const e = document.createElement(th ? "th" : "td"); e.textContent = c; r.append(e); } return r; };
+      $("vtable").replaceChildren(tr(["#", "version", "status", "kind", "held-out word", "vs parent", "cost", "hypothesis"], true),
+        ...vs.map((v, k) => tr([`#${k}`, v.id, v.status, v.kind, pctv(v.metrics?.heldout?.word_acc), pts(v.delta?.word_acc) || "—", money(v.cost_usd), v.hypothesis])));
+    }
+
+    function metricsTable() {
+      const vs = [...vdata.versions].sort((a, b) => a.t - b.t);
+      const cols = [["first", vs[0]], ["live", vs.find((v) => v.id === vdata.live)], ["current", vs.find((v) => v.id === vdata.current)]];
+      const rows = [["Word accuracy", "word_acc"], ["Sentence accuracy", "sentence_acc"], ["Viseme accuracy", "viseme_acc"], ["Top-3 accuracy", "top3_acc"],
+        ["Auto-send precision", "autosend_precision"], ["Auto-send coverage", "autosend_coverage"], ["Cost per clip", "cost_per_clip"]];
+      const head = document.createElement("tr");
+      for (const h of ["Metric", ...cols.map(([n, v]) => `${n} · ${v?.id ?? "—"}`), "current vs first"]) { const th = document.createElement("th"); th.textContent = h; head.append(th); }
+      $("vmetrics").replaceChildren(head, ...rows.map(([label, key]) => {
+        const r = document.createElement("tr"), f = key === "cost_per_clip" ? money : pctv;
+        const a = cols[0][1]?.metrics?.heldout?.[key], c = cols[2][1]?.metrics?.heldout?.[key];
+        for (const [i, text] of [label, ...cols.map(([, v]) => f(v?.metrics?.heldout?.[key])), a == null || c == null ? "—" : key === "cost_per_clip" ? `${c - a >= 0 ? "+" : "−"}${money(Math.abs(c - a))}` : pts(c - a)].entries()) {
+          const td = document.createElement("td"); td.textContent = text; if (i) td.className = "num"; r.append(td);
+        }
+        return r;
+      }));
+    }
+
+    (async () => {
+      try {
+        const r = await fetch("/versions", { cache: "no-store" });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        vdata = d;
+        const vs = [...d.versions].sort((a, b) => a.t - b.t), n = (s) => vs.filter((v) => vstate(v) === s).length;
+        $("versions-sub").textContent = `· held-out VTT word accuracy · ${vs.length} versions: ${n("adopted")} adopted, ${n("rejected")} rolled back, ${n("candidate")} candidate · live ${d.live} · current ${d.current}`;
+        $("vlegend").replaceChildren(...[["lk", "VTT word accuracy, adopted line"], ["mk adopted", "adopted"], ["mk rejected", "rolled back"], ["mk candidate", "candidate"]].map(([cls, text]) => {
+          const s = document.createElement("span"), k = document.createElement("i"); k.className = cls; if (cls === "lk") k.style.background = "var(--coach)"; s.append(k, ` ${text}`); return s;
+        }));
+        versionsTable(vs);
+        metricsTable();
+        drawVersions();
+      } catch (err) {
+        $("vchart").replaceChildren(make("p", "msg error", `Couldn't load /versions: ${err.message}`));
+      }
+    })();
+
+    // ---- tabs: v1 sheet | Self-improvement | Runs, kept in the URL hash ----
+    function showTab(name) {
+      if (!["sheet", "self", "runs"].includes(name)) name = "sheet";
+      for (const b of document.querySelectorAll("#tabs .opt")) { b.setAttribute("aria-pressed", String(b.dataset.tab === name)); b.setAttribute("aria-selected", String(b.dataset.tab === name)); }
+      for (const t of ["sheet", "self", "runs"]) $(`panel-${t}`).hidden = t !== name;
+      if (location.hash.slice(1) !== name) history.replaceState(null, "", `#${name}`);
+      if (name === "self") drawVersions();
+      if (name === "runs" && picked) pick(picked.id);   // charts measure their width, so draw once visible
+    }
+    document.querySelectorAll("#tabs .opt").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+    addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+    showTab(location.hash.slice(1));
+    let resizing = 0;
+    addEventListener("resize", () => { cancelAnimationFrame(resizing); resizing = requestAnimationFrame(() => { drawVersions(); if (picked && !$("panel-runs").hidden) pick(picked.id); }); });
   </script>
 </body>
 </html>
