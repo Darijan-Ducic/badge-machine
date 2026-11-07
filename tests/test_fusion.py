@@ -72,3 +72,34 @@ def test_gate_never_auto_sends_when_no_confidence_level_is_precise_enough():
     labels = np.array([1, 1])
 
     assert gate_threshold(probs, labels, precision=0.5) == np.inf
+
+
+def padded(features, extra, rng):
+    """Append `extra` fake candidates with loud random features to every clip and mask them out, the way pools of
+    different sizes are padded into one tensor."""
+    n, _, k = features.shape
+    garbage = rng.normal(scale=5, size=(n, extra, k))
+    mask = np.concatenate([np.ones(features.shape[:2], bool), np.zeros((n, extra), bool)], axis=1)
+    return np.concatenate([features, garbage], axis=1), mask
+
+
+def test_padded_candidates_get_exactly_zero_probability():
+    rng = np.random.default_rng(5)
+    y, _ = split(rng, 50)
+    features = np.stack([simulated_model(y, 2.0, 1, rng), simulated_model(y, 1.0, 1, rng)], -1)
+    weights = np.array([1.0, 0.5])
+    big, mask = padded(features, 4, rng)
+
+    probs = predict(big, weights, mask=mask)
+
+    assert (probs[:, N_PHRASES:] == 0).all()
+    np.testing.assert_allclose(probs[:, :N_PHRASES], predict(features, weights), rtol=0, atol=1e-12)
+
+
+def test_padding_does_not_change_the_fit():
+    rng = np.random.default_rng(6)
+    y, _ = split(rng, 300)
+    features = np.stack([simulated_model(y, 2.0, 1, rng), simulated_model(y, 0.5, 3, rng)], -1)
+    big, mask = padded(features, 4, rng)
+
+    np.testing.assert_allclose(fit(big, y, mask=mask), fit(features, y), rtol=0, atol=1e-6)
