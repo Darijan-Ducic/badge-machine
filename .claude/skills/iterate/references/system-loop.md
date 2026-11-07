@@ -54,7 +54,9 @@ This is one theory at a time. To test 5–10 theories at once with parallel suba
      instruments). Design the pilot with the user and their budget; don't re-read clips through the record paths,
      because that writes new clips into the shared store.
 5. **Judge. This is your decision, not the tool's.**
-   - The held-out word-accuracy delta and its CI; the viseme-accuracy delta; cost per clip.
+   - The held-out lift over impostors (word and viseme; [metrics.md](metrics.md)) and its CI, on at least 40 turns
+     per arm. Until compare.py reports lift, use the word and viseme accuracy deltas and say so. Also cost per
+     clip.
    - On commands (exact sentences), read the paired flips and explain the losses, e.g. one-word-apart command pairs.
      On natural speech the flips are always 0, so read the word CI.
    - Count your held-out looks for this line of changes and write the number down. Every extra look inflates the

@@ -53,7 +53,8 @@ No two agents get the same lever in the same direction. If two theories overlap,
 4. **You judge, one look each:** `uv run python tools/compare.py --records /tmp/snap-r<R>.json --base <base> --cand
    attempt/r<R>-<slug> --split heldout --json /tmp/r<R>-<slug>.json`. Every held-out look counts toward N, including
    the stacking looks in step 7. Write N in the round entry.
-5. **Table:** one row per candidate: theory · word Δ [95% CI] · viseme Δ · paired per-turn word wins/losses (iteration
+5. **Table:** one row per candidate: theory · lift Δ over impostors [95% CI] (word, viseme; metrics.md) · paired
+   per-turn wins/losses (iteration
    log #13; until it lands, the word CI alone) · speakers · cost · the agent's suggestion · your decision.
 6. **Decide each:** adopt, reject, park, or inconclusive. Judge against the minimum detectable effect for n, not a
    fixed threshold. The more candidates you judged, the stronger the evidence the winner needs: a paired p that still

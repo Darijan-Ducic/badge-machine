@@ -42,6 +42,19 @@ Newest first. One entry per iteration, data event, or decision:
 
 ## Log
 
+### 2026-11-07 · Labels measured good; lift over impostors becomes the metric; a second speaker
+- **What:** lab-labels measured STT label quality; lab-metrics showed raw accuracy can be gamed and set lift over
+  impostors as the primary metric; a second speaker, `practice:fauci-messages:fauci`, started streaming.
+- **Evidence:**
+  - Labels (Obama): per-turn STT WER 3.2–3.9% against the official White House transcripts; doubling 0.66 per 100
+    words per turn (phrase repeats like "of the of the" aren't collapsed by `_normalize`); boundary loss 0.37% of words.
+  - Metric: the constant string "the to of in we" scores word 0.080, above Muse's 0.033. Lift over impostors needs at
+    least 40 turns per arm (lab-metrics' minimum detectable effect).
+- **Decision:** lever 7 (STT label hygiene) parked. Judge on lift from now on. System claims wait for the second
+  speaker.
+- **Levers:** 7 → parked; new lever 20 (input representation, lab-features) untested.
+- **By:** badge-machine-3f (labs); recorded by badge-machine-ef.
+
 ### 2026-11-07 · Diagnose on 21 train clips: pool misses, a tied pool, blurry input
 - **What:** a free, read-only `tools/diagnose.py failures --user practice:obama-weekly:obama --split train` after more
   emulated Obama sessions arrived (21 labelled train clips, so about 35 in total).

@@ -27,8 +27,11 @@ re-rank in the table, and give a new lever the next free ID.
 
 - **Natural speech breaks sentence-level metrics.** Labels are exact matches (lever 1), so on natural sentences
   sentence accuracy and pool recall are 0 by construction, and compare.py's flips and sign test are always 0 flips /
-  p = 1. Judge on held-out **word accuracy** (1 − WER against the STT text, with its CI) and **viseme accuracy**.
-  `tools/experiment.py`'s pass/fail column compares sentence accuracy: ignore it on natural speech.
+  p = 1. `tools/experiment.py`'s pass/fail column compares sentence accuracy: ignore it on natural speech.
+- **Judge on lift over impostors, not raw accuracy.** Raw word and viseme accuracy can be gamed: the constant string
+  "the to of in we" scores word 0.080, above Muse's 0.033. The primary metric is how much better VTT matches its own
+  turn's STT than impostor turns' STT ([metrics.md](metrics.md)), on at least 40 turns per arm (the minimum detectable
+  effect from lab-metrics). Raw numbers elsewhere in this file are for context.
 - **A system claim needs at least two speakers.** A gain on one speaker may be that speaker's quirk, so one speaker
   gives at most **inconclusive** (practice rule #10 in [iteration-log.md](../../../../docs/iteration-log.md)). Run
   records are tagged `"loop": "framework"` (system) or `"personal"`.
@@ -37,7 +40,7 @@ re-rank in the table, and give a new lever the next free ID.
   of 0.013 / 0.151, near chance ([lab-fusion.md](lab-fusion.md)). Selection levers (1, 2, 5, 6) can gain at most that
   gap; upstream levers (11, 17, 12, 19, 18, 4) raise the ceiling itself.
 - **No fixed adopt threshold.** Judge paired evidence against the minimum detectable effect for your n
-  ([metrics.md](metrics.md)); labs confirm on at least 30 turns (practice rules #6, #12).
+  ([metrics.md](metrics.md)); at least 40 turns per arm (practice rules #6, #12, lab-metrics).
 - **Below 10 labelled clips the scorer is the starting weights alone** (stage `defaults`: no fitting, no auto-send;
   scorer.py:27, 85-86). Levers that act through fitting (stage plan, threshold, features the defaults weigh 0) can't
   show an effect on a user with fewer clips.
@@ -49,7 +52,7 @@ re-rank in the table, and give a new lever the next free ID.
 
 ## The ranking
 
-Ranked by expected effect on held-out word accuracy. The evidence: the labs (lab-fusion's ceiling, tracker-v2's crop
+Ranked by expected effect on held-out lift over impostors. The evidence: the labs (lab-fusion's ceiling, tracker-v2's crop
 geometry), a free diagnose run on `practice:obama-weekly:obama` (21 train clips), and the code mechanisms; see
 history.md. The bottleneck is upstream (what the readers see), so upstream levers rank first. Within a group, a free
 lever ranks before a paid one acting on the same failure. Re-rank from evidence after every iteration: bucket
@@ -60,15 +63,15 @@ sizes and flags from `tools/diagnose.py failures`, and word deltas from `tools/c
 | 1 | 11 | Mouth crop position | capture / paid | untested (crop geometry measured) | lab-crop, tracker-lab |
 | 2 | 17 | Input sharpness: emulation → crop → tiles | capture / paid | inconclusive | lab-pixels, lab-crop |
 | 3 | 12 | Visual evidence per sample: grid, fps, image cap | paid | untested | lab-frames |
-| 4 | 19 | Reader model | paid | untested | lab-models |
-| 5 | 18 | Open-call prompt and schema | paid | untested | lab-prompt, lab-schema |
-| 6 | 4 | Muse sampling: temperature, effort, K identical requests | paid | untested | lab-decode |
-| 7 | 5 | Exact-match votes (ROVER-style word consensus) | free · code edit | inconclusive | lab-fusion |
-| 8 | 2 | Starting weights (DEFAULT_WEIGHTS, CORE) | free · code edit | untested | lab-fusion |
-| 9 | 1 | Label rule: exact sentence match, else ∅ | free · code edit | untested | lab-labels, metrics |
-| 10 | 6 | Phrase bank, pool cap and source order | free / paid | untested | — |
-| 11 | 3 | Gemini forced choice | free to mitigate · paid to fix | untested | lab-gemini |
-| 12 | 7 | STT label hygiene | free / capture | untested | lab-labels |
+| 4 | 20 | Input representation: SAM lip masks as input | paid (SAM) / free (decoding) | untested | lab-features |
+| 5 | 19 | Reader model | paid | untested | lab-models |
+| 6 | 18 | Open-call prompt and schema | paid | untested | lab-prompt, lab-schema |
+| 7 | 4 | Muse sampling: temperature, effort, K identical requests | paid | untested | lab-decode |
+| 8 | 5 | Exact-match votes (ROVER-style word consensus) | free · code edit | inconclusive | lab-fusion |
+| 9 | 2 | Starting weights (DEFAULT_WEIGHTS, CORE) | free · code edit | untested | lab-fusion |
+| 10 | 1 | Label rule: exact sentence match, else ∅ | free · code edit | untested | lab-labels, metrics |
+| 11 | 6 | Phrase bank, pool cap and source order | free / paid | untested | — |
+| 12 | 3 | Gemini forced choice | free to mitigate · paid to fix | untested | lab-gemini |
 | 13 | 8 | k: stored samples used | free | untested | — |
 | 14 | 10 | Viseme substitution costs | free | untested | — |
 | 15 | 9 | Stage plan 10 / 30 / 60 | free | untested | lab-personal |
@@ -76,6 +79,7 @@ sizes and flags from `tools/diagnose.py failures`, and word deltas from `tools/c
 | 17 | 14 | Session segmentation | paid | untested | — |
 | 18 | 15 | Tracker knobs | capture | untested | tracker-lab |
 | 19 | 16 | Readiness rule | free | untested | lab-personal |
+| 20 | 7 | STT label hygiene | free / capture | parked | lab-labels |
 
 ## Labs
 
@@ -85,6 +89,7 @@ loop. Read the lab chapter before testing a lever it covers. If a chapter is mis
   [lab-schema.md](lab-schema.md) · frames → [lab-frames.md](lab-frames.md) · pixels → [lab-pixels.md](lab-pixels.md)
 - models → [lab-models.md](lab-models.md) · decode → [lab-decode.md](lab-decode.md) · fusion →
   [lab-fusion.md](lab-fusion.md) · gemini → [lab-gemini.md](lab-gemini.md)
+- features (input representation) → [lab-features.md](lab-features.md)
 - personal → [lab-personal.md](lab-personal.md) · labels → [lab-labels.md](lab-labels.md) · metrics →
   [metrics.md](metrics.md) · bench → [lab-bench.md](lab-bench.md) · tracker → [tracker-lab.md](tracker-lab.md)
 
@@ -166,8 +171,11 @@ loop. Read the lab chapter before testing a lever it covers. If a chapter is mis
   inflates word accuracy's denominator. The mic uses browser-default processing; docs blame the doubling on it, but the
   code can't confirm that. Turning that processing off is a capture experiment (new recordings).
 - **Evidence:** diagnose, 21 train clips: the `stt_suspect` flag on 4 (e.g. "common common sense", "workers were
-  workers were"). First session: "facts facts".
-- **Status:** untested.
+  workers were"). First session: "facts facts". **Labels measured good** ([lab-labels.md](lab-labels.md), Obama):
+  per-turn STT WER 3.2–3.9% against the official White House transcripts; doubling 0.66 per 100 words per turn
+  (phrase repeats like "of the of the" aren't collapsed by `_normalize`); boundary loss 0.37% of words.
+- **Status:** parked: label noise is small next to VTT's error.
+- **Reopen if:** the STT model changes, the mic processing changes, or a new speaker's STT WER is much worse.
 
 ### 8 · k: stored samples used
 - **Where:** versions.py:20; evaluator.py:122-123.
@@ -250,4 +258,13 @@ loop. Read the lab chapter before testing a lever it covers. If a chapter is mis
   [lab-models.md](lab-models.md).
 - **Mechanism:** which model reads the lips. Six image-capable models are available: muse-spark-1.1 / 1.2 / 1.3,
   1.2 / 1.3-contributor, and muse-wonder-1.0 (the fastest).
+- **Status:** untested.
+
+### 20 · Input representation: SAM lip masks as input
+- **Where:** a new family from [lab-features.md](lab-features.md). The lips are measured programmatically from SAM lip
+  masks and that measurement becomes the INPUT: silhouettes, time-series tables or charts for the reader, decoding
+  from features alone, or model-free DTW template matching against a user's own phrases.
+- **Mechanism:** gives the reader (or no reader at all) a clean lip signal instead of blurry pixels, attacking the
+  upstream bottleneck directly (levers 11, 17). DTW matching suits the personal loop: phrases a user repeats.
+- **Cost:** SAM lip masks are paid ($0.20 per 1,000 frames); decoding and DTW on stored masks are free.
 - **Status:** untested.

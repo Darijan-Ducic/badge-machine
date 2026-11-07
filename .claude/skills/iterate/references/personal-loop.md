@@ -33,8 +33,9 @@ raw outputs. Run records for this loop are tagged `"loop": "personal"`; see also
 
 1. **Look.** `tools/diagnose.py recipe --user U` (stage, the weights this stage fits, the threshold, pool recall);
    `failures --user U`; the Stats page curve (predict-then-train) ([tool-diagnose.md](tool-diagnose.md)).
-2. **Judge** on the user's **held-out** split, the middle 20% of their stream: word and viseme accuracy, auto-send
-   precision and coverage. NEVER judge on the newest 20%, because that is the test split.
+2. **Judge** on the user's **held-out** split, the middle 20% of their stream: lift over impostors (word and viseme;
+   [metrics.md](metrics.md)), auto-send precision and coverage. NEVER judge on the newest 20%, because that is the
+   test split.
 3. **Decide and recommend:** keep the previous stage, take the re-fit, or hold the stage back (e.g. stay on the
    starting weights when the fitted stage is worse at this clip count). Until (f) lands there is no per-user switch,
    so write the recommendation and its evidence to history.md and tell the user.

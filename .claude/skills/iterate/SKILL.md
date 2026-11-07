@@ -11,8 +11,10 @@ and readiness fitted to one user). Scripts are your instruments: they replay sto
 read the evidence, decide, and record every change as a version. Nothing in this repo should optimize on its own, and
 when you find something that does, account for it (see instruments.md → What runs without you).
 
-VTT = video-to-text, the lip-reading output. STT = speech-to-text, the label. Headline metric: held-out word accuracy
-(1 − WER against the STT text), with viseme accuracy beside it.
+VTT = video-to-text, the lip-reading output. STT = speech-to-text, the label. Headline metric: held-out **lift over
+impostors**: how much better VTT matches its own turn's STT than other turns' STT, in word and viseme accuracy
+([references/metrics.md](references/metrics.md) has the exact definition). Raw accuracy can be gamed: the constant
+string "the to of in we" scores word 0.080, above Muse's 0.033. Judge on at least 40 turns per arm.
 
 ## Route
 
@@ -36,7 +38,8 @@ then use the "until it lands" rule in instruments.md → Missing instruments.
 
 An iteration isn't done until ALL of these exist:
 1. **Hypothesis:** one sentence, citing failure clip ids from diagnose, naming ONE lever or code change.
-2. **Evidence:** the held-out word-accuracy delta with its CI, the viseme-accuracy delta, the clip count, the dataset
+2. **Evidence:** the held-out lift delta with its CI (word and viseme; until compare.py reports lift, the word and
+   viseme accuracy deltas), the turn count (≥ 40 per arm), the speakers, the dataset
    or snapshot, the number of held-out looks, and the cost, plus a run record or compare JSON path. On natural speech
    compare.py's flips and sign test are always 0 flips / p = 1 (they count exact-sentence hits), so they say nothing
    there. Judge on the word CI and the viseme delta.
