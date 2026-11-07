@@ -25,6 +25,9 @@ emulation, or dictation (instruments.md). Mind the cost and the 50-turn daily ca
 
 ## One iteration
 
+This is one theory at a time. To test 5–10 theories at once with parallel subagents, run a round:
+[parallel-rounds.md](parallel-rounds.md).
+
 1. **Look.** `tools/diagnose.py failures --user U` on train: take the largest bucket. Run `clip ID` on 2–3 of its clips
    and `recipe --user U` ([tool-diagnose.md](tool-diagnose.md)).
 2. **Read.** [levers.md](levers.md) (ranking, status, parked) and [history.md](history.md) (what was tried). Skip

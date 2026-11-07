@@ -16,6 +16,15 @@ lessons that tie them together.
 
 If a number below disagrees with the registry or runs store, the store wins. Fix the entry.
 
+## What works
+
+The distilled methods that held up, so each iteration or round starts from them (rules in
+[parallel-rounds.md](parallel-rounds.md) → What works). A lesson enters only with a confirmed adoption or two
+agreeing rounds behind it, and it cites them.
+
+- **Levers:** none confirmed yet.
+- **Practice:** none confirmed yet.
+
 ## Entry format
 
 Newest first. One entry per iteration, data event, or decision:

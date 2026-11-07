@@ -21,6 +21,7 @@ VTT = video-to-text, the lip-reading output. STT = speech-to-text, the label. He
 | start any iteration | [references/history.md](references/history.md), then [references/levers.md](references/levers.md) |
 | find out what fails and why | [references/tool-diagnose.md](references/tool-diagnose.md) |
 | improve the system for every user | [references/system-loop.md](references/system-loop.md) |
+| test several theories at once with parallel subagents | [references/parallel-rounds.md](references/parallel-rounds.md) |
 | fit or judge one user's model | [references/personal-loop.md](references/personal-loop.md) |
 | test a code change | [references/tool-compare.md](references/tool-compare.md) |
 | create, adopt, reject, promote or roll back a version | [references/tool-versions.md](references/tool-versions.md) |
