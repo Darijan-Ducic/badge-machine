@@ -13,21 +13,22 @@
     #content.loading { opacity: .5; }                                                             /* .dock .go:disabled, app.css:510 */
     a.opt { color: var(--ink); text-decoration: none; }
     /* series identity: a short line key beside the label (stroke 2 like cards.js:219; 14px like .line5 marks, app.css:154) */
-    .lk { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
     .stat div.word { font-size: 21px; letter-spacing: -0.02em; }                                 /* .headline.sm, app.css:120 */
     .stat .chip { margin-top: 8px; }
     /* the chart */
-    .chart-wrap { position: relative; margin-top: 18px; }                                        /* .spark margin, app.css:145 */
-    .chart { display: block; width: 100%; overflow: visible; }
-    .chart text { font-size: 11.5px; fill: var(--ink-3); }                                       /* .bars/.ends labels, app.css:126,133 */
-    .chart text.stage { font-size: 11px; }                                                       /* .track .cue em, app.css:132 */
-    .chart text.end { font-size: 12px; fill: var(--ink-2); }                                     /* .legend, app.css:48 */
-    .chart text.end tspan.v { fill: var(--ink); font-weight: 500; }
-    .chart:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
-    .tip { position: absolute; top: 0; pointer-events: none; flex-direction: column; align-items: stretch; gap: 2px; box-shadow: var(--lift); white-space: nowrap; z-index: 2; }
-    .tip b { font-weight: 500; color: var(--ink); }
-    .tip span { display: flex; align-items: center; gap: 6px; }
-    .tip .lk { margin-right: 0; }
+    .chart.links rect.hit { cursor: pointer; }
+    /* the training strip: one square per labeled clip in training order; ✓ filled green (said / on plan), ✗ a yellow
+       ring (never said), app.css:174-178 — fill differs as well as hue, so it reads without color */
+    .tstrip { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 0; margin-top: 14px; }
+    .tgroup { display: grid; gap: 6px; padding: 0 12px; border-left: 1px solid var(--hair-2); }   /* stage boundary */
+    .tgroup:first-child { padding-left: 0; border-left: 0; }
+    .tgroup > span { font-size: 11px; color: var(--ink-3); }   /* .track .cue em, app.css:132 */
+    .tsq { display: flex; flex-wrap: wrap; gap: 3px; max-width: 100%; }   /* .strip gap, app.css:187 */
+    .sq { width: 12px; height: 12px; border-radius: 3px; }   /* .legend .key radius, app.css:49 */
+    .sq.yes { background: var(--onplan); }
+    .sq.no { background: var(--near-wash); box-shadow: inset 0 0 0 2px var(--near); }
+    a.sq:hover { transform: scale(1.25); }
+    .legend .sq { margin-right: -8px; }
     .tableview { margin-top: 14px; font-size: 13px; color: var(--ink-3); }                        /* .meta size, app.css:33 */
     .tableview summary { cursor: pointer; }
     .tableview table { border-collapse: collapse; margin-top: 8px; width: 100%; }
@@ -78,6 +79,11 @@
         <div class="chart-wrap" id="chart"></div>
         <details class="tableview"><summary>Table view</summary><table id="table"></table></details>
       </article>
+      <article class="card" id="strip-card">
+        <p class="eyebrow"><b>Training strip</b><span>· every labeled clip in training order · VTT vs STT · a square opens its clip</span></p>
+        <p class="legend"><span class="sq yes"></span>VTT matches STT<span class="sq no"></span>VTT differs</p>
+        <div class="tstrip" id="strip"></div>
+      </article>
       <div class="board">
         <article class="card stagecard">
           <p class="eyebrow"><b>Training stage</b></p>
@@ -97,9 +103,9 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const SERIES = [
-      { key: "fused", name: "Video only", color: "var(--coach)" },
-      { key: "gemini", name: "Gemini", color: "var(--ink-2)" },
-      { key: "muse", name: "Muse", color: "var(--ink-3)" },
+      { key: "fused", name: "VTT", color: "var(--coach)" },
+      { key: "gemini", name: "VTT · Gemini", color: "var(--ink-2)" },
+      { key: "muse", name: "VTT · Muse", color: "var(--ink-3)" },
     ];
     const FEED_FPS = 24, NS = "http://www.w3.org/2000/svg";
     const pct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
@@ -133,7 +139,7 @@
       const sum = $("summary");
       sum.replaceChildren(el("span", null, "STT transcripts are the reference"), el("i"), el("b", null, String(s.labeled)), " labeled of ", el("b", null, String(s.clips)), " clips", el("i"), "window ", el("b", null, String(s.window)));
       $("empty").hidden = !empty;
-      $("tiles").hidden = $("curve").hidden = empty;
+      $("tiles").hidden = $("curve").hidden = $("strip-card").hidden = empty;
       if (!empty) {
         $("tiles").replaceChildren(...SERIES.map((x) => {
           const t = el("div", "stat"), label = el("small");
@@ -148,6 +154,7 @@
         points = rolling(s.history, s.window);
         drawChart();
         table();
+        strip(s.history);
       }
       // training stage
       $("stage").textContent = s.stage;
@@ -177,7 +184,7 @@
     // rolling accuracy: at each clip, the share correct over the last `window` labeled clips (fewer at the start)
     function rolling(history, window) {
       return history.map((h, k) => {
-        const slice = history.slice(Math.max(0, k - window + 1), k + 1), p = { i: h.i, stage: h.stage, n: slice.length };
+        const slice = history.slice(Math.max(0, k - window + 1), k + 1), p = { i: h.i, stage: h.stage, n: slice.length, clip: h.clip_id ?? null };
         for (const x of SERIES) p[x.key] = slice.filter((c) => c[x.key]).length / slice.length;
         return p;
       });
@@ -230,7 +237,9 @@
       // hover layer: crosshair snaps to the nearest clip; one tooltip lists every series
       const cross = svg("line", { y1: M.t, y2: M.t + ih, stroke: "var(--ink-4)", visibility: "hidden" });
       const dots = SERIES.map((x) => svg("circle", { r: 4, fill: x.color, stroke: "var(--card)", "stroke-width": 2, visibility: "hidden" }));
-      const hit = svg("rect", { x: M.l, y: M.t, width: iw, height: ih, fill: "transparent" });
+      const hit = svg("rect", { class: "hit", x: M.l, y: M.t, width: iw, height: ih, fill: "transparent" });
+      if (points.some((p) => p.clip)) root.classList.add("links");
+      const openClip = (k) => { const c = points[k]?.clip; if (c) location.href = `clips.html?clip=${encodeURIComponent(c)}`; };
       root.append(cross, ...dots, hit);
       const tip = el("div", "event tip");
       tip.hidden = true;
@@ -240,7 +249,8 @@
         const p = points[k], cx = X(p.i);
         cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
         dots.forEach((d, j) => { d.setAttribute("cx", cx); d.setAttribute("cy", Y(p[SERIES[j].key])); d.setAttribute("visibility", "visible"); });
-        tip.replaceChildren(el("span", null, `clip ${p.i} · ${p.stage} · last ${p.n}`), ...SERIES.map((x) => { const r = el("span"); r.append(key(x.color), el("b", null, pct(p[x.key])), x.name); return r; }));
+        tip.replaceChildren(el("span", null, `clip ${p.i} · ${p.stage} · last ${p.n}`), ...SERIES.map((x) => { const r = el("span"); r.append(key(x.color), el("b", null, pct(p[x.key])), x.name); return r; }),
+          ...(p.clip ? [el("span", null, `click: open ${p.clip}`)] : []));
         tip.hidden = false;
         tip.style.display = "flex";
         const tw = tip.offsetWidth;
@@ -254,15 +264,39 @@
         show(k);
       });
       hit.addEventListener("pointerleave", () => show(-1));
+      hit.addEventListener("click", () => openClip(hover));
       root.addEventListener("focus", () => show(hover >= 0 ? hover : points.length - 1));
       root.addEventListener("blur", () => show(-1));
       root.addEventListener("keydown", (e) => {
         if (e.key === "ArrowLeft") show(Math.max(0, hover - 1));
         else if (e.key === "ArrowRight") show(Math.min(points.length - 1, hover + 1));
+        else if (e.key === "Enter") openClip(hover);
         else return;
         e.preventDefault();
       });
       box.replaceChildren(root, tip);
+    }
+
+    // One square per labeled clip, grouped by the stage it was scored under; each links to its clip.
+    function strip(history) {
+      const groups = [];
+      for (const h of history) {
+        if (!groups.length || groups[groups.length - 1].stage !== h.stage) groups.push({ stage: h.stage, items: [] });
+        groups[groups.length - 1].items.push(h);
+      }
+      $("strip").replaceChildren(...groups.map((g) => {
+        const box = el("div", "tgroup"), sqs = el("div", "tsq");
+        box.append(el("span", null, `${g.stage} · ${g.items.length}`), sqs);
+        for (const h of g.items) {
+          const sq = el(h.clip_id ? "a" : "span", `sq ${h.fused ? "yes" : "no"}`);
+          sq.title = `clip ${h.i}${h.clip_id ? ` (${h.clip_id})` : ""} · ${h.stage} · VTT ${h.fused ? "✓ matches" : "✗ differs from"} STT`;
+          sq.setAttribute("aria-label", sq.title);
+          if (h.clip_id) sq.href = `clips.html?clip=${encodeURIComponent(h.clip_id)}`;
+          sq.dataset.i = h.i;
+          sqs.append(sq);
+        }
+        return box;
+      }));
     }
 
     function table() {
