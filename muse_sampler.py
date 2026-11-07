@@ -282,11 +282,31 @@ def _call(client, call: str, sample_idx: int, request: dict, finish) -> dict:
     return item if usage is None else {**item, "usage": usage}
 
 
+def reader_grids(clip: Path) -> Grids:
+    """The grid images both calls send for `clip`."""
+    return labeled_grids(clip, CONFIG["grid"], CONFIG["tile_width"])
+
+
+def open_request(grids: Grids) -> dict:
+    """The chat request every open sample sends with these grids."""
+    return _request(_open_prompt(grids), grids, "lipread_v1", WIRE_SCHEMA)
+
+
+def closed_schema(phrases: list[str]) -> dict:
+    # Numbered menu, so phrases with spaces never become JSON keys; wire keys put every phrase score before "none".
+    return _obj(**{"1_scores": _obj(**{i: _SCORE for i in _phrase_ids(len(phrases))}), "2_none": _SCORE})
+
+
+def closed_request(grids: Grids, phrases: list[str]) -> dict:
+    """The chat request the closed call sends with these grids and phrases."""
+    return _request(_closed_prompt(grids, phrases), grids, "phrase_scores", closed_schema(phrases))
+
+
 def sample_open(clip: Path, k: int) -> list[dict]:
     """K parallel open samples (schema v1). Outputs violating v1 or citing frames outside the clip keep their
     output and list the violations in `error`."""
-    grids = labeled_grids(clip, CONFIG["grid"], CONFIG["tile_width"])
-    request = _request(_open_prompt(grids), grids, "lipread_v1", WIRE_SCHEMA)
+    grids = reader_grids(clip)
+    request = open_request(grids)
 
     def finish(raw):
         output = from_wire(raw)
@@ -300,13 +320,10 @@ def sample_open(clip: Path, k: int) -> list[dict]:
 
 def score_closed(clip: Path, phrases: list[str]) -> dict:
     """One call scoring every phrase plus "none of these"; `output` = {"scores": {phrase: s}, "none": s}, raw scores."""
-    grids = labeled_grids(clip, CONFIG["grid"], CONFIG["tile_width"])
-    # Numbered menu, so phrases with spaces never become JSON keys; wire keys put every phrase score before "none".
-    schema = _obj(**{"1_scores": _obj(**{i: _SCORE for i in _phrase_ids(len(phrases))}), "2_none": _SCORE})
+    grids, schema = reader_grids(clip), closed_schema(phrases)
 
     def finish(raw):
         problems = [f"{e.json_path}: {e.message}" for e in Draft202012Validator(schema).iter_errors(raw)]
         return closed_from_wire(raw, phrases), ("; ".join(problems) or None)
 
-    request = _request(_closed_prompt(grids, phrases), grids, "phrase_scores", schema)
-    return _call(make_client(), "closed", 0, request, finish)
+    return _call(make_client(), "closed", 0, closed_request(grids, phrases), finish)

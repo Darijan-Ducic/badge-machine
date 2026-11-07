@@ -50,22 +50,28 @@ def _grids(clip: Path, max_images: int = 48) -> list[str]:
         return ["data:image/jpeg;base64," + base64.b64encode(files[i].read_bytes()).decode() for i in keep]
 
 
-def gemini_scores(clip: Path, phrases: list[str], fps: int = FPS, usage: dict | None = None) -> np.ndarray:
-    """P(phrase) over `phrases`; pass a dict as `usage` to receive the response's token counts."""
-    ids = IDS[: len(phrases)]
-    client = genai.Client()  # keep a reference: a garbage-collected Client closes its HTTP connection mid-request
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=types.Content(parts=[
+def gemini_request(clip: Path, phrases: list[str], fps: int = FPS) -> dict:
+    """The generate_content arguments gemini_scores sends: the clip as mp4 sampled at `fps`, the prompt with its
+    phrase menu, and an enum of the phrase IDs."""
+    return {
+        "model": GEMINI_MODEL,
+        "contents": types.Content(parts=[
             types.Part(inline_data=types.Blob(data=_mp4(clip), mime_type="video/mp4"),
                        video_metadata=types.VideoMetadata(fps=fps)),
             types.Part(text=f"{PROMPT} Answer with the ID only.\n{_menu(phrases)}"),
         ]),
-        config=types.GenerateContentConfig(
+        "config": types.GenerateContentConfig(
             response_logprobs=True, logprobs=20,
-            response_mime_type="text/x.enum", response_schema={"type": "STRING", "enum": ids},
+            response_mime_type="text/x.enum", response_schema={"type": "STRING", "enum": IDS[: len(phrases)]},
         ),
-    )
+    }
+
+
+def gemini_scores(clip: Path, phrases: list[str], fps: int = FPS, usage: dict | None = None) -> np.ndarray:
+    """P(phrase) over `phrases`; pass a dict as `usage` to receive the response's token counts."""
+    ids = IDS[: len(phrases)]
+    client = genai.Client()  # keep a reference: a garbage-collected Client closes its HTTP connection mid-request
+    response = client.models.generate_content(**gemini_request(clip, phrases, fps))
     if usage is not None and response.usage_metadata is not None:
         usage.update(response.usage_metadata.model_dump(mode="json", exclude_none=True))
     scores = np.zeros(len(ids))
