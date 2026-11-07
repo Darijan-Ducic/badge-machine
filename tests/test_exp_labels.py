@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from exp_labels import align, boundary, doubles, press_text, words  # noqa: E402
+from exp_labels import align, boundary, collapse_repeats, doubles, press_text, repeats, words  # noqa: E402
 
 REF_TEXT = ("We are still gathering all the facts about what happened, but we do know that the police have one "
             "suspect in custody. And the federal government stands ready to do everything necessary.")
@@ -73,3 +73,23 @@ def test_press_text_keeps_the_address_paragraphs_only():
             '</strong></p><p>\n\tHi, everybody.  It&#8217;s a <em>good</em> day.</p><p>\n\tThank you.</p><p>\n\t###</p>'
             '</div></div></div><div class="footer"><p>Share This</p></div>')
     assert press_text(html) == "Hi, everybody. It’s a good day. Thank you."
+
+
+def test_repeats_counts_the_words_of_a_repeated_phrase():
+    ref = words("critics said it was a road to socialism or a disaster")
+    hyp = words("critics said it was a road to road to socialism")
+    assert repeats(hyp, align(hyp, ref)) == 2
+
+
+def test_repeats_ignores_a_phrase_that_was_spoken_twice():
+    ref = words("we will, we will rebuild")
+    hyp = words("we will we will rebuild")
+    assert repeats(hyp, align(hyp, ref)) == 0
+
+
+def test_collapse_repeats_removes_a_repeated_phrase_and_word():
+    assert collapse_repeats(words("a road to road to socialism and and more")) == words("a road to socialism and more")
+
+
+def test_collapse_repeats_keeps_distinct_neighbours():
+    assert collapse_repeats(words("to be or not to be")) == words("to be or not to be")
