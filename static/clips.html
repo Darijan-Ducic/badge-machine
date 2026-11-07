@@ -30,8 +30,14 @@
     .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }   /* app.css:416 */
     .player { aspect-ratio: auto; min-height: 160px; }
     .player video { transform: none; object-fit: contain; background: var(--well); display: block; }
-    .label-text { margin: 4px 0 0; font-size: 18px; line-height: 1.45; letter-spacing: -0.01em; }   /* .tip-text, app.css:125 */
-    .label-text.none { color: var(--ink-3); }
+    .compare { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--hair); }   /* .c-moments .m rule, app.css:139 */
+    .compare > .vtt-diff { font-size: 18px; letter-spacing: -0.01em; }   /* .tip-text, app.css:125 */
+    .models { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
+    .models li { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; }
+    .models li > span:first-child { font-size: 12px; color: var(--ink-3); }
+    .compare .legend { margin-top: 14px; }
+    .row .vtt-diff { font-size: 13px; }
+    .row .vtt-diff .vtt-col .vw:first-child { font-weight: 500; }
     .sub { margin: 18px 0 0; font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }   /* .stat small, app.css:475 */
     .pick { margin: 4px 0 0; font-size: 21px; letter-spacing: -0.02em; line-height: 1.25; }   /* .headline.sm, app.css:120 */
     .decision .meta { margin-top: 10px; }
@@ -95,7 +101,7 @@
 </head>
 <body>
   <div class="haze" aria-hidden="true"></div>
-  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script><script src="vtt.js"></script>
   <main class="section"><div class="page">
     <header class="top">
       <div>
@@ -142,7 +148,7 @@
 
     function marks(correct) {
       if (!correct) return h("span", null, "unlabeled");
-      return h("span", { class: "marks" }, ...[["fused", "fused"], ["gemini", "Gemini"], ["muse", "Muse"]].map(([k, name]) =>
+      return h("span", { class: "marks" }, ...[["fused", "VTT"], ["gemini", "VTT · Gemini"], ["muse", "VTT · Muse"]].map(([k, name]) =>
         h("span", { class: `mark ${correct[k] ? "yes" : "no"}`, title: `${name} ${correct[k] ? "matches" : "differs from"} STT` }, `${name} ${correct[k] ? "✓" : "✗"}`)));
     }
 
@@ -173,14 +179,14 @@
 
     function row(c) {
       return h("li", null, h("button", { class: "row", type: "button", "data-id": c.id, "aria-pressed": "false", onclick: () => select(c.id) },
-        c.stt == null ? h("b", { class: "none" }, `no STT · ${c.mode}`) : h("b", null, `“${c.stt}”`),
-        h("small", null, c.top ? `top: ${candText(c.top.text)} · p ${fmt(c.top.p)}` : "no pick"),
+        VTT.pair(c.stt, c.top?.text ?? null),
+        h("small", null, c.top ? `VTT p ${fmt(c.top.p)}${c.stt == null ? ` · no STT (${c.mode})` : ""}` : "no pick"),
         h("span", { class: "foot" }, action(c.action), marks(c.correct), h("span", null, `· ${c.stage}`), h("time", null, `· ${when(c.t)}`))));
     }
 
     async function select(id) {
       for (const b of $("rows").querySelectorAll(".row")) b.setAttribute("aria-pressed", String(b.dataset.id === id));
-      history.replaceState(null, "", `?user=${encodeURIComponent(user)}#${encodeURIComponent(id)}`);
+      history.replaceState(null, "", `?user=${encodeURIComponent(user)}&clip=${encodeURIComponent(id)}`);
       const mine = ++ticket;
       $("detail").style.opacity = ".5";   // keep the previous render while the next loads (.dock .go:disabled, app.css:510)
       try {
@@ -200,14 +206,14 @@
         h("div", { class: "two", style: { marginTop: "14px" } },
           h("div", { class: "cam player" }, h("video", { controls: true, playsinline: true, preload: "metadata", src: d.video })),
           h("div", { class: "decision" },
-            h("p", { class: "sub", style: { marginTop: "0" } }, "STT label"),
-            d.stt == null ? h("p", { class: "label-text none" }, "No STT for this clip") : h("p", { class: "label-text" }, `“${d.stt}”`),
-            h("p", { class: "sub" }, "Decision"),
+            h("p", { class: "sub", style: { marginTop: "0" } }, "VTT pick"),
             top ? h("p", { class: "pick" }, candText(top.text)) : h("p", { class: "pick" }, "no candidates"),
             h("p", { class: "meta" }, h("span", null, "P ", h("b", null, fmt(top?.p, 3))), action(d.action),
               h("span", null, d.threshold == null ? "no threshold yet: always asks" : h("span", null, "auto-sends at ", h("b", null, `≥ ${fmt(d.threshold)}`)))),
-            h("p", { class: "meta" }, h("span", null, "stage ", h("b", null, d.stage)), h("i"), h("span", null, h("b", null, String(d.frames)), " frames"))),
+            h("p", { class: "meta" }, h("span", null, "stage ", h("b", null, d.stage)), h("i"), h("span", null, h("b", null, String(d.frames)), " frames")),
+            d.session_id ? h("p", { class: "meta" }, h("a", { href: `dataset.html?session=${encodeURIComponent(d.session_id)}` }, `session ${d.session_id}`), d.turn != null ? h("span", null, `turn ${d.turn + 1}`) : null) : null),
         ),
+        compare(d, top),
         h("p", { class: "meta cfg" }, ...Object.entries(d.config || {}).map(([k, v]) => h("span", null, `${k} `, h("code", null, String(v))))));
 
       const pool = h("article", { class: "card" },
@@ -224,7 +230,7 @@
           h("p", { class: "eyebrow" }, h("b", null, "Muse closed call"), `· top 5 + none · ${secs(d.closed.latency_ms)}`),
           d.closed.error ? h("p", { class: "msg error", style: { marginTop: "12px" } }, d.closed.error) : h("ol", { class: "scores" }, closedRows)),
         h("article", { class: "card" },
-          h("p", { class: "eyebrow" }, h("b", null, "Gemini"), "· top 3"),
+          h("p", { class: "eyebrow" }, h("b", null, "VTT · Gemini"), "· top 3"),
           h("ol", { class: "scores" }, (d.gemini?.top || []).map((g, i) => scoreRow(g.phrase, g.p, "gemini", { lead: i === 0, label: d.stt && norm(g.phrase) === norm(d.stt) })))));
 
       const okSamples = d.samples.filter((s) => !s.error), failed = d.samples.length - okSamples.length;
@@ -234,6 +240,21 @@
           `· median ${lat.length ? secs(lat[Math.floor(lat.length / 2)]) : "—"}`, failed ? h("span", { class: "chip over" }, `${failed} failed`) : null),
         ...d.samples.map((s) => sample(s, d.frames)));
       return [head, pool, sources, samples];
+    }
+
+    // VTT vs STT: the combined pick word by word under the label, then each model's read on its own line.
+    function compare(d, top) {
+      const vtt = top ? top.text : null;
+      const gem = d.gemini?.top?.[0]?.phrase ?? null, muse = VTT.musePick(d.samples);
+      const mark = (text) => d.stt == null || text == null ? h("span", { class: "chip" }, "—")
+        : VTT.same(d.stt, text) ? h("span", { class: "mark yes" }, "✓ matches STT") : h("span", { class: "mark no" }, "✗ differs");
+      return h("div", { class: "compare" },
+        VTT.pair(d.stt, vtt),
+        h("ul", { class: "models" },
+          h("li", null, h("span", null, "VTT"), h("span", null, VTT.line(d.stt, vtt)), mark(vtt)),
+          h("li", null, h("span", null, "VTT · Gemini"), h("span", null, VTT.line(d.stt, gem)), mark(gem)),
+          h("li", null, h("span", null, "VTT · Muse"), h("span", null, VTT.line(d.stt, muse)), mark(muse))),
+        VTT.legend());
     }
 
     function candidate(c, i) {
@@ -281,12 +302,13 @@
         return h("span", { class: `seg ${cls || ""}`, title, "data-f0": a, "data-f1": b,
           style: { left: `${(a / frames) * 100}%`, width: `calc(${((b - a + 1) / frames) * 100}% - 2px)` } }, text ? h("span", null, text) : null);
       };
-      const speech = o.speech?.present && o.speech.frames ? [seg(o.speech.frames, null, "", `speech ${range(o.speech.frames)}`)] : [];
+      const speech = o.speech?.present === true && o.speech.frames ? [seg(o.speech.frames, null, "", `speech ${range(o.speech.frames)}`)] : [];
       const occl = (o.quality?.occluded_frames || []).map((f) => seg(f, null, "occl", `occluded ${range(f)}`));
       const ticks = [];
       for (let f = 0; f < frames; f += 12) ticks.push(h("span", { style: { left: `${(f / frames) * 100}%` } }, String(f)));
       return h("div", { class: "tl", role: "img", "aria-label": `Timeline over ${frames} frames: visemes ${(o.visemes || []).map((v) => `${v.v} ${range(v.f)}`).join(", ") || "none"}` },
-        h("span", null, "speech"), h("div", { class: "lane thin" }, ...speech, ...occl),
+        h("span", null, "speech"), h("div", { class: "lane thin", "data-lane": "speech" }, ...speech),
+        ...(occl.length ? [h("span", null, "occluded"), h("div", { class: "lane thin", "data-lane": "occluded" }, ...occl)] : []),
         h("span", null, "visemes"), h("div", { class: "lane vis" }, ...(o.visemes || []).map((v) => seg(v.f, v.v, v.v === "REST" ? "rest" : "", `${v.v} · frames ${range(v.f)}`))),
         h("span", null, "words"), h("div", { class: "lane words" }, ...(o.slots || []).map((sl) => { const best = [...sl.alts].sort((a, b) => b.s - a.s)[0]; return seg(sl.f, best?.w, "", `${best?.w ?? ""} · frames ${range(sl.f)}`); })),
         h("span", null, "frame"), h("div", { class: "axis" }, ...ticks));
@@ -304,7 +326,14 @@
 
     $("user").addEventListener("change", () => loadList($("user").value));
     const params = new URLSearchParams(location.search);
-    loadList(params.get("user"), decodeURIComponent(location.hash.slice(1)) || null);
+    const wantedClip = params.get("clip") || decodeURIComponent(location.hash.slice(1)) || null;
+    (async () => {
+      let wantedUser = params.get("user");
+      if (wantedClip) {   // a deep link names only the clip; its record says whose list to open
+        try { wantedUser = (await getJSON(`/clips/${encodeURIComponent(wantedClip)}`)).user_id; } catch (err) { fail(err); }
+      }
+      loadList(wantedUser, wantedClip);
+    })();
   </script>
 </body>
 </html>

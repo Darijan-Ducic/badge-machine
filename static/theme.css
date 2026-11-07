@@ -115,6 +115,36 @@ main { position: relative; z-index: 1; }
 .track { position: relative; height: 10px; }
 .track span { position: absolute; top: 0; height: 10px; border-radius: 4px; }
 
+/* VTT vs STT, word by word (vtt.js). STT and VTT share columns so each VTT word sits under the STT word it was matched
+   with. A substituted VTT word wears .chip.near's colors, an extra VTT word .chip.over's (app.css:40-42), and an STT word
+   VTT missed is struck through like a skipped step (app.css:274). */
+.vtt-diff { display: grid; grid-template-columns: 34px minmax(0, 1fr); grid-template-rows: 1.45em auto; column-gap: 10px; line-height: 1.45; }
+.vtt-diff .vtt-lbl { grid-column: 1; align-self: start; font-size: .8em; line-height: 1.8125em; color: var(--ink-3); white-space: nowrap; }
+.vtt-diff .vtt-line, .vtt-diff .vtt-cols { grid-column: 2; min-width: 0; }
+.vtt-diff .vtt-line { line-height: 1.45em; overflow-wrap: anywhere; }
+.vtt-diff .vtt-cols { display: flex; flex-wrap: wrap; column-gap: .3em; row-gap: 4px; }
+.vtt-diff .vtt-col { display: inline-grid; grid-template-rows: 1.45em 1.45em; }
+.vw-sub { background: var(--near-wash); color: var(--near-ink); border-radius: 4px; padding: 0 3px; }
+.vw-ins { background: var(--over-wash); color: var(--over-ink); border-radius: 4px; padding: 0 3px; }
+.vw-del { text-decoration: line-through; color: var(--ink-3); }
+.vw-none { color: var(--ink-3); }
+.vtt-line1 { line-height: 1.45; overflow-wrap: anywhere; }
+
+/* charts (Stats learning curve, Training run overlay; linechart.js): a line key beside a series name (stroke 2 like
+   cards.js:219; 14px like .line5 marks, app.css:154), hairline axes, ink labels, and an .event tooltip (app.css:278) */
+.lk { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+.chart-wrap { position: relative; margin-top: 18px; }                                        /* .spark margin, app.css:145 */
+.chart { display: block; width: 100%; overflow: visible; }
+.chart text { font-size: 11.5px; fill: var(--ink-3); }                                       /* .bars/.ends labels, app.css:126,133 */
+.chart text.stage { font-size: 11px; }                                                       /* .track .cue em, app.css:132 */
+.chart text.end { font-size: 12px; fill: var(--ink-2); }                                     /* .legend, app.css:48 */
+.chart text.end tspan.v { fill: var(--ink); font-weight: 500; }
+.chart:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
+.tip { position: absolute; top: 0; pointer-events: none; flex-direction: column; align-items: stretch; gap: 2px; box-shadow: var(--lift); white-space: nowrap; z-index: 2; }
+.tip b { font-weight: 500; color: var(--ink); }
+.tip span { display: flex; align-items: center; gap: 6px; }
+.tip .lk { margin-right: 0; }
+
 /* the camera screen: a centered card with the self-view well (pre-coach's local recorder, app.css:522-537) */
 .framing-wrap { min-height: 100vh; display: grid; place-items: center; padding: 40px 24px 120px; }
 .framing { width: min(560px, 100%); padding: 14px 14px 30px; background: var(--card); border-radius: var(--r-card); box-shadow: var(--lift); text-align: center; }
