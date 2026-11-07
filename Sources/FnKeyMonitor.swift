@@ -7,8 +7,11 @@ final class FnKeyMonitor {
     var onChange: ((Bool) -> Void)?
 
     func start() -> Bool {
+        guard CGPreflightListenEventAccess() else {
+            stop()
+            return false
+        }
         if manager != nil { return true }
-        guard CGPreflightListenEventAccess() else { return false }
 
         let options = IOOptionBits(kIOHIDOptionsTypeNone)
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, options)

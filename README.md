@@ -9,7 +9,7 @@ open "build/Baijiu Machine.app"
 
 Allow Camera access on first launch. Choose separate shortcuts for **Silent Whisper** and **Move Cursor**. In either row, click **Choose Shortcut**, press a key or combination, then click **Confirm**. Grant Accessibility access in System Settings so Baijiu Machine can insert text in other apps and move the pointer. A function key or a combination such as Option–Space works if macOS has not reserved it.
 
-To use **Fn / Globe**, choose **Use Fn** or press Fn in the shortcut picker and click **Confirm**. If the app shows **Finish setting up Fn**, click **Open Input Monitoring** and enable Baijiu Machine in System Settings. Under **Keyboard**, set **Press Globe key to** to **Do Nothing** to stop macOS from opening Emoji & Symbols. Reopen Baijiu Machine if macOS asks you to. Your chosen key stays saved.
+To use **Fn / Globe**, press Fn in the shortcut picker and click **Confirm**. If the app shows **Finish setting up Fn**, click **Open Input Monitoring** and enable Baijiu Machine in System Settings. Under **Keyboard**, set **Press Globe key to** to **Do Nothing** to stop macOS from opening Emoji & Symbols. Reopen Baijiu Machine if macOS asks you to. Your chosen key stays saved.
 
 Focus a text field in another app. Press the shortcut to start recording, articulate a short phrase silently, then press it again to stop and send the clip. Keep the text field focused until the result arrives. The app stays available in the menu bar when its window is closed.
 

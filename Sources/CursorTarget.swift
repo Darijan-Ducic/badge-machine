@@ -20,15 +20,19 @@ struct CursorTarget {
         return Self(pid: app.processIdentifier, element: element)
     }
 
-    func insert(_ text: String) -> Bool {
+    enum InsertionResult {
+        case inserted, pasteRequested, targetUnavailable
+    }
+
+    func insert(_ text: String) -> InsertionResult {
         guard let current = Self.current(), current.pid == pid,
-              CFEqual(current.element, element) else { return false }
+              CFEqual(current.element, element) else { return .targetUnavailable }
         if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success {
-            return true
+            return .inserted
         }
 
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
-              let up = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false) else { return false }
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false) else { return .targetUnavailable }
         let clipboard = NSPasteboard.general
         let previous = (clipboard.pasteboardItems ?? []).map { item in
             let copy = NSPasteboardItem()
@@ -49,6 +53,6 @@ struct CursorTarget {
             clipboard.clearContents()
             if !previous.isEmpty { clipboard.writeObjects(previous) }
         }
-        return true
+        return .pasteRequested
     }
 }

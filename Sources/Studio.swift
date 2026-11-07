@@ -322,7 +322,11 @@ final class Studio: ObservableObject {
                 return
             }
             let revision = if let muse { try? await muse.refine(draft) } else { nil as MuseSpark.Revision? }
-            status = target.insert(revision?.text ?? draft) ? "Text inserted." : "The original text field is no longer active."
+            switch target.insert(revision?.text ?? draft) {
+            case .inserted: status = "Text inserted."
+            case .pasteRequested: status = "Paste requested."
+            case .targetUnavailable: status = "Could not insert text in the original field."
+            }
         } catch {
             status = error.localizedDescription
         }
