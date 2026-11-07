@@ -376,7 +376,10 @@ export function createTracker({ samFace, config = {} } = {}) {
     const motion = frameMotion(frame, prevFrame, null, cfg);
     const outside = anchor ? frameMotion(frame, prevFrame, grow(faceFromAnchor(anchor, cfg), cfg.OUTSIDE_PAD), cfg) : 0;
     const lost = conf < cfg.T_CONF, held = anchor;
-    if (tracking && !lost) anchor = tracked;
+    if (tracking && !lost) {
+      anchor = tracked;
+      tpl.proven = true;
+    }
 
     const reasons = [];
     if (!tracking) reasons.push('init');
@@ -403,9 +406,10 @@ export function createTracker({ samFace, config = {} } = {}) {
         if (face) {
           const a = anchorFromFace(face, cfg);
           const [ax, ay] = center(a), [tx, ty] = tracking ? center(anchor) : [Infinity, Infinity];
-          if (occluded && iou(a, held) >= cfg.OCC_IOU) {
+          if (occluded && tpl.proven && iou(a, held) >= cfg.OCC_IOU) {
             // SAM sees the face where we held it, yet NCC failed: a real occlusion. Keep the clean
-            // template so later occluded frames keep scoring low and stay flagged.
+            // (proven: it has matched before) template so later occluded frames keep scoring low and
+            // stay flagged. An unproven one, e.g. cut from a blank warm-up frame, is replaced below.
             anchor = a;
           } else if (tracking && !lost && Math.hypot(ax - tx, ay - ty) <= cfg.SNAP_TOL * face[2]) {
             // Healthy track that agrees with SAM: keep the tracked anchor (it follows the real nose and
