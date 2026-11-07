@@ -91,6 +91,7 @@
       <button class="opt" type="button" role="tab" data-tab="sheet">v1 sheet</button>
       <button class="opt" type="button" role="tab" data-tab="self">Self-improvement</button>
       <button class="opt" type="button" role="tab" data-tab="runs">Runs</button>
+      <button class="opt" type="button" role="tab" data-tab="log">Iteration log</button>
     </div>
     <section class="panel" id="panel-sheet" role="tabpanel">
       <article class="card prose" id="sheet"><p class="eyebrow">Loading docs/training-v1.md…</p></article>
@@ -108,6 +109,9 @@
         <p class="eyebrow"><b>First vs live vs current</b><span>· held-out split</span></p>
         <table class="grid-table" id="vmetrics"></table>
       </article>
+    </section>
+    <section class="panel" id="panel-log" role="tabpanel" hidden>
+      <article class="card prose" id="log-doc"><p class="eyebrow">Loading docs/iteration-log.md…</p></article>
     </section>
     <section class="panel" id="panel-runs" role="tabpanel" hidden>
     <article class="card runs" id="runs">
@@ -172,6 +176,7 @@
     }
     renderDoc("/docs/training-v1.md", $("sheet"));
     renderDoc("/docs/self-improvement.md", $("self-doc"));
+    renderDoc("/docs/iteration-log.md", $("log-doc"));
 
     // ---- runs (GET /runs) ----
     const pctv = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
@@ -385,11 +390,11 @@
       }
     })();
 
-    // ---- tabs: v1 sheet | Self-improvement | Runs, kept in the URL hash ----
+    // ---- tabs: v1 sheet | Self-improvement | Runs | Iteration log, kept in the URL hash ----
     function showTab(name) {
-      if (!["sheet", "self", "runs"].includes(name)) name = "sheet";
+      if (!["sheet", "self", "runs", "log"].includes(name)) name = "sheet";
       for (const b of document.querySelectorAll("#tabs .opt")) { b.setAttribute("aria-pressed", String(b.dataset.tab === name)); b.setAttribute("aria-selected", String(b.dataset.tab === name)); }
-      for (const t of ["sheet", "self", "runs"]) $(`panel-${t}`).hidden = t !== name;
+      for (const t of ["sheet", "self", "runs", "log"]) $(`panel-${t}`).hidden = t !== name;
       if (location.hash.slice(1) !== name) history.replaceState(null, "", `#${name}`);
       if (name === "self") drawVersions();
       if (name === "runs" && picked) pick(picked.id);   // charts measure their width, so draw once visible
