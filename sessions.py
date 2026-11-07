@@ -9,6 +9,7 @@ Turn status: pending -> processed | skipped | failed, with a reason when not pro
 import functools
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -132,10 +133,12 @@ def slice_boxes(boxes, start_ms: int, end_ms: int) -> list[list]:
 
 
 def used_today(sessions, user_id: str, now: float) -> int:
-    """Turns of this user's sessions from now's local day that are pending or processed: the daily cap spent so far."""
+    """Turns of this user's sessions from now's local day that are pending or processed: the daily cap spent so far.
+    Dataset sessions (practice / emulated footage) don't spend it."""
     day = time.localtime(now)[:3]
     return sum(turn["status"] in ("pending", "processed") for s in sessions
-               if s["user_id"] == user_id and time.localtime(s["t"])[:3] == day for turn in s["turns"])
+               if s["user_id"] == user_id and not s.get("dataset") and time.localtime(s["t"])[:3] == day
+               for turn in s["turns"])
 
 
 # ---- stores ---------------------------------------------------------------------------------------------------------
@@ -313,8 +316,10 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
                       "reason": error, **dict.fromkeys(TURN_RESULT)})
     with _cap_lock:
         labeled = [t for t in turns if t["status"] is None]
+        # Practice / emulated footage (a dataset session) is not held to the daily cap of a real user.
+        spent, cap = (0, math.inf) if dataset else (used_today(store.all(), user_id, time.time()), None)
         decisions = policy([{"start_ms": t["start_ms"], "end_ms": t["end_ms"], "text": t["stt"]} for t in labeled],
-                           used_today=used_today(store.all(), user_id, time.time()))
+                           used_today=spent, cap=cap)
         for t, (status, reason) in zip(labeled, decisions):
             t["status"], t["reason"] = status, reason
         store.update(session_id, {"status": "transcribed", "stt_text": text, "turns": turns})
