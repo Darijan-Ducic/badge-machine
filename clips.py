@@ -343,7 +343,7 @@ def clip_detail(store, clip_id: str) -> dict | None:
     probs = predict(model, [clip])[0]
     pool = [{"text": _shown(clip, j), "p": float(probs[j]), "is_label": j == clip.label,
              "features": dict(zip(FEATURES, map(float, clip.features[j])))} for j in range(len(clip.pool))]
-    gemini = record["gemini"]["output"] or {}
+    gemini, muse = record["gemini"]["output"] or {}, _muse_read(clip, record["samples"])
     return {
         "id": record["id"], "t": record["t"], "user_id": record["user_id"], "mode": record["mode"],
         "stt": record["label"]["stt_text"], "config": record["config"], "video": f"/clips/{clip_id}/video",
@@ -354,6 +354,7 @@ def clip_detail(store, clip_id: str) -> dict | None:
                     for s in record["samples"]],
         "closed": {key: record["closed"][key] for key in ("latency_ms", "error", "output")},
         "gemini": {"top": [{"phrase": p, "p": v} for p, v in sorted(gemini.items(), key=lambda kv: -kv[1])[:5]]},
+        "vtt_muse": {"text": muse["phrase"], "p": muse["p"]},
     }
 
 
