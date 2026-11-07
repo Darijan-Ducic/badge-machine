@@ -6,8 +6,10 @@ dependencies = [
     "cmudict>=1.1.3",
     "google-genai>=3.0.0",
     "httpx>=0.28.1",
+    "jsonschema>=4.26.0",
     "numpy>=2.5.4",
     "openai>=3.46.0",
+    "pillow>=13.0.0",
     "pymongo>=4.19.0",
     "scipy>=1.18.1",
 ]
