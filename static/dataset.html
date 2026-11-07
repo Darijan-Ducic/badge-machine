@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Dataset</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* page-specific; every value is pre-coach's (studio/static/app.css) unless noted; layout shared with clips.html */
+    .top { display: flex; align-items: flex-end; justify-content: space-between; gap: 22px; flex-wrap: wrap; }
+    .picker { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-3); }
+    select { font: 14px/1.4 var(--font); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 14px; padding: 8px 12px; outline: none; }  /* .other-in, app.css:247 */
+    select:focus-visible { border-color: rgba(0,0,0,.22); }
+    .explorer { display: grid; grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.6fr); gap: 22px; align-items: start; }   /* .tut-body, app.css:373 */
+    .list { padding: 18px 16px 14px; position: sticky; top: 24px; max-height: calc(100vh - 48px); overflow: auto; }   /* .recent, app.css:81 */
+    .list > .eyebrow { padding: 0 6px; margin-bottom: 8px; }
+    .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+    .row { width: 100%; display: grid; gap: 4px; padding: 10px 12px; border-radius: 16px; text-align: left; transition: background .15s; }
+    .row:hover { background: var(--well); }
+    .row[aria-pressed="true"] { background: var(--well); box-shadow: 0 0 0 1.5px rgba(17, 17, 17, .14); }   /* .preset.on, app.css:327 */
+    .row .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .row b { font-weight: 500; font-size: 14px; }
+    .row small { font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+    .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }   /* app.css:416 */
+    .player { min-height: 160px; display: grid; place-items: center; color: var(--ink-3); font-size: 13px; }
+    .player video { transform: none; object-fit: contain; display: block; }
+    .facts { margin: 0; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 6px 12px; font-size: 14px; }   /* .drill dl, app.css:554 */
+    .facts dt { color: var(--ink-3); } .facts dd { margin: 0; overflow-wrap: anywhere; }
+    .facts a { color: var(--coach-ink); }
+    .steps5 { display: grid; gap: 4px; margin-top: 6px; font-size: 12px; color: var(--ink-3); }
+    .steps5 .on { color: var(--ink); font-weight: 500; }
+    .transcript { margin: 12px 0 0; font-size: 18px; line-height: 1.45; letter-spacing: -0.01em; }   /* .tip-text, app.css:125 */
+    .transcript.none { color: var(--ink-3); font-size: 15px; }
+    /* turns */
+    .turns { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 2px; }   /* .log, app.css:207 */
+    .turn { display: grid; grid-template-columns: 24px 104px minmax(0, 1fr) 128px; gap: 12px; align-items: start; padding: 10px 10px; border-radius: 16px; color: inherit; text-decoration: none; }   /* .beatlist, app.css:440; .recent li button radius, 86 */
+    a.turn:hover { background: var(--well); }
+    .turn .n { font-size: 12px; color: var(--ink-3); padding-top: 2px; }
+    .turn .when { font-size: 12px; color: var(--ink-3); padding-top: 2px; }
+    .turn .vtt-diff { font-size: 14px; }
+    .turn .side { display: grid; gap: 4px; justify-items: start; font-size: 12px; }
+    .turn .reason { color: var(--ink-3); font-size: 12px; overflow-wrap: anywhere; }
+    .turn .open { color: var(--coach-ink); }
+    .mark.yes { color: var(--onplan-ink); } .mark.no { color: var(--near-ink); }   /* green = said, yellow = never said, app.css:174-178 */
+    .turns-head { display: grid; grid-template-columns: 24px 104px minmax(0, 1fr) 128px; gap: 12px; padding: 0 10px; margin-top: 14px; font-size: 12px; color: var(--ink-3); }
+    .empty-detail { color: var(--ink-3); }
+    @media (max-width: 1100px) { .explorer, .two { grid-template-columns: minmax(0, 1fr); } .list { position: static; max-height: none; } }   /* app.css:558-559 */
+  </style>
+</head>
+<body>
+  <div class="haze" aria-hidden="true"></div>
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script><script src="vtt.js"></script>
+  <main class="section"><div class="page">
+    <header class="top">
+      <div>
+        <h1>Dataset</h1>
+        <p class="meta">Curated sessions, cut into turns; every processed turn is a clip with its VTT read against the STT label.</p>
+      </div>
+      <label class="picker">User <select id="user" aria-label="User"></select></label>
+    </header>
+    <p class="msg error" id="error" hidden></p>
+    <div class="explorer">
+      <aside class="card list"><p class="eyebrow" id="list-head">Loading…</p><ul class="rows" id="rows"></ul></aside>
+      <section class="col" id="detail"><article class="card empty-detail">Pick a session on the left.</article></section>
+    </div>
+  </div></main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const STEPS = ["curated", "recorded", "transcribed", "processing", "done"];   // the contract's status order; "failed" can end any step
+    const STATUS = { curated: "chip", recorded: "chip", transcribed: "chip", processing: "chip near", done: "chip onplan", failed: "chip over" };
+    const TURN = { processed: "chip onplan", pending: "chip", skipped: "chip near", failed: "chip over" };
+    let users = [], sessions = [], user = null, ticket = 0;
+
+    function h(tag, props, ...kids) {   // strings become text nodes, so nothing from the API is parsed as HTML
+      const e = document.createElement(tag);
+      for (const [k, v] of Object.entries(props || {})) {
+        if (v == null || v === false) continue;
+        if (k === "class") e.className = v;
+        else if (k === "style") Object.assign(e.style, v);
+        else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+        else e.setAttribute(k, v === true ? "" : v);
+      }
+      for (const kid of kids.flat()) if (kid != null && kid !== false) e.append(kid instanceof Node ? kid : String(kid));
+      return e;
+    }
+    const when = (t) => new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const clock = (s) => (s == null ? "—" : `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`);
+    const chip = (status, map) => h("span", { class: map[status] || "chip" }, status);
+    const source = (src) => (/^https?:\/\//.test(src || "") ? h("a", { href: src, target: "_blank", rel: "noopener" }, src.replace(/^https?:\/\//, "")) : src || "—");
+    async function getJSON(url) {
+      const r = await fetch(url, { cache: "no-store" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      return d;
+    }
+    const fail = (err) => { $("error").textContent = err.message; $("error").hidden = false; };
+
+    function marks(correct) {
+      if (!correct) return null;
+      return [["vtt", "VTT"], ["gemini", "VTT · Gemini"], ["muse", "VTT · Muse"]].map(([k, name]) =>
+        h("span", { class: `mark ${correct[k] ? "yes" : "no"}`, title: `${name} ${correct[k] ? "matches" : "differs from"} STT` }, `${name} ${correct[k] ? "✓" : "✗"}`));
+    }
+
+    // ---- the list ----
+    async function loadList(wanted, pick) {
+      try {
+        const d = await getJSON(wanted ? `/sessions?user=${encodeURIComponent(wanted)}` : "/sessions");
+        $("error").hidden = true;
+        users = d.users;
+        sessions = [...d.sessions].sort((a, b) => b.t - a.t);
+        user = wanted || sessions[0]?.user_id || users[0]?.id || null;
+        $("user").replaceChildren(...users.map((u) => h("option", { value: u.id, selected: u.id === user }, `${u.id} · ${u.sessions} session${u.sessions === 1 ? "" : "s"}`)));
+        $("list-head").replaceChildren(h("b", null, `${sessions.length} session${sessions.length === 1 ? "" : "s"}`), "· newest first");
+        $("rows").replaceChildren(...sessions.map(row));
+        if (!sessions.length) $("rows").append(h("li", { class: "eyebrow", style: { padding: "0 6px" } }, "No sessions for this user yet."));
+        const target = sessions.find((s) => s.id === pick) || sessions[0];
+        if (target) select(target.id); else $("detail").replaceChildren(h("article", { class: "card empty-detail" }, "No session to show."));
+      } catch (err) { fail(err); }
+    }
+
+    function row(s) {
+      return h("li", null, h("button", { class: "row", type: "button", "data-id": s.id, "aria-pressed": "false", onclick: () => select(s.id) },
+        h("span", { class: "head" }, h("b", null, s.dataset), chip(s.status, STATUS)),
+        h("small", null, `${s.id} · ${clock(s.start)}–${clock(s.end)} (${s.duration_s} s) · ${when(s.t)}`),
+        h("small", null, `${s.turns} turns · ${s.processed} processed · ${s.skipped} skipped · VTT ${s.vtt_correct}/${s.processed} ✓`)));
+    }
+
+    async function select(id) {
+      for (const b of $("rows").querySelectorAll(".row")) b.setAttribute("aria-pressed", String(b.dataset.id === id));
+      history.replaceState(null, "", `?user=${encodeURIComponent(user)}&session=${encodeURIComponent(id)}`);
+      const mine = ++ticket;
+      $("detail").style.opacity = ".5";   // keep the previous render while the next loads (.dock .go:disabled, app.css:510)
+      try {
+        const d = await getJSON(`/sessions/${encodeURIComponent(id)}`);
+        if (mine !== ticket) return;
+        $("detail").replaceChildren(...detail(d));
+      } catch (err) { fail(err); } finally { if (mine === ticket) $("detail").style.opacity = ""; }
+    }
+
+    // ---- the detail ----
+    function detail(d) {
+      const at = STEPS.indexOf(d.status), turns = d.turns || [];
+      const count = (st) => turns.filter((t) => t.status === st).length;
+      const head = h("article", { class: "card" },
+        h("p", { class: "eyebrow" }, h("b", null, `Session ${d.id}`), `· ${d.dataset} · ${d.user_id} · ${when(d.t)}`, chip(d.status, STATUS)),
+        h("div", { class: "progress", style: { marginTop: "18px" }, "aria-label": `status ${d.status}` }, STEPS.map((_, i) => h("span", { class: d.status === "failed" ? null : i < at ? "done" : i === at ? "on" : null }))),
+        h("div", { class: "steps5", style: { gridTemplateColumns: `repeat(${STEPS.length}, minmax(0, 1fr))` } }, STEPS.map((n, i) => h("span", { class: i === at ? "on" : null }, n))),
+        h("div", { class: "two", style: { marginTop: "18px" } },
+          h("div", { class: "cam player" }, d.video ? h("video", { controls: true, playsinline: true, preload: "metadata", src: d.video }) : "No video yet"),
+          h("div", null,
+            h("dl", { class: "facts" },
+              h("dt", null, "source"), h("dd", null, source(d.source)),
+              h("dt", null, "span"), h("dd", null, `${clock(d.start)}–${clock(d.end)} of the source`),
+              h("dt", null, "turns"), h("dd", null, `${turns.length} · ${count("processed")} processed · ${count("pending")} pending · ${count("skipped")} skipped · ${count("failed")} failed`),
+              h("dt", null, "VTT vs STT"), h("dd", null, `${turns.filter((t) => t.correct?.vtt).length} of ${count("processed")} processed turns match`)))));
+      const transcript = h("article", { class: "card" },
+        h("p", { class: "eyebrow" }, h("b", null, "STT transcript"), "· the whole session, the label source"),
+        d.stt_text ? h("p", { class: "transcript" }, d.stt_text) : h("p", { class: "transcript none" }, d.status === "failed" ? "No transcript: the session failed before STT." : "Not transcribed yet."));
+      const table = h("article", { class: "card" },
+        h("p", { class: "eyebrow" }, h("b", null, "Turns"), "· STT over VTT, word by word · a processed turn opens its clip"),
+        turns.length ? VTT.legend() : null,
+        turns.length ? h("div", { class: "turns-head", "aria-hidden": "true" }, h("span", null, "#"), h("span", null, "time"), h("span", null, "STT / VTT"), h("span", null, "status")) : null,
+        turns.length ? h("ol", { class: "turns" }, turns.map(turn)) : h("p", { class: "sub empty-detail", style: { marginTop: "12px" } }, "No turns yet."));
+      return [head, transcript, table];
+    }
+
+    function turn(t) {
+      const open = t.status === "processed" && t.clip_id;
+      const side = h("span", { class: "side" }, chip(t.status, TURN), t.reason ? h("span", { class: "reason" }, t.reason) : null,
+        marks(t.correct), open ? h("span", { class: "open" }, `open ${t.clip_id} →`) : null);
+      const cells = [h("span", { class: "n" }, String(t.i + 1)), h("span", { class: "when" }, `${clock(t.start)}–${clock(t.end)}`),
+        VTT.pair(t.stt, t.vtt ? t.vtt.text : null), side];
+      return h("li", { "data-i": t.i, "data-status": t.status }, open
+        ? h("a", { class: "turn", href: `clips.html?clip=${encodeURIComponent(t.clip_id)}`, title: `Open clip ${t.clip_id}` }, cells)
+        : h("div", { class: "turn" }, cells));
+    }
+
+    $("user").addEventListener("change", () => loadList($("user").value));
+    const params = new URLSearchParams(location.search);
+    (async () => {
+      let wantedUser = params.get("user");
+      const wantedSession = params.get("session");
+      if (wantedSession) {   // a deep link names only the session; its record says whose list to open
+        try { wantedUser = (await getJSON(`/sessions/${encodeURIComponent(wantedSession)}`)).user_id; } catch (err) { fail(err); }
+      }
+      loadList(wantedUser, wantedSession);
+    })();
+  </script>
+</body>
+</html>
