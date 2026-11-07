@@ -37,7 +37,11 @@
     /* training stage */
     .stagecard .headline { margin-top: 14px; }                                                    /* .c-next .eyebrow gap, app.css:117 */
     .stagecard .progress { margin-top: 22px; }
-    .steps4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-top: 6px; font-size: 12px; color: var(--ink-3); }  /* .progress gap, app.css:369 */
+    .picker { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-3); }
+    select { font: 14px/1.4 var(--font); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 14px; padding: 8px 12px; outline: none; }  /* .other-in, app.css:247 */
+    select:focus-visible { border-color: rgba(0,0,0,.22); }
+    .actions { display: flex; align-items: center; gap: 14px; }
+    .steps4 { display: grid; gap: 4px; margin-top: 6px; font-size: 12px; color: var(--ink-3); }  /* .progress gap, app.css:369 */
     .steps4 .on { color: var(--ink); font-weight: 500; }
     .meter { margin-top: 22px; }
     .meter .track { background: var(--well-2); border-radius: 4px; }                               /* .track.plan, app.css:129 */
@@ -54,7 +58,10 @@
         <h1>Stats</h1>
         <p class="meta" id="summary">Loading…</p>
       </div>
-      <button class="opt" id="refresh" type="button">Refresh</button>
+      <div class="actions">
+        <label class="picker" id="picker" hidden>User <select id="user" aria-label="User"></select></label>
+        <button class="opt" id="refresh" type="button">Refresh</button>
+      </div>
     </header>
     <p class="msg error" id="error" hidden></p>
     <div id="content">
@@ -80,6 +87,7 @@
           <div class="meter"><div class="track"><span id="meter-fill"></span></div><p class="meta" id="meter-text"></p></div>
         </article>
         <section class="col">
+          <div class="stat" id="recall-tile" hidden><small>Pool recall · STT answer among the candidates</small><div id="recall"></div></div>
           <div class="stat"><small>Auto-send threshold</small><div class="word" id="threshold"></div></div>
           <div class="stat"><small>Last camera fps</small><div id="fps"></div><span class="chip near" id="fps-warn" hidden></span></div>
         </section>
@@ -88,7 +96,6 @@
   </div></main>
   <script>
     const $ = (id) => document.getElementById(id);
-    const STAGES = ["defaults", "temperature", "per-model", "with-prior"];   // the contract's stage order
     const SERIES = [
       { key: "fused", name: "Video only", color: "var(--coach)" },
       { key: "gemini", name: "Gemini", color: "var(--ink-2)" },
@@ -105,7 +112,8 @@
       $("content").classList.add("loading");
       $("refresh").disabled = true;
       try {
-        const r = await fetch("/stats", { cache: "no-store" });
+        const user = $("user").value;
+        const r = await fetch(user ? `/stats?user=${encodeURIComponent(user)}` : "/stats", { cache: "no-store" });
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || r.statusText);
         $("error").hidden = true;
@@ -143,9 +151,15 @@
       }
       // training stage
       $("stage").textContent = s.stage;
-      const at = STAGES.indexOf(s.stage);
-      $("stage-bar").replaceChildren(...STAGES.map((_, i) => el("span", i < at ? "done" : i === at ? "on" : "")));
-      $("stage-names").replaceChildren(...STAGES.map((n, i) => el("span", i === at ? "on" : "", n)));
+      // stages come from the server, in order, so a new or renamed stage needs no change here
+      const stages = s.stages?.length ? s.stages : [{ name: s.stage }, ...(s.next_stage ? [s.next_stage] : [])];
+      const at = stages.findIndex((x) => x.name === s.stage);
+      $("stage-names").style.gridTemplateColumns = `repeat(${stages.length}, minmax(0, 1fr))`;
+      $("stage-bar").replaceChildren(...stages.map((_, i) => el("span", i < at ? "done" : i === at ? "on" : "")));
+      $("stage-names").replaceChildren(...stages.map((x, i) => el("span", i === at ? "on" : "", x.at == null ? x.name : `${x.name} · ${x.at}+`)));
+      if (s.user) $("user").value = s.user;
+      $("recall-tile").hidden = s.pool_recall == null;
+      if (s.pool_recall != null) $("recall").textContent = pct(s.pool_recall);
       if (s.next_stage) {
         $("meter-fill").style.width = `${Math.min(100, (100 * s.labeled) / s.next_stage.at)}%`;
         $("meter-text").replaceChildren(el("b", null, String(s.labeled)), " labeled", el("i"), "next: ", el("b", null, s.next_stage.name), " at ", el("b", null, String(s.next_stage.at)), ` · ${Math.max(0, s.next_stage.at - s.labeled)} to go`);
@@ -264,7 +278,21 @@
     let resizing = 0;
     addEventListener("resize", () => { cancelAnimationFrame(resizing); resizing = requestAnimationFrame(() => { if (stats && stats.labeled) drawChart(); }); });
     $("refresh").addEventListener("click", load);
-    load();
+    $("user").addEventListener("change", () => { history.replaceState(null, "", `?user=${encodeURIComponent($("user").value)}`); load(); });
+    // users come from /clips (its "users" list); the selector stays hidden if that endpoint is unavailable
+    (async () => {
+      const wanted = new URLSearchParams(location.search).get("user");
+      try {
+        const r = await fetch("/clips", { cache: "no-store" });
+        if (r.ok) {
+          const { users } = await r.json();
+          $("user").replaceChildren(...users.map((u) => { const o = el("option", null, u.id); o.value = u.id; return o; }));
+          if (wanted && users.some((u) => u.id === wanted)) $("user").value = wanted;
+          $("picker").hidden = !users.length;
+        }
+      } catch {}
+      load();
+    })();
   </script>
 </body>
 </html>
