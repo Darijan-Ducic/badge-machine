@@ -94,7 +94,7 @@
 
     async function load() {
       try {
-        const res = await fetch("/pipeline.md", { cache: "no-store" });
+        const res = await fetch("/docs/pipeline.md", { cache: "no-store" });
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         const md = await res.text();
         blocks = parse(md);
