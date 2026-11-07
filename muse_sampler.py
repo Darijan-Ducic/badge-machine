@@ -23,10 +23,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 from muse_video import MODEL, make_client
 from scorers import FPS
+from visemes import ALPHABET
 
 # visemes-v1, in the doc's table order. Changing it makes old samples incomparable: bump CONFIG["visemes"].
-# TODO: import ALPHABET from visemes.py (merged on main)
-VISEMES = ["P", "F", "TH", "W", "R", "CH", "S", "T", "K", "A", "E", "O", "REST"]
+VISEMES = ALPHABET  # one source of truth for visemes-v1
 
 # Logged with every sample. Bump prompt_id when either prompt or the wire schema changes, crop/grid when the images do.
 CONFIG = {"prompt_id": "p3", "schema": "v1", "visemes": "visemes-v1", "crop": "full-frame-v0", "grid": "2x2",
