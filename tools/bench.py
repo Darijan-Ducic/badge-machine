@@ -24,6 +24,8 @@ speakers (the framework loop). Each clip's features use only its own speaker's e
 """
 
 import argparse
+import contextlib
+import dataclasses
 import difflib
 import json
 import random
@@ -125,13 +127,40 @@ def _gemini_scores(record: dict) -> dict | None:
     return record["gemini"].get("output")
 
 
+@contextlib.contextmanager
+def _uncapped_pool():
+    """Featurize with every closed / Gemini-scored phrase in the pool and no pool cap (bench replay only)."""
+    import candidates
+    cap, top = candidates.POOL_CAP, candidates._top
+    candidates.POOL_CAP, candidates._top = 10_000, lambda scores, n: top(scores, len(scores))
+    try:
+        yield
+    finally:
+        candidates.POOL_CAP, candidates._top = cap, top
+
+
+def closed_pool(clip, phrases: list[str]):
+    """`clip` with its pool cut to the phrase-list entries (pool order) plus ∅: closed-vocabulary mode."""
+    keep = [j for j, text in enumerate(clip.pool[:-1]) if match(text, phrases) is not None]
+    rows = keep + [len(clip.pool) - 1]
+    pool = [clip.pool[j] for j in rows]
+    label = None
+    if clip.stt is not None:
+        hit = match(clip.stt, pool[:-1])
+        label = hit if hit is not None else len(pool) - 1
+    return dataclasses.replace(clip, pool=pool, features=clip.features[rows], label=label)
+
+
 def reads(records: list[dict]) -> list[dict]:
-    """Per labeled v1 clip, in the given order: each reader against the label, and the featurized clip."""
+    """Per labeled v1 clip, in the given order: each reader against the label, the featurized clip as the app pools
+    it (`clip`) and in closed-vocabulary mode (`closed_clip`: phrase list + ∅)."""
     records = [r for r in records if r.get("record") == "v1" and r["label"].get("stt_text")]
-    featurized = {}
+    featurized, uncapped = {}, {}
     for user in dict.fromkeys(r["user_id"] for r in records):
         mine = [r for r in records if r["user_id"] == user]
         featurized.update(zip((r["id"] for r in mine), clips._featurized(mine)))  # own earlier labels only
+        with _uncapped_pool():
+            uncapped.update(zip((r["id"] for r in mine), clips._featurized(mine)))
     rows = []
     for r in records:
         clip, truth = featurized[r["id"]], r["label"]["stt_text"]
@@ -139,6 +168,7 @@ def reads(records: list[dict]) -> list[dict]:
         grid = len(truth.split()) == 6 and all(w in s for w, s in zip(_normalize(truth).split(), GRID_GRAMMAR))
         rows.append({
             "user": r["user_id"], "id": r["id"], "truth": truth, "clip": clip, "open_pick": clip.muse_pick,
+            "closed_clip": closed_pool(uncapped[r["id"]], r["phrases"]),
             "open_exact": clip.muse_pick is not None and match(truth, [clip.muse_pick]) is not None,
             "open_words": (_edits(_normalize(clip.muse_pick or "").split(), _normalize(truth).split()),
                            len(_normalize(truth).split())),
@@ -202,6 +232,7 @@ def summarize(rows: list[dict]) -> dict:
         "fused_30_defaults": _mean(r["fused_defaults"] for r in after30),
         "autosend_coverage": _mean(r["sent"] for r in after10),
         "autosend_precision": _mean(r["fused_core"] for r in sent),
+        "pool_recall": _mean(r["clip"].label != len(r["clip"].pool) - 1 for r in rows),
         "errors": sum(r.get("errors", 0) for r in rows),
         "cost": sum(r.get("cost") or 0 for r in rows),
     }
@@ -310,11 +341,14 @@ def measure(records: list[dict], dataset: str) -> dict:
     records = [r for r in records if str(r.get("user_id", "")).startswith(prefix)]
     rows = reads(records)
     users = list(dict.fromkeys(r["user"] for r in rows))
+    closed_rows = [{**r, "clip": r["closed_clip"]} for r in rows]
     personal = {u: stream([r for r in rows if r["user"] == u]) for u in users}
-    pooled = stream(rows)
+    personal_cp = {u: stream([r for r in closed_rows if r["user"] == u]) for u in users}
+    pooled, pooled_cp = stream(rows), stream(closed_rows)
     return {"dataset": dataset, "chance": None,
             "personal": {u: summarize(s) for u, s in personal.items()}, "pooled": summarize(pooled),
-            "_rows": {"pooled": pooled, **personal}}
+            "closed_pool": {**{u: summarize(s) for u, s in personal_cp.items()}, "pooled": summarize(pooled_cp)},
+            "_rows": {"pooled": pooled, **personal}, "_rows_cp": {"pooled": pooled_cp, **personal_cp}}
 
 
 def _fmt(v, pct=True):
@@ -323,25 +357,40 @@ def _fmt(v, pct=True):
     return f"{v * 100:.0f}%" if pct else f"{v}"
 
 
+def _grid(lines: list[list[str]]) -> str:
+    widths = [max(len(line[i]) for line in lines) for i in range(len(lines[0]))]
+    return "\n".join("  ".join(c.rjust(w) for c, w in zip(line, widths)) for line in lines)
+
+
+def _scopes(block: dict) -> list[tuple[str, dict]]:
+    return [(k, v) for k, v in block.items() if k != "pooled"] + [("pooled", block["pooled"])]
+
+
 def table(result: dict, chance: float | None) -> str:
-    head = ["scope", "n", "open=", "word", "cl@1", "cl@3", "gem@1", "gem@3", "fused@def", "@10 (def)", "@30 (def)",
-            "send cov", "send prec", "err"]
-    lines = [head]
-    for scope, s in [*result["personal"].items(), ("pooled", result["pooled"])]:
+    """Readers per speaker and pooled, then the fused scorer with the app's pool and with the closed pool."""
+    app = {**result["personal"], "pooled": result["pooled"]}
+    lines = [["scope", "n", "open=", "word", "cl@1", "cl@3", "gem@1", "gem@3", "err", "$"]]
+    for scope, s in _scopes(app):
         lines.append([scope.split(":")[-1], str(s["n"]), _fmt(s["open_exact"]), _fmt(s["open_word_acc"]),
-                      _fmt(s["closed_top1"]), _fmt(s["closed_top3"]), _fmt(s["gemini_top1"]), _fmt(s["gemini_top3"]),
-                      _fmt(s["fused_defaults"]),
-                      f"{_fmt(s['fused_10'])} ({_fmt(s['fused_10_defaults'])}) n={s['n_10']}",
-                      f"{_fmt(s['fused_30'])} ({_fmt(s['fused_30_defaults'])}) n={s['n_30']}",
-                      _fmt(s["autosend_coverage"]), _fmt(s["autosend_precision"]), str(s["errors"])])
-    widths = [max(len(l[i]) for l in lines) for i in range(len(head))]
-    text = "\n".join("  ".join(c.rjust(w) for c, w in zip(l, widths)) for l in lines)
+                      _fmt(s["closed_top1"]), _fmt(s["closed_top3"]), _fmt(s["gemini_top1"]),
+                      _fmt(s["gemini_top3"]), str(s["errors"]), f"{s['cost']:.2f}"])
+    text = _grid(lines)
+    for title, block in [("fused, app pool", app), ("fused, closed pool (phrase list + ∅)", result["closed_pool"])]:
+        lines = [["scope", "pool", "@def", "@10 (def same clips)", "@30 (def same clips)", "send cov", "send prec"]]
+        for scope, s in _scopes(block):
+            lines.append([scope.split(":")[-1], _fmt(s["pool_recall"]), _fmt(s["fused_defaults"]),
+                          f"{_fmt(s['fused_10'])} ({_fmt(s['fused_10_defaults'])}) n={s['n_10']}",
+                          f"{_fmt(s['fused_30'])} ({_fmt(s['fused_30_defaults'])}) n={s['n_30']}",
+                          _fmt(s["autosend_coverage"]), _fmt(s["autosend_precision"])])
+        text += f"\n\n{title}\n" + _grid(lines)
     if chance is not None:
         text += f"\nchance top-1 {chance * 100:.1f}%"
-    for scope, s in [*result["personal"].items(), ("pooled", result["pooled"])]:
+    for scope, s in _scopes(app):
         if "open_slots" in s:
-            text += (f"\n{scope.split(':')[-1]} slots (cmd color prep letter digit adv) open "
-                     f"{' '.join(_fmt(x) for x in s['open_slots'])} | fused {' '.join(_fmt(x) for x in s['fused_slots'])}")
+            cp = (result["closed_pool"].get(scope) or {}).get("fused_slots") or []
+            text += (f"\n{scope.split(':')[-1]} slots cmd/color/prep/letter/digit/adv: open "
+                     f"{' '.join(_fmt(x) for x in s['open_slots'])} | fused, closed pool "
+                     f"{' '.join(_fmt(x) for x in cp)}")
     return text
 
 
@@ -383,15 +432,20 @@ def main(argv: list[str] | None = None) -> int:
     if len(sizes) > 1:
         print(f"phrase list sizes {sizes}")
     if args.json:
-        args.json.write_text(json.dumps({k: v for k, v in result.items() if k != "_rows"}, indent=1))
+        args.json.write_text(json.dumps({k: v for k, v in result.items() if not k.startswith("_")}, indent=1))
     if args.save:
         import runs
-        for scope, s in [*result["personal"].items(), ("pooled", result["pooled"])]:
-            record = _run_record(args.dataset, scope.split(":")[-1], s, result["_rows"][scope],
-                                 scope if scope != "pooled" else None)
-            record["metrics"]["chance"] = chance
-            runs.save(record)
-            print(f"saved run {record['id']} ({scope})")
+        app = {**result["personal"], "pooled": result["pooled"]}
+        for mode, block, rows in [("app pool", app, result["_rows"]),
+                                  ("closed pool", result["closed_pool"], result["_rows_cp"])]:
+            for scope, s in _scopes(block):
+                readers = {k: app[scope][k] for k in ("open_exact", "open_word_acc", "closed_top1", "closed_top3",
+                                                      "gemini_top1", "gemini_top3", "cost")}
+                record = _run_record(args.dataset, f"{scope.split(':')[-1]} · {mode}", {**s, **readers}, rows[scope],
+                                     scope if scope != "pooled" else None)
+                record["metrics"]["chance"] = chance
+                runs.save(record)
+                print(f"saved run {record['id']} ({scope}, {mode})")
     return 0
 
 
