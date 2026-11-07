@@ -1,0 +1,30 @@
+{
+  "about": "Tracker-lab clip set (tools/tracker_eval.mjs). video = the H.264 copy SAM saw, gt = tools/sam_groundtruth.py output (face + lips, video mode). dev = for designing and tuning; heldout = judge only. A name with '+' is a stress variant of its base (tools/tracker_augment.mjs, $0). Sessions: tools/webcam_emulate.py (/tmp/badge-data/webcam-emu/TALLY.md); rebuild a GT with: uv run --env-file .env python tools/sam_groundtruth.py <session.y4m> /tmp/badge-data/tracker-gt/<name>.gt.json",
+  "clips": [
+    {"name": "2016-01-09-s05", "split": "heldout", "address": "2016-01-09", "video": "/tmp/badge-data/tracker-gt/2016-01-09-s05.mp4", "gt": "/tmp/badge-data/tracker-gt/2016-01-09-s05.gt.json"},
+    {"name": "2016-01-09-s06", "split": "heldout", "address": "2016-01-09", "video": "/tmp/badge-data/tracker-gt/2016-01-09-s06.mp4", "gt": "/tmp/badge-data/tracker-gt/2016-01-09-s06.gt.json"},
+    {"name": "2013-08-03-s04", "split": "heldout", "address": "2013-08-03", "video": "/tmp/badge-data/tracker-gt/2013-08-03-s04.mp4", "gt": "/tmp/badge-data/tracker-gt/2013-08-03-s04.gt.json"},
+    {"name": "2013-08-03-s06", "split": "heldout", "address": "2013-08-03", "video": "/tmp/badge-data/tracker-gt/2013-08-03-s06.mp4", "gt": "/tmp/badge-data/tracker-gt/2013-08-03-s06.gt.json"},
+    {"name": "2016-02-06-s04", "split": "heldout", "address": "2016-02-06", "video": "/tmp/badge-data/tracker-gt/2016-02-06-s04.mp4", "gt": "/tmp/badge-data/tracker-gt/2016-02-06-s04.gt.json"},
+    {"name": "2017-01-14-s01", "split": "heldout", "address": "2017-01-14", "video": "/tmp/badge-data/tracker-gt/2017-01-14-s01.mp4", "gt": "/tmp/badge-data/tracker-gt/2017-01-14-s01.gt.json"},
+    {"name": "2013-07-13-s07", "split": "heldout", "address": "2013-07-13", "video": "/tmp/badge-data/tracker-gt/2013-07-13-s07.mp4", "gt": "/tmp/badge-data/tracker-gt/2013-07-13-s07.gt.json"},
+    {"name": "2016-03-12-s01", "split": "heldout", "address": "2016-03-12", "video": "/tmp/badge-data/tracker-gt/2016-03-12-s01.mp4", "gt": "/tmp/badge-data/tracker-gt/2016-03-12-s01.gt.json"},
+    {"name": "talking-head", "split": "heldout", "address": "talking-head", "video": "/tmp/badge-sam/talking.mp4", "gt": "/tmp/badge-sam/talking.gt.json"},
+
+    {"name": "2016-01-09-s06+move", "split": "heldout", "base": "2016-01-09-s06", "augment": {"move": {"seed": 11}, "jumps": [5, 7, 12, 14, 20, 22]}},
+    {"name": "2013-08-03-s04+move", "split": "heldout", "base": "2013-08-03-s04", "augment": {"move": {"seed": 12}, "jumps": [5, 7, 12, 14]}},
+    {"name": "2017-01-14-s01+move", "split": "heldout", "base": "2017-01-14-s01", "augment": {"move": {"seed": 13}, "jumps": [5, 7, 12, 14]}},
+    {"name": "2016-02-06-s04+occl", "split": "heldout", "base": "2016-02-06-s04", "augment": {"occlude": [[3, 4, "skin"], [8, 8.8, "object"], [13, 14, "skin"]], "blur": [[5.5, 6, 16], [10, 10.4, 12], [16, 16.5, 4]]}},
+    {"name": "2013-07-13-s07+occl", "split": "heldout", "base": "2013-07-13-s07", "augment": {"occlude": [[3, 4, "object"], [8, 8.8, "skin"], [13, 14, "skin"]], "blur": [[5.5, 6, 16], [10, 10.4, 12], [16, 16.5, 4]]}},
+    {"name": "2016-03-12-s01+occl", "split": "heldout", "base": "2016-03-12-s01", "augment": {"occlude": [[3, 4, "skin"], [8, 8.8, "object"], [13, 14, "skin"]], "blur": [[5.5, 6, 16], [10, 10.4, 12], [16, 16.5, 4]]}},
+
+    {"name": "2016-01-09-s02", "split": "dev", "address": "2016-01-09", "video": "/tmp/badge-data/tracker-gt/2016-01-09-s02.mp4", "gt": "/tmp/badge-data/tracker-gt/2016-01-09-s02.gt.json"},
+    {"name": "2013-08-03-s05", "split": "dev", "address": "2013-08-03", "video": "/tmp/badge-data/tracker-gt/2013-08-03-s05.mp4", "gt": "/tmp/badge-data/tracker-gt/2013-08-03-s05.gt.json"},
+    {"name": "2016-01-30-s04", "split": "dev", "address": "2016-01-30", "video": "/tmp/badge-data/tracker-gt/2016-01-30-s04.mp4", "gt": "/tmp/badge-data/tracker-gt/2016-01-30-s04.gt.json"},
+    {"name": "2012-07-21-s03", "split": "dev", "address": "2012-07-21", "video": "/tmp/badge-data/tracker-gt/2012-07-21-s03.mp4", "gt": "/tmp/badge-data/tracker-gt/2012-07-21-s03.gt.json"},
+    {"name": "2016-01-09-s02+move", "split": "dev", "base": "2016-01-09-s02", "augment": {"move": {"seed": 1}, "jumps": [5, 7, 12, 14]}},
+    {"name": "2016-01-30-s04+move", "split": "dev", "base": "2016-01-30-s04", "augment": {"move": {"seed": 2}, "jumps": [5, 7, 12, 14]}},
+    {"name": "2013-08-03-s05+occl", "split": "dev", "base": "2013-08-03-s05", "augment": {"occlude": [[3, 4, "skin"], [8, 8.8, "object"], [13, 14, "skin"]], "blur": [[5.5, 6, 16], [10, 10.4, 12], [16, 16.5, 4]]}},
+    {"name": "2012-07-21-s03+occl", "split": "dev", "base": "2012-07-21-s03", "augment": {"occlude": [[3, 4, "object"], [8, 8.8, "skin"], [13, 14, "skin"]], "blur": [[5.5, 6, 16], [10, 10.4, 12], [16, 16.5, 4]]}}
+  ]
+}
