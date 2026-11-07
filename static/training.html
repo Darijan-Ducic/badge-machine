@@ -34,6 +34,22 @@
     .diagram { margin: 18px 0 0; display: grid; justify-items: safe center; overflow-x: auto; }
     .diagram svg { height: auto; flex: none; }
     .diagram pre.msg { justify-self: stretch; max-width: none; white-space: pre-wrap; font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; }
+    /* runs: one row per run, its hypothesis as the headline; pick one to overlay its curve on its baseline's */
+    .runs { margin-bottom: 22px; }   /* .board gap, app.css:502 */
+    .runlist { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 2px; }   /* .log, app.css:207 */
+    .run { width: 100%; display: grid; gap: 8px; padding: 14px 16px; border-radius: 16px; text-align: left; transition: background .15s; }   /* .recent li button, app.css:86 */
+    .run:hover { background: var(--well); }
+    .run[aria-pressed="true"] { background: var(--well); box-shadow: 0 0 0 1.5px rgba(17, 17, 17, .14); }   /* .preset.on, app.css:327 */
+    .run .hyp { font-size: 18px; line-height: 1.35; letter-spacing: -0.01em; }   /* .tip-text, app.css:125 */
+    .run .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .run code { font: 500 12px/1 var(--font); background: var(--card); padding: 2px 7px; border-radius: 999px; }   /* code, app.css:26 */
+    .mgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px 16px; margin-top: 2px; }
+    .mgrid small { display: block; font-size: 12px; color: var(--ink-3); }   /* .stat small, app.css:475 */
+    .mgrid b { font-size: 17px; font-weight: 500; letter-spacing: -0.01em; font-variant-numeric: proportional-nums; }
+    .delta { font-size: 12px; margin-left: 4px; }
+    .delta.up { color: var(--onplan-ink); } .delta.down { color: var(--near-ink); }   /* green = on plan, yellow = heads-up */
+    .overlay { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--hair); }   /* .c-moments .m rule, app.css:139 */
+    .overlay .legend span { display: inline-flex; align-items: center; }
   </style>
 </head>
 <body>
@@ -44,8 +60,18 @@
       <h1 id="title">Training</h1>
       <p class="meta"><span>Live from <b>docs/training-v1.md</b></span><i></i><span>edit the file and reload</span></p>
     </header>
+    <article class="card runs" id="runs">
+      <p class="eyebrow"><b>Runs</b><span>· every training run, newest first · pick one to compare its curve with its baseline</span></p>
+      <ol class="runlist" id="runlist"><li class="eyebrow">Loading runs…</li></ol>
+      <div class="overlay" id="overlay" hidden>
+        <p class="eyebrow" id="overlay-title"></p>
+        <p class="legend" id="overlay-legend"></p>
+        <div class="chart-wrap" id="overlay-chart"></div>
+      </div>
+    </article>
     <article class="card prose" id="sheet"><p class="eyebrow">Loading the sheet…</p></article>
   </div></main>
+  <script src="linechart.js"></script>
   <script src="vendor/marked.umd.js"></script>
   <script src="vendor/mermaid.min.js"></script>
   <script>
@@ -97,6 +123,78 @@
       }
     }
     load();
+
+    // ---- runs (GET /runs) ----
+    const pctv = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
+    const make = (tag, cls, ...kids) => { const e = document.createElement(tag); if (cls) e.className = cls; e.append(...kids.filter((k) => k != null)); return e; };
+    const GATE = { pass: ["gate pass", "chip onplan"], fail: ["gate fail", "chip over"] };
+    let runs = [], picked = null;
+
+    function delta(v, base) {
+      if (v == null || base == null) return null;
+      const d = Math.round((v - base) * 100);
+      return make("span", `delta ${d > 0 ? "up" : d < 0 ? "down" : ""}`, `${d > 0 ? "+" : d < 0 ? "−" : "±"}${Math.abs(d)} pts`);
+    }
+    function metric(label, value, base) {
+      return make("div", null, make("small", null, label), make("b", null, value), base);
+    }
+
+    function runRow(r) {
+      const base = runs.find((x) => x.id === r.baseline), m = r.metrics, bm = base?.metrics;
+      const chips = make("span", "chips",
+        make("span", r.author === "agent" ? "chip coach" : "chip", r.author === "agent" ? "agent" : "human"),
+        r.system_version ? make("span", "chip", `system ${r.system_version}`) : null,
+        GATE[r.gate] ? make("span", GATE[r.gate][1], GATE[r.gate][0]) : make("span", "chip", "no gate"),
+        r.gate === "pass" && !r.system_version ? make("span", "chip near", "proposed — awaiting approval") : null);
+      const meta = make("span", "meta",
+        make("span", null, make("b", null, r.name), ` · ${r.id}`), make("i"),
+        make("span", null, `${r.dataset} · ${m.clips} clips`), make("i"),
+        make("span", null, "commit ", make("code", null, (r.code_commit || "—").slice(0, 7))), make("i"),
+        make("span", null, base ? `vs ${base.name} (${base.id})` : r.baseline ? `vs ${r.baseline}` : "no baseline"), make("i"),
+        make("span", null, new Date(r.t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })));
+      const grid = make("span", "mgrid",
+        metric("VTT · all", pctv(m.vtt_acc), delta(m.vtt_acc, bm?.vtt_acc)),
+        metric("VTT · held-out", pctv(m.vtt_acc_heldout), delta(m.vtt_acc_heldout, bm?.vtt_acc_heldout)),
+        metric("VTT · Gemini", pctv(m.gemini_acc)),
+        metric("VTT · Muse", pctv(m.muse_acc)),
+        metric("Pool recall", pctv(m.pool_recall), delta(m.pool_recall, bm?.pool_recall)),
+        metric("Auto-send precision", pctv(m.autosend_precision), delta(m.autosend_precision, bm?.autosend_precision)),
+        metric("Auto-send coverage", pctv(m.autosend_coverage), delta(m.autosend_coverage, bm?.autosend_coverage)));
+      const btn = make("button", "run", make("span", "hyp", r.hypothesis || r.name), chips, meta, grid);
+      btn.type = "button";
+      btn.dataset.id = r.id;
+      btn.setAttribute("aria-pressed", "false");
+      btn.addEventListener("click", () => pick(r.id));
+      return make("li", null, btn);
+    }
+
+    function pick(id) {
+      picked = runs.find((r) => r.id === id);
+      for (const b of document.querySelectorAll(".run")) b.setAttribute("aria-pressed", String(b.dataset.id === id));
+      const base = runs.find((x) => x.id === picked.baseline);
+      const series = [{ name: `${picked.name} · VTT`, color: "var(--coach)", points: picked.curve.map((c) => ({ x: c.i, y: c.vtt })) }];
+      if (base) series.push({ name: `${base.name} · VTT`, color: "var(--ink-3)", points: base.curve.map((c) => ({ x: c.i, y: c.vtt })) });
+      $("overlay").hidden = false;
+      $("overlay-title").replaceChildren(make("b", null, "VTT learning curve"), ` · ${picked.name}${base ? ` vs its baseline ${base.name}` : " (no baseline)"}`);
+      $("overlay-legend").replaceChildren(...series.map((x) => make("span", null, LineChart.lineKey(x.color), x.name)));
+      LineChart.draw($("overlay-chart"), { series, xLabel: "clip", label: `VTT accuracy by clip: ${series.map((x) => `${x.name} ends at ${pctv(x.points[x.points.length - 1]?.y)}`).join("; ")}` });
+    }
+
+    (async () => {
+      try {
+        const r = await fetch("/runs", { cache: "no-store" });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        runs = [...d.runs].sort((a, b) => b.t - a.t);
+        $("runlist").replaceChildren(...(runs.length ? runs.map(runRow) : [make("li", "eyebrow", "No runs yet.")]));
+        const first = runs.find((x) => x.baseline) || runs[0];
+        if (first) pick(first.id);
+      } catch (err) {
+        $("runlist").replaceChildren(make("li", "msg error", `Couldn't load runs: ${err.message}`));
+      }
+    })();
+    let resizing = 0;
+    addEventListener("resize", () => { cancelAnimationFrame(resizing); resizing = requestAnimationFrame(() => { if (picked) pick(picked.id); }); });
   </script>
 </body>
 </html>
