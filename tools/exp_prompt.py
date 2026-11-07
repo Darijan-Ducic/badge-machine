@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse  # noqa: E402
+import functools  # noqa: E402
 import json  # noqa: E402
 import random  # noqa: E402
 import re  # noqa: E402
@@ -38,6 +39,15 @@ FPS = 24
 SETS = Path("data/exp/lab-prompt")
 AUTHOR = "agent:lab-prompt"
 GENERIC = "I want to talk with you about what we can do together to make this country stronger for everyone."
+# Length null: generic speech, cut to a read's word count. Lift rewards matching the STT's length, and a read's
+# length follows the clip's duration, so content lift = lift(read) - lift(this text at the read's word count).
+NULL_WORDS = ("we have to keep working together so that every family in this country can count on a good job a "
+              "decent wage and a secure retirement and that means we need to invest in the things that help our "
+              "economy grow like education and research and roads and bridges because that is how we make sure that "
+              "the next generation has the same chances that we had and that is what I will keep fighting for every "
+              "single day thank you god bless you and god bless the united states of america ").split() * 3
+LIFTS = ("lift_visemes", "lift_words", "content_lift_visemes", "content_lift_words", "sample_lift_visemes",
+         "sample_lift_words", "sample_content_lift_visemes", "sample_content_lift_words")
 _TRANSIENT = re.compile(r"RateLimit|InternalServer|APIConnection|APITimeout|ServiceUnavailable|Error code: (429|5\d\d)")
 
 
@@ -159,7 +169,47 @@ def turn_metrics(samples: list[dict], stt: str, k: int | None = None) -> dict:
             "pick_visemes": vis(pick), "best_visemes": best,
             "sample_viseme_acc": sum(sample_accs) / len(sample_accs) if sample_accs else 0.0,
             "agreement": sum(t == pick for t in tops) / len(valid) if valid else 0.0, "valid": len(valid),
-            "empty": len(valid) - len(tops), "exact": pick == _normalize(stt)}
+            "empty": len(valid) - len(tops), "exact": pick == _normalize(stt),
+            "tops": [t or "" for t in map(_top, valid)]}
+
+
+@functools.lru_cache(maxsize=None)
+def text_acc(read: str, said: str, kind: str) -> float:
+    """1 - edits / len(said) of one read against one STT, in visemes or words (0 for an empty STT)."""
+    from visemes import to_visemes
+    a, b = (to_visemes(read), to_visemes(said)) if kind == "visemes" else (_normalize(read).split(),
+                                                                         _normalize(said).split())
+    return 1 - _edits(a, b) / len(b) if b else 0.0
+
+
+def lift(read: str, i: int, stts: list[str], kind: str) -> float:
+    """LIFT (lab-metrics' primary metric): the read's score against its own STT minus its mean score against every
+    OTHER turn's STT in the set. A read that only sounds like the speaker in general scores ≈ 0."""
+    others = [text_acc(read, s, kind) for j, s in enumerate(stts) if j != i]
+    return text_acc(read, stts[i], kind) - sum(others) / len(others)
+
+
+def with_lift(rows: list[dict]) -> list[dict]:
+    """Rows of one arm over a whole turn set, each given its pick's lift and its samples' mean lift."""
+    stts = [r["stt"] for r in rows]
+
+    def content(read, i, kind):
+        return lift(read, i, stts, kind) - lift(" ".join(NULL_WORDS[:len(_normalize(read).split())]), i, stts, kind)
+
+    def mean(values):
+        values = list(values)
+        return sum(values) / len(values) if values else 0.0
+
+    out = []
+    for i, r in enumerate(rows):
+        extra = {}
+        for kind in ("visemes", "words"):
+            extra[f"lift_{kind}"] = lift(r["pick"] or "", i, stts, kind)
+            extra[f"content_lift_{kind}"] = content(r["pick"] or "", i, kind)
+            extra[f"sample_lift_{kind}"] = mean(lift(t, i, stts, kind) for t in r["tops"])
+            extra[f"sample_content_lift_{kind}"] = mean(content(t, i, kind) for t in r["tops"])
+        out.append({**r, **extra})
+    return out
 
 
 def _acc(pair) -> float:
@@ -176,7 +226,8 @@ def summarize(rows: list[dict]) -> dict:
         return sum(r[key] for r in rows) / len(rows) if rows else None
 
     valid = sum(r["valid"] for r in rows)
-    return {"clips": len(rows), "word_acc": pooled("pick_words"), "viseme_acc": pooled("pick_visemes"),
+    lifts = {key: mean(key) for key in LIFTS if rows and key in rows[0]}
+    return {"clips": len(rows), **lifts, "word_acc": pooled("pick_words"), "viseme_acc": pooled("pick_visemes"),
             "best_of_k_viseme_acc": pooled("best_visemes"), "sample_viseme_acc": mean("sample_viseme_acc"),
             "agreement": mean("agreement"), "muse_acc": mean("exact"),
             "empty_read_share": sum(r["empty"] for r in rows) / valid if valid else None, "valid_samples": valid}
@@ -190,11 +241,23 @@ def sign_test(ups: int, downs: int) -> float:
     return min(1.0, 2 * sum(comb(n, i) for i in range(min(ups, downs) + 1)) / 2 ** n)
 
 
+def paired_mean(a: list[dict], b: list[dict], key: str, reps: int = 20000, seed: int = 0) -> dict:
+    """Mean per-turn difference b - a of `key` and its two-sided sign-flip permutation p (more power than the sign
+    test when per-turn values are noisy but not tied)."""
+    diffs = [y[key] - x[key] for x, y in zip(a, b)]
+    observed = abs(sum(diffs))
+    rng = random.Random(seed)
+    hits = sum(abs(sum(d if rng.random() < 0.5 else -d for d in diffs)) >= observed - 1e-12 for _ in range(reps))
+    boots = sorted(sum(rng.choice(diffs) for _ in diffs) / len(diffs) for _ in range(2000)) if diffs else [0.0]
+    return {"mean_diff": sum(diffs) / len(diffs) if diffs else 0.0, "perm_p": (hits + 1) / (reps + 1),
+            "ci95": [boots[int(0.025 * len(boots))], boots[int(0.975 * len(boots)) - 1]]}
+
+
 def flips(a: list[dict], b: list[dict], key: str = "pick_visemes") -> dict:
     """Per turn, does arm b read more (up) or fewer (down) visemes right than arm a."""
     out = {"up": 0, "down": 0, "tie": 0}
     for x, y in zip(a, b):
-        dx, dy = (_acc(x[key]), _acc(y[key])) if key != "sample_viseme_acc" else (x[key], y[key])
+        dx, dy = (_acc(x[key]), _acc(y[key])) if isinstance(x[key], tuple | list) else (x[key], y[key])
         out["up" if dy > dx + 1e-9 else "down" if dy < dx - 1e-9 else "tie"] += 1
     return out
 
@@ -244,14 +307,22 @@ def run_record(*, name: str, lever: str, hypothesis: str, arms: dict, baseline: 
     """A run record for the Training page's Runs tab: per-arm metrics, flips, sign-test p, cost, verdict."""
     from experiment import _head
     base, var = arms[baseline], arms[variant]
-    f = flips(base, var)
-    f_sample = flips(base, var, key="sample_viseme_acc")
+    tests = {}
+    for key in (*LIFTS, "pick_visemes", "sample_viseme_acc"):
+        if base and key in base[0] and key in var[0]:
+            f = flips(base, var, key=key)
+            tests[key] = {**f, "p": sign_test(f["up"], f["down"])}
+            if key in LIFTS:
+                tests[key].update(paired_mean(base, var, key))
+    primary = tests.get("lift_visemes") or tests["pick_visemes"]  # lift is primary (lab-metrics rule)
     curve, total = [], [0, 0]
     for i, row in enumerate(var):
         total = [total[0] + row["pick_visemes"][0], total[1] + row["pick_visemes"][1]]
         curve.append({"i": i, "vtt": _acc(total)})
     per_turn = [{"clip_id": c, "stt": base[i]["stt"],
-                 **{arm: {"pick": rows[i]["pick"], "viseme_acc": _acc(rows[i]["pick_visemes"])}
+                 **{arm: {"pick": rows[i]["pick"], "viseme_acc": _acc(rows[i]["pick_visemes"]),
+                          "lift_visemes": rows[i].get("lift_visemes"),
+                          "sample_lift_visemes": rows[i].get("sample_lift_visemes")}
                     for arm, rows in arms.items()}} for i, c in enumerate(clip_ids)]
     return {
         "id": uuid.uuid4().hex[:12], "t": time.time(), "name": name, "dataset": dataset, "user_id": user_id,
@@ -259,8 +330,8 @@ def run_record(*, name: str, lever: str, hypothesis: str, arms: dict, baseline: 
         "baseline_arm": baseline, "variant_arm": variant, "turn_clip_ids": list(clip_ids),
         "metrics": {"clips": len(var), "muse_acc": summarize(var)["muse_acc"],
                     "arms": {arm: summarize(rows) for arm, rows in arms.items()}},
-        "flips": f, "p": sign_test(f["up"], f["down"]), "flips_sample_mean": f_sample,
-        "p_sample_mean": sign_test(f_sample["up"], f_sample["down"]), "cost_usd": cost, "verdict": verdict,
+        "flips": {key: primary[key] for key in ("up", "down", "tie")}, "p": primary["p"], "tests": tests,
+        "cost_usd": cost, "verdict": verdict,
         "reopen": reopen, "config": config or {}, "baseline": None, "gate": None, "curve": curve,
         "per_turn": per_turn, "code_commit": _head(), **(extra or {}),
     }
@@ -301,14 +372,18 @@ def _freeze(args) -> int:
 
 def _print(record: dict) -> None:
     print(f"\n{record['name']} · n={record['metrics']['clips']} · run {record['id']}")
-    print(f"{'arm':<14} {'word':>6} {'viseme':>6} {'best-K':>6} {'sample':>6} {'agree':>6} {'empty':>6}")
+    print(f"{'arm':<14} {'liftV':>6} {'liftW':>6} {'cLiftV':>6} {'cLiftW':>6} {'sLiftV':>6} {'sLiftW':>6} "
+          f"{'scLifV':>6} {'scLifW':>6} {'word':>6} {'viseme':>6} {'best-K':>6} {'sample':>6} {'agree':>6} "
+          f"{'empty':>6}")
     for arm, m in record["metrics"]["arms"].items():
-        print(f"{arm:<14} {m['word_acc']:>6.3f} {m['viseme_acc']:>6.3f} {m['best_of_k_viseme_acc']:>6.3f} "
+        lifts = " ".join(f"{m.get(key, 0) or 0:>+6.3f}" for key in LIFTS)
+        print(f"{arm:<14} {lifts} {m['word_acc']:>6.3f} {m['viseme_acc']:>6.3f} {m['best_of_k_viseme_acc']:>6.3f} "
               f"{m['sample_viseme_acc']:>6.3f} {m['agreement']:>6.2f} {m['empty_read_share'] or 0:>6.2f}")
-    f, g = record["flips"], record["flips_sample_mean"]
-    print(f"pick viseme flips up/down/tie {f['up']}/{f['down']}/{f['tie']} p={record['p']:.3f}; sample-mean "
-          f"{g['up']}/{g['down']}/{g['tie']} p={record['p_sample_mean']:.3f}; cost ${record['cost_usd']:.2f}; "
-          f"verdict {record['verdict']}")
+    for key, t in record["tests"].items():
+        perm = (f"; mean diff {t['mean_diff']:+.3f} [{t['ci95'][0]:+.3f}, {t['ci95'][1]:+.3f}] perm p="
+                f"{t['perm_p']:.3f}") if "perm_p" in t else ""
+        print(f"  {key:<20} up/down/tie {t['up']}/{t['down']}/{t['tie']} sign p={t['p']:.3f}{perm}")
+    print(f"cost ${record['cost_usd']:.2f}; verdict {record['verdict']}")
 
 
 def _free(args) -> int:
@@ -318,22 +393,26 @@ def _free(args) -> int:
     store = clips.backend(None)
     sources = [store.get(t["clip_id"]) for t in turns]
     stts = [t["stt"] for t in turns]
-    k5 = [turn_metrics(s["samples"], stt) for s, stt in zip(sources, stts)]
-    k3 = [turn_metrics(s["samples"], stt, k=3) for s, stt in zip(sources, stts)]
+    k5 = with_lift([turn_metrics(s["samples"], stt) for s, stt in zip(sources, stts)])
+    k3 = with_lift([turn_metrics(s["samples"], stt, k=3) for s, stt in zip(sources, stts)])
     one = lambda text, stt: turn_metrics([{"output": {"hypotheses": [{"text": text, "s": 1}]}}], stt)  # noqa: E731
     chance = {"other_turn_stt": summarize([one(stts[(i + 1) % len(stts)], stt) for i, stt in enumerate(stts)]),
               "generic_sentence": summarize([one(GENERIC, stt) for stt in stts])}
-    aa_a = [turn_metrics(s["samples"][:2], stt) for s, stt in zip(sources, stts)]
-    aa_b = [turn_metrics(s["samples"][3:5], stt) for s, stt in zip(sources, stts)]
-    aa = flips(aa_a, aa_b)
-    rng, boot = random.Random(0), []
+    aa_a = with_lift([turn_metrics(s["samples"][:2], stt) for s, stt in zip(sources, stts)])
+    aa_b = with_lift([turn_metrics(s["samples"][3:5], stt) for s, stt in zip(sources, stts)])
+    aa = flips(aa_a, aa_b, key="lift_visemes")
+    rng, boot = random.Random(0), {key: [] for key in ("viseme_acc", "lift_visemes", "sample_lift_visemes")}
     for _ in range(args.reps):
-        rows = [turn_metrics([rng.choice(s["samples"]) for _ in range(3)], stt) for s, stt in zip(sources, stts)]
-        boot.append(summarize(rows)["viseme_acc"])
-    mean = sum(boot) / len(boot)
-    sd = (sum((b - mean) ** 2 for b in boot) / (len(boot) - 1)) ** 0.5
-    noise = {"k3_viseme_acc_bootstrap_mean": mean, "k3_viseme_acc_bootstrap_sd": sd, "reps": args.reps,
-             "aa_k2_disjoint_flips": aa, "aa_k2_p": sign_test(aa["up"], aa["down"])}
+        rows = with_lift([turn_metrics([rng.choice(s["samples"]) for _ in range(3)], stt)
+                          for s, stt in zip(sources, stts)])
+        summary = summarize(rows)
+        for key, values in boot.items():
+            values.append(summary[key])
+    noise = {"reps": args.reps, "aa_k2_disjoint_lift_flips": aa, "aa_k2_p": sign_test(aa["up"], aa["down"])}
+    for key, values in boot.items():
+        mean = sum(values) / len(values)
+        noise[f"k3_{key}_bootstrap"] = {"mean": mean,
+                                        "sd": (sum((v - mean) ** 2 for v in values) / (len(values) - 1)) ** 0.5}
     record = run_record(name=f"K=3 vs K=5 (stored samples) · {args.set}", lever="K",
                         hypothesis="Dropping the open call from K=5 to K=3 samples costs no VTT · Muse accuracy.",
                         arms={"base-k5": k5, "k3": k3}, baseline="base-k5", variant="k3",
@@ -344,8 +423,10 @@ def _free(args) -> int:
     _print(record)
     for name, m in chance.items():
         print(f"chance {name}: word {m['word_acc']:.3f} viseme {m['viseme_acc']:.3f}")
-    print(f"noise: K=3 viseme acc bootstrap {mean:.3f} ± {sd:.3f} (sd); A/A K=2 disjoint flips "
-          f"{aa['up']}/{aa['down']}/{aa['tie']} p={noise['aa_k2_p']:.3f}")
+    for key in boot:
+        b = noise[f"k3_{key}_bootstrap"]
+        print(f"noise: K=3 {key} bootstrap {b['mean']:+.3f} ± {b['sd']:.3f} (sd)")
+    print(f"A/A K=2 disjoint lift flips {aa['up']}/{aa['down']}/{aa['tie']} p={noise['aa_k2_p']:.3f}")
     return 0
 
 
@@ -368,8 +449,8 @@ def _run(args) -> int:
                                              source=sources[turn["clip_id"]])
     reread = [done[t["clip_id"]] for t in turns]
     stts = [t["stt"] for t in turns]
-    base = [turn_metrics(sources[t["clip_id"]]["samples"], stt, k=args.k) for t, stt in zip(turns, stts)]
-    var = [turn_metrics(r["samples"], stt) for r, stt in zip(reread, stts)]
+    base = with_lift([turn_metrics(sources[t["clip_id"]]["samples"], stt, k=args.k) for t, stt in zip(turns, stts)])
+    var = with_lift([turn_metrics(r["samples"], stt) for r, stt in zip(reread, stts)])
     errors = sum(s.get("output") is None for r in reread for s in r["samples"])
     cost = sum(samples_cost(r["samples"]) for r in reread)
     record = run_record(name=f"{args.arm} vs base-k{args.k} · {args.set}", lever=args.lever,
