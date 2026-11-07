@@ -1,0 +1,163 @@
+"""Candidate pool + features + label for one clip, recomputed from its stored raw model outputs (replay is free).
+
+Implements "Post-processor spec (exact)" in docs/uncertainty-design.md. Inputs per clip:
+  samples  muse_sampler open-call records `{"call", "sample_idx", "latency_ms", "output", "error"}`; `output` is a
+           schema-v1 dict, or None for a failed call (skipped)
+  closed   the closed call's output `{"scores": {phrase: s}, "none": s}`, or None if it failed
+  gemini   `{phrase: p}` over the phrase list, or None / {} if unavailable
+  bank     `{"phrases": [phrase-list entries], "counts": {past STT text: count}}`
+  stt      the STT transcript when STT is on (gives the label), else None
+
+Readings chosen where the spec leaves room (simplest one each time):
+  - The pool cap of 24 includes ∅, so at most 23 real candidates, kept in source order: hypotheses, slot
+    recombinations, closed top 3, Gemini top 3, bank nearest 3. Empty texts (after normalizing) are not candidates.
+  - "Matches" is the spec's text matching (exact normalized, else best ratio >= .85) for votes, the closed/Gemini
+    lookups, phrase-list membership, the user count and the label. For `mean_score` the matched hypothesis's `s` is
+    used (the first exact match when a sample repeats a phrase). `slot_support` compares single words exactly.
+  - Bank entries are the phrase list plus past STT texts, deduped by normalized text, phrase list first; bank size
+    = their number; total = sum of counts (counts whose texts normalize alike are merged).
+  - Bank-nearest ties keep bank order; with no valid samples every distance ties, so the first 3 entries are taken.
+  - Fractions and means over zero valid samples are 0 (including `viseme_sim`).
+  - A sample with no `mouth_visible` counts as bad quality (it is not "full"); only `speech.present is False`
+    counts as no speech.
+"""
+
+from collections import Counter
+from dataclasses import dataclass
+from itertools import product
+from math import log, prod
+
+import numpy as np
+
+from preheat import _normalize, match_phrase
+
+FEATURES = ["vote", "top_vote", "mean_score", "slot_support", "viseme_sim", "closed", "gemini", "prior", "in_bank",
+            "is_none", "none_closed", "bad_quality", "no_speech"]
+NONE = "∅"
+POOL_CAP = 24
+MIN_RATIO = 0.85
+
+
+@dataclass
+class Clip:
+    pool: list[str]  # ∅ last
+    features: np.ndarray  # (len(pool), len(FEATURES))
+    label: int | None  # index into pool; ∅'s index on a pool miss; None without STT
+    stt: str | None
+    gemini_pick: str | None  # Gemini's argmax phrase
+    muse_pick: str | None  # most common top hypothesis across valid samples
+
+
+def match(text: str, options: list[str]) -> int | None:
+    """Index of the option `text` matches (exact after normalizing, else best ratio >= .85), or None."""
+    return match_phrase(text, options, MIN_RATIO) if options else None
+
+
+def _top(scores: dict, n: int) -> list[str]:
+    return [text for text, _ in sorted(scores.items(), key=lambda item: -item[1])[:n]]
+
+
+def _recombinations(output: dict) -> list[str]:
+    slots = [sorted(s["alts"], key=lambda a: -a["s"])[:2] for s in output.get("slots") or [] if s.get("alts")]
+    if not slots:
+        return []
+    combos = sorted(product(*slots), key=lambda combo: -prod(a["s"] for a in combo))[:3]
+    return [" ".join(a["w"] for a in combo) for combo in combos]
+
+
+def _observed(output: dict) -> list[str]:
+    codes = [v["v"] for v in output.get("visemes") or [] if v["v"] != "REST"]
+    return [c for i, c in enumerate(codes) if i == 0 or c != codes[i - 1]]
+
+
+def _top_hypothesis(output: dict) -> str | None:
+    hypotheses = output.get("hypotheses") or []
+    return max(hypotheses, key=lambda h: h["s"])["text"] if hypotheses else None
+
+
+def _bad_quality(output: dict) -> bool:
+    quality = output.get("quality") or {}
+    return quality.get("mouth_visible") != "full" or quality.get("blur") == "high"
+
+
+def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, bank: dict, stt: str | None = None, *,
+              to_visemes=None, viseme_distance=None) -> Clip:
+    if to_visemes is None or viseme_distance is None:
+        import visemes
+        to_visemes = to_visemes or visemes.to_visemes
+        viseme_distance = viseme_distance or visemes.viseme_distance
+
+    outputs = [s["output"] for s in samples if s.get("output") is not None]
+    closed_scores = (closed or {}).get("scores") or {}
+    gemini = gemini or {}
+    phrases = list(bank.get("phrases") or [])
+    counts: dict[str, int] = {}
+    for text, n in (bank.get("counts") or {}).items():
+        counts[_normalize(text)] = counts.get(_normalize(text), 0) + n
+    entries: dict[str, str] = {}  # normalized -> first-seen text; phrase list first, then past STT texts
+    for text in phrases + list((bank.get("counts") or {})):
+        entries.setdefault(_normalize(text), text)
+    entries.pop("", None)
+    observed = [_observed(o) for o in outputs]
+    hypotheses = [[h["text"] for h in o.get("hypotheses") or []] for o in outputs]
+    alt_words = [{w for s in o.get("slots") or [] for a in s.get("alts") or [] for w in _normalize(a["w"]).split()}
+                 for o in outputs]
+
+    def nearness(entry: str) -> float:
+        codes = to_visemes(entry)
+        return min((viseme_distance(codes, seen) for seen in observed), default=np.inf)  # stable sort keeps ties
+
+    pool: dict[str, str] = {}  # normalized -> first-seen text
+    sources = ([h for hs in hypotheses for h in hs] + [r for o in outputs for r in _recombinations(o)]
+               + _top(closed_scores, 3) + _top(gemini, 3) + sorted(entries.values(), key=nearness)[:3])
+    for text in sources:
+        key = _normalize(text)
+        if key and key not in pool and len(pool) < POOL_CAP - 1:
+            pool[key] = text.strip()
+
+    k = len(outputs)
+    tops = [_top_hypothesis(o) for o in outputs]
+    log_denominator = log(sum(counts.values()) + len(entries) + 1)
+
+    def mean(values) -> float:
+        return sum(values) / k if k else 0.0
+
+    def lookup(text: str, scores: dict) -> float:
+        at = match(text, list(scores))
+        return float(list(scores.values())[at]) if at is not None else 0.0
+
+    def real(text: str) -> list[float]:
+        words, codes = _normalize(text).split(), to_visemes(_normalize(text))
+        found = [match(text, hs) for hs in hypotheses]
+        return [
+            mean(i is not None for i in found),
+            mean(top is not None and match(text, [top]) is not None for top in tops),
+            mean(o["hypotheses"][i]["s"] if i is not None else 0 for o, i in zip(outputs, found)),
+            mean(sum(w in seen for w in words) / len(words) for seen in alt_words),
+            1 - mean(viseme_distance(codes, seen) for seen in observed) if k else 0.0,
+            lookup(text, closed_scores),
+            lookup(text, gemini),
+            log(lookup(text, counts) + 1) - log_denominator,
+            float(match(text, phrases) is not None),
+            0.0, 0.0, 0.0, 0.0,
+        ]
+
+    none_row = [0.0] * 9 + [
+        1.0,
+        float((closed or {}).get("none") or 0.0),
+        mean(_bad_quality(o) for o in outputs),
+        mean((o.get("speech") or {}).get("present") is False for o in outputs),
+    ]
+    texts = list(pool.values())
+    features = np.array([real(t) for t in texts] + [none_row], dtype=float)
+    texts.append(NONE)
+
+    label = None
+    if stt is not None:
+        hit = match(stt, texts[:-1])
+        label = hit if hit is not None else len(texts) - 1
+    named = [t for t in tops if t is not None]
+    votes = Counter(map(_normalize, named))
+    muse_pick = max(named, key=lambda t: votes[_normalize(t)]) if named else None  # ties: first seen
+    gemini_pick = _top(gemini, 1)[0] if gemini else None
+    return Clip(texts, features, label, stt, gemini_pick, muse_pick)
