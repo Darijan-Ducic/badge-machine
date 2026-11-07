@@ -83,3 +83,18 @@ def test_decode_output_parses_to_its_sentence_and_candidates(turn):
 
 def test_failed_call_has_no_text():
     assert decode.text_of({"output": None, "error": "RateLimitError"}) is None
+
+
+STTS = ["we made more jobs this year", "the deficit is falling", "thank you and god bless america"]
+
+
+@pytest.mark.parametrize("kind", ["word", "viseme"])
+def test_one_constant_read_for_every_turn_has_zero_lift(kind):
+    _, lift = exp_decode.lifts(["we will move forward together"] * 3, STTS, kind)
+    assert lift == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("kind", ["word", "viseme"])
+def test_reading_each_turns_own_words_has_positive_lift_on_every_turn(kind):
+    per, lift = exp_decode.lifts(STTS, STTS, kind)
+    assert lift > 0.5 and all(x > 0 for x in per)
