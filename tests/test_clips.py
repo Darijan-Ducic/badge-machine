@@ -94,6 +94,13 @@ def test_preheat_reads_follow_the_spec(store, recording):
     assert (result["stats"]["labeled"], result["stats"]["camera_fps"]) == (1, 30.0)
 
 
+def test_muse_vote_share_counts_only_the_samples_that_returned(store, recording):
+    # K=5, samples 3 and 4 fail: valid tops yes, yes, no -> "yes" with 2 of 3 votes
+    result = run(store, recording, "yes", "yes", "yes", "no", "no", "no", fail={3, 4})
+
+    assert result["read"]["muse"] == {"phrase": "yes", "p": pytest.approx(2 / 3)}
+
+
 def test_a_none_win_reads_as_none_of_these(store, recording):
     # No speech in any sample, closed "none" .95: ∅ scores .95 + 1 (no_speech) against at most .01 + .25 for a phrase.
     result = process_clip(recording, 30.0, 0, transcribe=lambda _: "yes", phrases=PHRASES, store=store,
