@@ -386,6 +386,36 @@ def _muse_read(clip, samples: list[dict]) -> dict:
     return {"phrase": clip.muse_pick, "p": sum(match(t, [clip.muse_pick]) is not None for t in tops) / len(outputs)}
 
 
+def _read_back(record: dict, store) -> tuple[list[dict], dict, dict | None]:
+    """Read a just-stored clip back like the runtime would, with a model trained on this user's earlier clips only.
+
+    Returns (the user's records, each reader's pick {"fused" | "gemini" | "muse": {"phrase", "p"}}, whether each pick
+    matches the STT label, or None without one)."""
+    records = load(store, record["user_id"])
+    replay = _replayed(records, record["user_id"], record["vocab"])
+    i = [r["id"] for r in replay].index(record["id"])
+    clips = _featurized(replay[:i + 1])
+    clip = clips[i]
+    probs = predict(train([c for c in clips[:i] if c.label is not None], gate=False), [clip])[0]
+    top, heard = int(np.argmax(probs)), record["label"]["stt_text"]
+    gemini_output = record["gemini"]["output"] or {}
+
+    def said(text):
+        return heard is not None and text is not None and match(heard, [text]) is not None
+
+    read = {
+        "fused": {"phrase": _shown(clip, top), "p": float(probs[top])},
+        "gemini": {"phrase": clip.gemini_pick, "p": float(gemini_output.get(clip.gemini_pick, 0.0))},
+        "muse": _muse_read(clip, record["samples"]),
+    }
+    correct = None if heard is None else {
+        "fused": top != len(clip.pool) - 1 and said(clip.pool[top]),
+        "gemini": said(clip.gemini_pick),
+        "muse": said(clip.muse_pick),
+    }
+    return records, read, correct
+
+
 def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=None, *, user_id: str = DEFAULT_USER,
                  k: int = PREHEAT_K, mouths: list | None = None, tracker_flags=(), sample_open=None,
                  score_closed=None, gemini=None) -> dict:
@@ -395,34 +425,16 @@ def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=Non
     record = record_clip(recording, phrases=phrases, user_id=user_id, mode="stt_on", k=k, transcribe=transcribe,
                          mouths=mouths, tracker_flags=tracker_flags, fps=fps, prompted=prompted, store=store,
                          sample_open=sample_open, score_closed=score_closed, gemini=gemini)
-    records = load(store, user_id)
-    replay = _replayed(records, user_id, record["vocab"])
-    i = [r["id"] for r in replay].index(record["id"])
-    clips = _featurized(replay[:i + 1])
-    clip = clips[i]
-    probs = predict(train([c for c in clips[:i] if c.label is not None], gate=False), [clip])[0]
-    top, heard = int(np.argmax(probs)), record["label"]["stt_text"]
+    records, read, correct = _read_back(record, store)
+    heard = record["label"]["stt_text"]
     label = match(heard, phrases) if heard is not None else None
-    gemini_output = record["gemini"]["output"] or {}
-
-    def said(text):
-        return heard is not None and text is not None and match(heard, [text]) is not None
-
     return {
         "clip": record["id"],
         "stt": heard,
         "label": label,
         "label_phrase": None if label is None else phrases[label],
-        "read": {
-            "fused": {"phrase": _shown(clip, top), "p": float(probs[top])},
-            "gemini": {"phrase": clip.gemini_pick, "p": float(gemini_output.get(clip.gemini_pick, 0.0))},
-            "muse": _muse_read(clip, record["samples"]),
-        },
-        "correct": None if heard is None else {
-            "fused": top != len(clip.pool) - 1 and said(clip.pool[top]),
-            "gemini": said(clip.gemini_pick),
-            "muse": said(clip.muse_pick),
-        },
+        "read": read,
+        "correct": correct,
         "stats": stats(records, phrases, user=user_id),
     }
 
