@@ -34,6 +34,8 @@ DATA = Path("data/clips")
 COSTS = Path(__file__).parent / "data" / "viseme_costs.json"
 DEFAULT_USER = "local"  # who preheat clips belong to when the page sends no ?user=
 PREHEAT_K = 5
+RUNTIME_K = 3  # lip mode answers while the user waits; K=5 is for dictation and practice
+LABEL_SOURCES = ("undo", "confirm", "edit")  # how the user gave a lip-mode clip its label
 NONE_TEXT = "∅ none of these"
 V1 = "v1"  # record format marker; older records (fixed-vocabulary scores) are kept but not replayed
 _lock = threading.Lock()  # clips finish concurrently; store order is training order, so saves must not interleave
@@ -75,6 +77,16 @@ class FileStore:
             return None
         path = self.root / f"{clip_id}.mp4"
         return path.read_bytes() if path.exists() else None
+
+    def set_label(self, clip_id: str, text: str, source: str) -> bool:
+        with _lock:
+            records = self.load()
+            hit = next((r for r in records if r.get("record") == V1 and r.get("id") == clip_id), None)
+            if hit is None:
+                return False
+            hit["label"] = {**hit["label"], "user_edit": text, "source": source}
+            (self.root / "index.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+        return True
 
     def users(self) -> list[dict]:
         counts = Counter(r["user_id"] for r in self.load() if r.get("record") == V1)
@@ -118,6 +130,10 @@ class MongoStore:
             return self.clips.open_download_stream(clip_id).read()
         except NoFile:
             return None
+
+    def set_label(self, clip_id: str, text: str, source: str) -> bool:
+        update = {"$set": {"label.user_edit": text, "label.source": source}}
+        return self.records.update_one({"record": V1, "id": clip_id}, update).matched_count == 1
 
     def users(self) -> list[dict]:
         groups = self.records.aggregate([{"$match": {"record": V1}},
@@ -409,3 +425,37 @@ def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=Non
         },
         "stats": stats(records, phrases, user=user_id),
     }
+
+
+# ---------------------------------------------------------------- lip mode
+
+
+def vtt_clip(recording: bytes, phrases: list[str], store=None, *, user_id: str = DEFAULT_USER,
+             mouths: list | None = None, tracker_flags=(), sample_open=None, score_closed=None, gemini=None) -> dict:
+    """Lip mode: crop one muted recording with the browser tracker's boxes, read it with every model (K=3), store it
+    unlabeled (the user labels it later, `label_clip`) and score it with a model trained on this user's earlier
+    labeled clips only. `vtt` and `alternatives` are the most probable real candidates: ∅ is never offered, and a ∅
+    top pick makes the action "none"."""
+    start = time.perf_counter()
+    record = record_clip(recording, phrases=phrases, user_id=user_id, mode="lip", k=RUNTIME_K, mouths=mouths,
+                         tracker_flags=tracker_flags, store=store, sample_open=sample_open,
+                         score_closed=score_closed, gemini=gemini)
+    replay = _replayed(load(store, user_id), user_id, record["vocab"])
+    i = [r["id"] for r in replay].index(record["id"])
+    clips = _featurized(replay[:i + 1])  # clips stored after this one can't reach its bank or model
+    clip, model = clips[i], _trained_before(clips, i)
+    probs = predict(model, [clip])[0]
+    best = sorted(range(len(clip.pool) - 1), key=lambda j: -probs[j])[:3]  # ∅ is last
+    alternatives = [{"text": clip.pool[j], "p": float(probs[j])} for j in best]
+    return {"clip": record["id"], "vtt": alternatives[0], "action": _action(model, probs),
+            "alternatives": alternatives, "latency_ms": round((time.perf_counter() - start) * 1000)}
+
+
+def label_clip(store, clip_id: str, text, source) -> bool:
+    """The user's label for a stored clip: `label.user_edit`, which training prefers over STT, and how they gave it.
+    False if there is no such clip; ValueError for a missing text or a source outside LABEL_SOURCES."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("missing label text")
+    if source not in LABEL_SOURCES:
+        raise ValueError(f"label source must be one of {', '.join(LABEL_SOURCES)}, got {source!r}")
+    return backend(store).set_label(clip_id, text, source)
