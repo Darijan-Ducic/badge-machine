@@ -1,20 +1,20 @@
 # Pipeline
 
-Green = built and verified · amber = being built · grey dashed = planned. Rendered copies: [runtime](pipeline-runtime.png), [learning](pipeline-learning.png).
+Green = built and verified · amber = being built · grey dashed = planned. Rendered copies (also shown in the app's Pipeline view): [runtime](../static/diagrams/runtime.svg), [learning](../static/diagrams/learning.svg).
 
 ## Runtime: what happens to one clip
 
 ```mermaid
 flowchart TD
-  CAM["Webcam in browser<br/>camera default fps, usually 30"]
+  CAM["Webcam in browser<br/>request 30 fps, show actual"]
   TRK["Classical tracker, every frame<br/>NCC on nose-to-chin anchor + Kalman smoothing"]
   TRIG{"Lost, big motion, scale jump over 15%,<br/>or 2 s since last anchor?"}
   SAM["SAM 3.1 re-anchor on 'face'<br/>$0.0025 per call"]
   CROP["Muted mouth crop, scaled up"]
   QG{"Quality gate: too many<br/>occluded or blurred frames?"}
   REPEAT["Ask user to repeat<br/>free, before any model spend"]
-  GEM["Gemini 4 Argon @ 15 fps<br/>enum + logprobs → P(phrase)"]
-  MUSE["Muse Spark 1.3, up to 48 frames<br/>self-reported P(phrase)"]
+  GEM["Gemini 4 Argon @ 24 fps, its max<br/>enum + logprobs → P(phrase)"]
+  MUSE["Muse Spark 1.3 @ 24 fps<br/>2x2 frame grids, ≤48 images<br/>self-reported P(phrase)"]
   FUSE["Fusion classifier<br/>calibrated P(phrase), local"]
   GATE{"P(top) ≥ learned threshold?"}
   SEND["Auto-send phrase"]
@@ -70,8 +70,8 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STT built
-  class CLIP,MATCH,STORE,PREQ,STAGES,FUSE,GT,REPLAY,KNOBS building
+  class STT,MATCH,PREQ,STAGES,FUSE built
+  class CLIP,STORE,GT,REPLAY,KNOBS building
   class CONF,UI,AGENT,PROMPTS planned
 ```
 
@@ -81,7 +81,7 @@ flowchart TD
 |---|---|---|
 | Capture + tracking | Browser | Free; SAM only on re-anchor ($0.0025 each) |
 | Quality gate | Browser | Free |
-| Lip reading | Gemini + Muse Spark, in parallel | ~5 s + ~19 s, run concurrently |
+| Lip reading @ 24 fps | Gemini + Muse Spark, in parallel | ~4 s + ~14 s, run concurrently |
 | Fusion + gate | Local Python | Free, milliseconds |
 | STT label (STT-on only) | Muse Voice Transcribe | Per minute of audio |
 | Training + accuracy | Local Python | Free |
