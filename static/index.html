@@ -2,23 +2,37 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Webcam transcript</title>
+  <link rel="stylesheet" href="theme.css">
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
-    video { width: 100%; border-radius: 8px; background: #000; transform: scaleX(-1); }
-    button { font-size: 1rem; padding: .6rem 1.2rem; margin: 1rem 0; }
-    #transcript { white-space: pre-wrap; background: #f4f4f4; padding: 1rem; border-radius: 8px; min-height: 3rem; }
+    /* page-specific; every value is pre-coach's (studio/static/app.css) */
+    .framing-wrap > .col { width: min(560px, 100%); }          /* the framing card's width */
+    .framing .headline { margin-top: 24px; }                     /* cam-to-text gap of .framing .eyebrow */
+    #transcript { white-space: pre-wrap; overflow-wrap: anywhere; } /* as .msg / .msg.me */
   </style>
 </head>
 <body>
-  <h1>Webcam transcript</h1>
-  <video id="preview" autoplay muted playsinline></video>
-  <button id="toggle" disabled>Start recording</button>
-  <p id="status">Requesting camera…</p>
-  <div id="transcript"></div>
+  <div class="haze" aria-hidden="true"></div>
+  <main class="framing-wrap">
+    <div class="col">
+      <section class="framing">
+        <div class="cam"><video id="preview" autoplay muted playsinline></video><div class="thirds" aria-hidden="true"></div></div>
+        <h1 class="headline">Webcam transcript</h1>
+        <p class="note" id="status">Requesting camera…</p>
+      </section>
+      <article class="card">
+        <p class="eyebrow"><b>Transcript</b></p>
+        <div class="tip-text" id="transcript"></div>
+      </article>
+    </div>
+  </main>
+  <nav class="dock"><button class="go" id="toggle" disabled><span class="dot" id="toggle-icon"></span><span id="toggle-label">Start recording</span></button></nav>
   <script>
     const preview = document.getElementById("preview");
     const toggle = document.getElementById("toggle");
+    const toggleIcon = document.getElementById("toggle-icon");
+    const toggleLabel = document.getElementById("toggle-label");
     const statusEl = document.getElementById("status");
     const output = document.getElementById("transcript");
     let stream, recorder, chunks;
@@ -42,13 +56,15 @@
       recorder.ondataavailable = (e) => chunks.push(e.data);
       recorder.onstop = transcribe;
       recorder.start();
-      toggle.textContent = "Stop recording";
+      toggleLabel.textContent = "Stop recording";
+      toggleIcon.className = "sq";
       statusEl.textContent = "Recording…";
       output.textContent = "";
     };
 
     async function transcribe() {
-      toggle.textContent = "Start recording";
+      toggleLabel.textContent = "Start recording";
+      toggleIcon.className = "dot";
       toggle.disabled = true;
       statusEl.textContent = "Transcribing…";
       try {
