@@ -3,7 +3,8 @@
 Usage: uv run --env-file .env python tools/ingest_practice.py <manifest.jsonl> --dataset <name>
            [--limit N] [--k 5] [--concurrency 2] [--seed 0] [--dry-run]
 
-Manifest: one JSON object per line, {"clip": path, "text": transcript, "speaker": id, "start": s?, "end": s?}.
+Manifest: one JSON object per line, {"clip": path, "text": transcript, "speaker": id, "start": s?, "end": s?,
+"phrases": [...]?}; a line's "phrases" replaces data/phrases.txt as its phrase list (closed-set benchmarks).
 Per clip: cut [start, end] (the whole file without them), SAM video "face" boxes on the segment (the user is the
 largest face in the first frame with one, then its track id), the static median mouth crop (crop.py), then every
 model call via clips.read_clip with mode "practice", user "practice:<dataset>:<speaker>" and the transcript as the
@@ -70,7 +71,7 @@ def read_one(order: int, item: dict, args, phrases: list[str]) -> tuple[dict, by
         cut(Path(item["clip"]), item.get("start"), item.get("end"), segment)
         faces = face_boxes(sam.segment_video(segment, "face"))
         return clips.read_clip(
-            segment.read_bytes(), phrases=phrases, user_id=user_of(args.dataset, item), mode="practice", k=args.k,
+            segment.read_bytes(), phrases=item.get("phrases") or phrases, user_id=user_of(args.dataset, item), mode="practice", k=args.k,
             transcript=item["text"], faces=faces, tracker_flags=[] if faces else ["no_face"],
             extra={"key": clip_key(item["clip"], item.get("start"), item.get("end")), "dataset": args.dataset,
                    "speaker": item["speaker"], "source": item["clip"], "start": item.get("start"),

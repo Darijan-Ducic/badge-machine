@@ -109,7 +109,7 @@ def test_streams_train_only_on_earlier_clips_and_tag_the_stage():
 
 
 def test_summary_pairs_each_stage_with_defaults_on_the_same_clips():
-    rows = [{"n_before": i, "fused_defaults": i % 2 == 0, "fused_temperature": i >= 10, "fused_core": i >= 30,
+    rows = [{"n_before": i, "fused_defaults": i % 2 == 0, "fused_temperature": i >= 10, "fused_core": i >= 25,
              "sent": i >= 20, "stage": "x", "open_exact": False, "open_words": (0, 6), "closed_top1": 0.0,
              "closed_top3": 0.0, "gemini_top1": 0.0, "gemini_top3": 0.0, "slots": None} for i in range(40)]
     summary = bench.summarize(rows)
@@ -117,5 +117,7 @@ def test_summary_pairs_each_stage_with_defaults_on_the_same_clips():
     assert summary["fused_defaults"] == pytest.approx(0.5)
     assert summary["fused_10"] == pytest.approx(1.0) and summary["fused_10_defaults"] == pytest.approx(0.5)
     assert summary["fused_30"] == pytest.approx(1.0) and summary["n_30"] == 10
-    assert summary["autosend_coverage"] == pytest.approx(20 / 30) and summary["autosend_precision"] == 1.0
+    # auto-send is the staged (core-capped) model's decision, so its precision is that model's accuracy when it sends
+    assert summary["autosend_coverage"] == pytest.approx(20 / 30)
+    assert summary["autosend_precision"] == pytest.approx(15 / 20)
     assert summary["open_word_acc"] == 0.0
