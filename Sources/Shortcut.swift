@@ -8,9 +8,13 @@ struct Shortcut: Codable {
 
     static let fnKeyCode = UInt32(kVK_Function)
     static let fn = Self(keyCode: fnKeyCode, modifiers: 0, label: "Fn")
-    static let leftOption = Self(keyCode: UInt32(kVK_Option), modifiers: 0, label: "Left Option")
-    var isLeftOption: Bool { keyCode == Self.leftOption.keyCode && modifiers == 0 }
-    var usesEventMonitor: Bool { isFn || isLeftOption }
+    var isStandaloneModifier: Bool { modifiers == 0 && ModifierKey.byCode[keyCode] != nil }
+    var usesEventMonitor: Bool { isFn || isStandaloneModifier }
+
+    init(modifierKeyCode: UInt32, label: String) {
+        self.init(keyCode: modifierKeyCode, modifiers: 0, label: label)
+    }
+
     var isFn: Bool { keyCode == Self.fnKeyCode && modifiers == 0 }
 
     static func isFnPress(_ event: NSEvent) -> Bool {

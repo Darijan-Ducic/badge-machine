@@ -41,8 +41,8 @@ final class Studio: ObservableObject {
         .cursor: GlobalShortcut(signature: 0x4241494B)
     ]
     private let fnMonitor = FnKeyMonitor()
-    private let leftOptionMonitor = LeftOptionMonitor()
-    @Published private(set) var leftOptionReady = false
+    private let modifierTapMonitor = ModifierTapMonitor()
+    @Published private(set) var modifierMonitoringReady = false
     private var fnArmed = false
     @Published private(set) var fnMonitoringReady = false
     private let gemini: Gemini?
@@ -53,8 +53,10 @@ final class Studio: ObservableObject {
         let keys = APIKeys()
         gemini = keys.gemini.map(Gemini.init(key:))
         muse = keys.meta.map(MuseSpark.init(key:))
-        leftOptionMonitor.onTap = { [weak self] in
-            guard let self, let mode = self.leftOptionMode else { return }
+        modifierTapMonitor.onTap = { [weak self] shortcut in
+            guard let self, let mode = Mode.allCases.first(where: {
+                self.shortcuts[$0]?.isStandaloneModifier == true && self.shortcuts[$0]?.keyCode == shortcut.keyCode
+            }) else { return }
             self.activate(mode)
         }
         fnMonitor.onChange = { [weak self] pressed in self?.handleFn(pressed: pressed) }
@@ -72,11 +74,11 @@ final class Studio: ObservableObject {
         Mode.allCases.first { shortcuts[$0]?.isFn == true }
     }
 
-    private var leftOptionMode: Mode? {
-        Mode.allCases.first { shortcuts[$0]?.isLeftOption == true }
+    private var hasModifierShortcut: Bool {
+        shortcuts.values.contains(where: \.isStandaloneModifier)
     }
 
-    var needsLeftOptionSetup: Bool { !choosing && leftOptionMode != nil && !leftOptionReady }
+    var needsModifierSetup: Bool { !choosing && hasModifierShortcut && !modifierMonitoringReady }
     var needsFnSetup: Bool { !choosing && fnMode != nil && !fnMonitoringReady }
 
     private func activate(_ mode: Mode) {
@@ -199,11 +201,11 @@ final class Studio: ObservableObject {
     }
 
     func resumeShortcutMonitoring() {
-        if !choosing && leftOptionMode != nil {
-            leftOptionReady = leftOptionMonitor.start()
+        if !choosing && hasModifierShortcut {
+            modifierMonitoringReady = modifierTapMonitor.start()
         } else {
-            leftOptionMonitor.stop()
-            leftOptionReady = false
+            modifierTapMonitor.stop()
+            modifierMonitoringReady = false
         }
         if choosing || fnMode != nil {
             fnMonitoringReady = fnMonitor.start()
@@ -255,7 +257,7 @@ final class Studio: ObservableObject {
         for other in Mode.allCases where other != mode { restoreShortcut(for: other) }
     }
 
-    func openLeftOptionAccessibility() {
+    func openModifierAccessibility() {
         requestInsertionAccess(message: "")
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         NSWorkspace.shared.open(url)
