@@ -108,7 +108,7 @@ final class Studio: ObservableObject {
             return
         }
         guard AXIsProcessTrusted() else {
-            requestInsertionAccess(message: "Allow Accessibility access to move the pointer.")
+            requestInsertionAccess(message: "")
             return
         }
         phase = .handStarting
