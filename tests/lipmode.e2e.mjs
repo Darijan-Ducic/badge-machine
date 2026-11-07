@@ -4,8 +4,8 @@
 // live. /vtt, /vtt/<id>/label and /readiness are stubs that record what the page sends.
 // Checks: lock-on; a held take uploads a 640x480 video-only webm lasting the hold with X-Tracker-Flags and
 // X-Tracker-Boxes (one box per recorded frame, on the mouth of the matching source frame); the auto, confirm
-// and none paths and the undo/confirm/edit label bodies; Space typed into the input does not record; the
-// readiness panel; the quality gate blocks the upload when SAM finds no face; no console errors anywhere.
+// and none paths and the undo/confirm/edit label bodies; Space typed into the input does not record; a 10 s hold
+// stops itself at 8 s, uploads that take while still held and notes the cap in its card; the readiness panel; the quality gate blocks the upload when SAM finds no face; no console errors anywhere.
 //   node tests/lipmode.e2e.mjs [out-dir]   (SOURCE=talking.mp4 GT=talking.gt.json CHROME=/path/to/chrome)
 import { createServer } from 'node:http';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
@@ -159,6 +159,28 @@ async function main() {
   const noneDone = await waitFor(`${top}.querySelector('h2')?.textContent === 'good night'`, 5000);
   check('none', gotNone && noneDone && noneView.alts === 0 && noneView.placeholder === 'Type what you said'
     && JSON.stringify(stub.labels.at(-1)) === JSON.stringify({ clip: stub.vtt.at(-1).clip, text: 'good night', source: 'edit' }), { noneView, label: stub.labels.at(-1), screenshot: noneShot });
+
+  // ---- 5b. a ~10 s hold stops itself at 8 s (Muse sees at most 192 frames = 8 s at 24 fps) and uploads that take ----
+  stub.mode = 'auto';
+  await evaluate('document.activeElement.blur()');
+  const vttCap = stub.vtt.length, tc = Date.now();
+  await key('keyDown');
+  await sleep(9500);
+  const whileHeld = { uploads: stub.vtt.length - vttCap, recording: await evaluate('document.getElementById("rec").hidden === false') };
+  await sleep(10000 - (Date.now() - tc));
+  await key('keyUp');
+  const capHeldMs = Date.now() - tc;
+  const gotCap = await waitFor(`${cards} === 5 && ${top}.querySelector('.chip').textContent === 'Sent'`, 10000);
+  await sleep(1000); // the release after the cap must not send a second take
+  const capUp = stub.vtt.at(-1), capFlags = JSON.parse(capUp?.flags ?? '[]'), capBoxes = JSON.parse(capUp?.boxes ?? '[]');
+  const capTake = await probeTake(capUp.file), capPts = capTake.pts;
+  const capNote = await evaluate(`(() => { const n = [...${top}.querySelectorAll('*')].find((e) => !e.children.length && /capped at 8 s/i.test(e.textContent));
+    return n ? { text: n.textContent, visible: n.checkVisibility() && n.getBoundingClientRect().height > 0 } : null; })()`);
+  check('capAt8s', gotCap && whileHeld.uploads === 1 && !whileHeld.recording && stub.vtt.length === vttCap + 1
+    && capTake.duration <= 8.1 && capTake.duration > 7.7
+    && Math.abs(capBoxes.length - capPts.length) <= 2 && Math.abs(capFlags.length - capPts.length) <= 2 && !!capNote?.visible,
+  { capHeldMs, whileHeld, uploads: stub.vtt.length - vttCap, durationS: +capTake.duration.toFixed(3), webmFrames: capPts.length,
+    boxes: capBoxes.length, flags: capFlags.length, note: capNote, head: await evaluate(`${top}.querySelector('.eyebrow').textContent`), screenshot: await shot('5b-capped') });
 
   // ---- 6. readiness ----
   const ready = await evaluate(`[...document.querySelectorAll('#ready li')].map((li) => [...li.children].map((c) => c.textContent))`);
