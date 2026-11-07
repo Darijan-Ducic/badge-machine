@@ -21,6 +21,7 @@ Obama Weekly Addresses.
 | Browser tracker (NCC anchor, lips masked, One-Euro, SAM re-anchor every 4 s, quality gate) + replay/sweep | `static/tracker.js`, `tools/replay.mjs` | 16 node tests; 0.035 face-width error, 0.33 SAM calls/s, ~2 ms/frame on a real clip |
 | Clip store on MongoDB Atlas (records + GridFS), file fallback | `clips.py` | live round-trip |
 | Practice ingest (seeded, resumable) | `tools/ingest_practice.py` | live smoke |
+| Webcam emulation: Obama → fake 640×480 webcam + mic through the real page; Chrome-format parity proven field by field | `tools/webcam_emulate.py`, `tools/emulate_webcam_session.mjs` | 14 sessions (18.6–28.9 s) in `/tmp/badge-data/webcam-emu/sessions/` (4.4 GB, not committed); ~26 s wall-clock per 25 s session |
 | App: Record, Preheat, Dataset, Clips (VTT vs STT diff), Stats (curve + training strip), Training (v1 sheet, Self-improvement, Runs), Pipeline (live diagrams), Tracker | `static/` | headless Chrome, stubs for not-yet-wired endpoints |
 
 ## Measured
@@ -31,9 +32,8 @@ Obama Weekly Addresses.
 ## In progress (subagents, each in its own worktree)
 | Agent | Scope |
 |---|---|
-| `sessions` | `asr.py` (turns), `sessions.py`: dictation session → STT turns → clips, `/sessions` contract |
+| `sessions` | `asr.py`, `sessions.py`: dictation session → **our own pause-based segments (2–8 s) → STT per segment** → clips, `/sessions` contract |
 | `lipmode` | `static/capture.js` (camera + tracker + full-frame recording + per-frame boxes), `lipmode.html`, then `dictation.html` |
-| `webcam-emu` | Obama footage → fake webcam/mic (640×480 4:3, face 30% width) → driven through the real Dictation page |
 | `replay-lab` | `experiment.py`, `runs.py`, `readiness.py`: free replays, splits 60/20/20, word/sentence/viseme/top-3 accuracy, cost |
 | `iterator` | `versions.py`, `iterate.py`: version registry (`live` vs `current`), autonomous loop, held-out gate |
 
@@ -51,6 +51,12 @@ Obama Weekly Addresses.
 - Raw outputs are immutable; features are recomputed, so post-processing changes replay for free.
 - Performance is versioning: every chart point is a version; `current` moves on the gate, `live` only with user approval.
 - Hosted APIs only — no Docker (`CLAUDE.md`).
+
+## Findings that changed the plan
+- STT (ENDPOINTING) gave **one turn per ~19 s session** on continuous speech → sessions now segment at our own pauses (2–8 s) and transcribe each segment.
+- STT on Chrome-processed audio (echo cancellation, noise suppression, auto-gain) sometimes doubles words; match-time normalization collapses repeats. Disabling that processing for dictation is a free-to-try experiment.
+- 0.30 face-width framing is reachable only on part of the footage (some shots are tighter, 0.37–0.41); the tool warns instead of padding.
+- Chrome needs `--disable-features=AudioServiceSandbox` to read a fake-audio wav (else silent audio).
 
 ## Open questions
 - Should free (post-processing) changes auto-promote to `live` when the gate passes?
