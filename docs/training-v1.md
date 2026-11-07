@@ -4,7 +4,7 @@ Status: **DRAFT, awaiting approval.** Tick the boxes in "Approve" at the bottom 
 
 ```mermaid
 flowchart LR
-  SRC["Practice footage<br/>one speaker, fixed clip order"] --> CUT["Cut 2–4 s clips<br/>+ text label"]
+  SRC["Obama addresses<br/>as fake webcam + mic"] --> CUT["Webcam-emulated sessions<br/>→ STT turns = clips + labels"]
   CUT --> CROP["Mouth crop<br/>tracker + SAM"]
   CROP --> CALLS["7 model calls per clip<br/>Muse open ×5 · Muse closed · Gemini"]
   CALLS --> RAW[("Raw outputs stored<br/>MongoDB Atlas")]
@@ -22,15 +22,16 @@ flowchart LR
 
 Grey = fixed for the whole v1 run · blue = what v1 trains · green = what v1 tells us.
 
-## 1. Data
+## 1. Data — natural preheat (no prompted phrases)
 
 | | v1 |
 |---|---|
-| Source | Practice footage from the web (dataset chosen after the footage research; candidates: GRID corpus, US-government weekly addresses) |
-| Unit | One clip, 2–4 s, one utterance |
-| Label | The dataset's own transcript when it has one; otherwise Muse Voice Transcribe (same as STT-on mode) |
-| User id | `practice:<dataset>:<speaker>`, kept apart from your real preheat data |
-| Order | One fixed, seeded order, so v1 and every later version replay the exact same sequence |
+| Source | Public-domain Obama Weekly Addresses, made to look exactly like laptop-webcam input: fixed 4:3 window, face ≈ 30% of frame width, 640×480 @ 30 fps, played into Chrome as a fake camera + mic and recorded by our real page |
+| Unit | One dictation session (20–30 s) → split by our STT into turns → one clip per turn ≤ 8 s |
+| Label | Muse Voice Transcribe's turn text — exactly what a real user's STT would give (official transcripts are not used) |
+| Phrase bank | Learned from the STT history (what the speaker actually says); `phrases.txt` is only an optional seed |
+| User id | `practice:obama-weekly:obama`, kept apart from your real data |
+| Order | Sessions in chronological order, fixed, so v1 and every later version replay the same sequence |
 
 ## 2. Calls per clip (fixed in v1)
 
@@ -113,6 +114,7 @@ Measured: one clip's 18 frame grids = 5,587 Muse input tokens. Output tokens are
 | Muse closed | $0.01 |
 | Gemini | $0.03 |
 | Crop (SAM keyframes) | $0.01 |
+| STT (Muse Voice Transcribe, $0.18/hour) | < $0.001 |
 | **Total** | **≈ $0.15** |
 
 100 clips ≈ $15 · 300 clips ≈ $45. On public-domain footage only, Muse's contributor tier would cut this to ≈ $0.05
@@ -123,7 +125,9 @@ per clip, but Meta may then train on those prompts.
 - [x] Schema v1 sampler with reasoning-order keys
 - [x] Visemes, candidate pool, staged scorer
 - [ ] Integration: store raw outputs + per-sample logs; stats from the scorer
-- [ ] Practice footage chosen + ingest (cut, label, crop)
+- [x] Practice footage chosen: Obama Weekly Addresses (public domain)
+- [ ] Webcam emulation of the footage (agent running)
+- [ ] Session → STT turns → clips on the server
 - [ ] Clip explorer and Training pages in the app
 - [ ] Your approval + budget cap
 
