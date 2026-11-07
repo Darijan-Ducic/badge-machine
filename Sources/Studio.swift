@@ -1,140 +1,129 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import SwiftUI
 
 @MainActor
 final class Studio: ObservableObject {
-    enum Phase {
-        case ready, starting, recording, finishing, transcribing, refining, done, offline, unclear, failed
-    }
+    enum Phase { case ready, starting, recording, processing }
 
     @Published private(set) var phase: Phase = .ready
-    @Published private(set) var transcript = ""
-    @Published private(set) var transcriptNotice: String?
-    @Published private(set) var error = ""
-    @Published private(set) var clip: URL?
-    @Published private(set) var startedAt = Date()
-    let camera = Capture()
+    @Published private(set) var status = ""
+    @Published private(set) var shortcut: Shortcut?
+    @Published private(set) var choosing = false
+    private let camera = Capture()
+    private let hotkey = GlobalShortcut()
     private let gemini: Gemini?
     private let muse: MuseSpark?
+    private var target: CursorTarget?
 
     init() {
         let keys = APIKeys()
         gemini = keys.gemini.map(Gemini.init(key:))
         muse = keys.meta.map(MuseSpark.init(key:))
-    }
-
-    var providerLabel: String {
-        guard gemini != nil else { return "REGISTRAZIONE LOCALE" }
-        return muse == nil ? "TRASCRIZIONE VIA GEMINI" : "GEMINI + MUSE SPARK"
-    }
-    var busy: Bool { [.starting, .finishing, .transcribing, .refining].contains(phase) }
-    var active: Bool { [.starting, .recording, .finishing].contains(phase) }
-    var action: String { phase == .recording ? "Ferma" : "Avvia" }
-
-    var status: String {
-        switch phase {
-        case .ready: "In attesa"
-        case .starting: "Apertura fotocamera"
-        case .recording: "Registrazione"
-        case .finishing: "Chiusura clip"
-        case .transcribing: "Trascrizione in corso"
-        case .refining: "Revisione del testo"
-        case .done: "Trascrizione pronta"
-        case .offline: "Clip pronta"
-        case .unclear: "Labiale poco chiaro"
-        case .failed: "Serve attenzione"
+        hotkey.onRelease = { [weak self] in self?.toggle() }
+        if let data = UserDefaults.standard.data(forKey: "recordingShortcut"),
+           let saved = try? JSONDecoder().decode(Shortcut.self, from: data) {
+            if hotkey.register(saved) {
+                shortcut = saved
+            } else {
+                status = "Choose another shortcut. Your saved shortcut is unavailable."
+            }
         }
     }
 
-    func toggle() {
-        guard !busy else { return }
-        if phase == .recording {
-            phase = .finishing
-            camera.stop()
-        } else {
-            transcript = ""
-            transcriptNotice = nil
-            error = ""
-            if let clip { try? FileManager.default.removeItem(at: clip) }
-            clip = nil
-            phase = .starting
-            Task { await start() }
+    func requestCamera() async {
+        if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
+            _ = await AVCaptureDevice.requestAccess(for: .video)
+        }
+        if AVCaptureDevice.authorizationStatus(for: .video) != .authorized {
+            status = "Allow Camera access in System Settings."
         }
     }
 
-    private func start() async {
-        let allowed = await AVCaptureDevice.requestAccess(for: .video)
-        guard allowed else {
-            error = "Consenti l’accesso in Impostazioni di Sistema → Privacy e sicurezza → Fotocamera."
-            phase = .failed
+    func chooseShortcut() {
+        choosing = true
+        status = ""
+    }
+
+    func cancelChoosing() { choosing = false }
+
+    func recordShortcut(_ event: NSEvent) {
+        if event.keyCode == 53 { choosing = false; status = ""; return }
+        guard let choice = Shortcut(event: event) else {
+            status = "Use a function key or a combination such as ⌥Space."
             return
         }
-        camera.start(onStart: { [weak self] in
-            Task { @MainActor in
-                self?.startedAt = Date()
-                self?.phase = .recording
+        guard (choice.keyCode == shortcut?.keyCode && choice.modifiers == shortcut?.modifiers)
+              || hotkey.register(choice) else {
+            status = "That shortcut is already in use. Try another."
+            return
+        }
+        shortcut = choice
+        UserDefaults.standard.set(try? JSONEncoder().encode(choice), forKey: "recordingShortcut")
+        choosing = false
+        requestInsertionAccess()
+    }
+
+    private func requestInsertionAccess() {
+        if AXIsProcessTrusted() {
+            status = ""
+        } else {
+            status = "Allow Accessibility access to type in other apps."
+            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+        }
+    }
+
+    private func toggle() {
+        guard !choosing else { return }
+        switch phase {
+        case .starting, .recording:
+            let cameraStarted = phase == .recording
+            target = CursorTarget.current()
+            phase = .processing
+            status = "Transcribing…"
+            if cameraStarted { camera.stop() }
+        case .ready:
+            guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
+                status = "Allow Camera access in System Settings."
+                return
             }
-        }, onFinish: { [weak self] result in
-            Task { @MainActor in await self?.finish(result) }
-        })
+            guard AXIsProcessTrusted() else { requestInsertionAccess(); return }
+            guard gemini != nil else { status = "Gemini is not configured."; return }
+            phase = .starting
+            status = "Starting camera…"
+            camera.start(onStart: { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if self.phase == .processing { self.camera.stop(); return }
+                    guard self.phase == .starting else { return }
+                    self.phase = .recording
+                    self.status = "Recording…"
+                }
+            }, onFinish: { [weak self] result in
+                Task { @MainActor in await self?.finish(result) }
+            })
+        case .processing:
+            break
+        }
     }
 
     private func finish(_ result: Result<URL, Error>) async {
+        defer { phase = .ready; target = nil }
         do {
             let file = try result.get()
-            clip = file
-            guard let gemini else { phase = .offline; return }
-            phase = .transcribing
+            defer { try? FileManager.default.removeItem(at: file) }
+            guard let target else { status = "Place the cursor in a text field before stopping."; return }
+            guard let gemini else { return }
             guard let draft = try await gemini.transcribe(file) else {
-                phase = .unclear
+                status = "Could not read the phrase. Try again."
                 return
             }
-            transcript = draft
-            let reviewNotice = "Controlla i passaggi poco chiari prima di copiare."
-            if draft.contains(Gemini.uncertaintyMarker) {
-                transcriptNotice = reviewNotice
-            }
-            if let muse {
-                phase = .refining
-                do {
-                    let revision = try await muse.refine(draft)
-                    transcript = revision.text
-                    if revision.needsReview { transcriptNotice = reviewNotice }
-                } catch {
-                    transcriptNotice = transcriptNotice == nil
-                        ? "Revisione Meta non riuscita. Puoi copiare la bozza di Gemini."
-                        : "Revisione Meta non riuscita. \(reviewNotice)"
-                }
-            }
-            phase = .done
+            let revision = if let muse { try? await muse.refine(draft) } else { nil as MuseSpark.Revision? }
+            status = target.insert(revision?.text ?? draft) ? "Text inserted." : "The original text field is no longer active."
         } catch {
-            self.error = error.localizedDescription
-            phase = .failed
+            status = error.localizedDescription
         }
-    }
-
-    func copy() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(transcript, forType: .string)
-    }
-
-    func saveClip() {
-        guard let clip else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "Baijiu Machine.mov"
-        panel.allowedContentTypes = [.quickTimeMovie]
-        if panel.runModal() == .OK, let destination = panel.url {
-            do {
-                try Data(contentsOf: clip).write(to: destination, options: .atomic)
-            } catch {
-                self.error = error.localizedDescription
-                phase = .failed
-            }
-        }
-    }
-
-    func discardClip() {
-        if let clip { try? FileManager.default.removeItem(at: clip) }
     }
 }

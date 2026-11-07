@@ -24,8 +24,6 @@ final class Capture: NSObject, AVCaptureFileOutputRecordingDelegate, @unchecked 
                     self.session.addInput(input)
                     self.session.addOutput(self.output)
                     self.session.commitConfiguration()
-                    self.output.maxRecordedDuration = CMTime(seconds: 8, preferredTimescale: 600)
-
                 }
                 self.started = onStart
                 self.finished = onFinish
@@ -68,6 +66,6 @@ final class Capture: NSObject, AVCaptureFileOutputRecordingDelegate, @unchecked 
 
     enum CaptureError: LocalizedError {
         case unavailable
-        var errorDescription: String? { "Nessuna fotocamera disponibile." }
+        var errorDescription: String? { "No camera is available." }
     }
 }

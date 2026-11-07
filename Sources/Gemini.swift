@@ -1,12 +1,14 @@
 import Foundation
 
 struct Gemini {
-    static let uncertaintyMarker = "[incerto]"
+    static let uncertaintyMarker = "[unclear]"
 
     let key: String
-    private let model = "gemini-3.8-flash"
+    private let model = "gemini-3.5-flash-lite"
 
     func transcribe(_ clip: URL) async throws -> String? {
+        let size = try clip.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size <= 65_000_000 else { throw ResponseError.clipTooLarge }
         let video = try Data(contentsOf: clip)
         let body: [String: Any] = [
             "contents": [["parts": [
@@ -52,10 +54,11 @@ struct Gemini {
     }
 
     private enum ResponseError: LocalizedError {
-        case rejected(Int)
+        case clipTooLarge, rejected(Int)
         var errorDescription: String? {
             switch self {
-            case .rejected(let code): "Gemini ha rifiutato la richiesta (HTTP \(code))."
+            case .clipTooLarge: "This clip is too large. Try a shorter phrase."
+            case .rejected(let code): "Gemini rejected the request (HTTP \(code))."
             }
         }
     }
