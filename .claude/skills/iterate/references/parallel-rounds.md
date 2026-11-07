@@ -65,7 +65,8 @@ No two agents get the same lever in the same direction. If two theories overlap,
    others.
 8. **Confirm** the stacked result on clips the round never saw, with `tools/confirm.py` (frozen splits) once it lands
    (instruments.md → Missing instruments (h)), before asking the user to promote `live`. Until it lands, a re-export
-   re-cuts the splits and moves old test clips into held-out, so ask the user first. If it doesn't hold, say so and
+   re-cuts the splits and moves old test clips into the new train or held-out split, so ask the user
+   first. If it doesn't hold, say so and
    keep `live` where it is.
 9. **Record** every candidate per SKILL.md's recording rule: config candidates as registry versions (adopted or
    rejected), code candidates as their branch plus a durable copy of the compare JSON. Negative results are knowledge.
