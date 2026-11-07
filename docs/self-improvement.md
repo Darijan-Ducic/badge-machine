@@ -24,7 +24,7 @@ flowchart LR
   AGENT --> CHANGE["ONE typed change<br/>skill · tool · route · context"]
   CHANGE --> CAND["Candidate version<br/>new config hash"]
   CAND --> GATE{"Held-out split<br/>next 20%, frozen<br/>word accuracy up ≥ 1 pt,<br/>viseme accuracy not down?"}
-  GATE -- yes --> ADOPT["Adopt: current → candidate"]
+  GATE -- yes --> ADOPT["Adopt: current → candidate<br/>(live moves only with your OK)"]
   GATE -- no --> ROLL["Roll back: current unchanged<br/>candidate kept as rejected + why"]
   ADOPT --> AGENT
   ROLL --> AGENT
@@ -36,6 +36,15 @@ flowchart LR
   class STREAM,FAIL building
   class AGENT,CHANGE,CAND,GATE,ADOPT,ROLL,TEST planned
 ```
+
+## Performance is versioning
+
+Every point on the accuracy chart **is a system version**: `{id, parent, kind, change, hypothesis, failures cited,
+config hash, code commit, metrics per split, delta vs parent, cost, status}`. Adopting moves a pointer; rolling back
+moves nothing — the rejected version stays in the registry with its evidence. Two pointers keep autonomy and control
+apart: **`current`** is the loop's best version and moves on its own when the held-out gate passes; **`live`** is what
+real users run and moves only when you approve. Any version can be rebuilt, re-evaluated, or made live again, because a
+version is a config over immutable raw outputs.
 
 ## Change space — what the agent may change
 

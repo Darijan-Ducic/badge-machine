@@ -200,12 +200,17 @@ erDiagram
     int latency_ms
     json usage "tokens"
   }
+  SYSTEM_VERSION ||--o{ SYSTEM_VERSION : "parent of"
   SYSTEM_VERSION {
     string id "sys-v1, sys-v2"
+    string parent "the version it changed"
+    string kind "skills, tools, routing, context"
+    json change "the ONE change"
+    json metrics "word, sentence, viseme, top-3 per split"
     string call_config "schema, prompt, grid, fps, crop, K, temperature, effort, models"
     string post_config "viseme costs, features, pool rules, stages, tracker knobs"
     string code_commit "git hash"
-    string status "current, candidate, retired"
+    string status "live, current, adopted, rejected"
   }
   PERSONAL_MODEL {
     string system_version
