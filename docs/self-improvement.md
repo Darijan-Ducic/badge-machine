@@ -11,19 +11,19 @@
 |---|---|
 | A hard, tightly coupled task | VTT (video-to-text): tracker → crop → Muse ×K + closed + Gemini → candidate pool → features → scorer. A change anywhere shifts everything downstream. |
 | Each failure… | A clip where VTT ≠ STT (the label) in the training stream. |
-| …becomes a versioned change | The iteration agent (Muse Spark) groups failures and proposes ONE typed change → a candidate system version with its own config hash. |
-| …to skills, tools, routing or context | The change space below — every change is one of these four kinds. |
+| …becomes a versioned change | The iterating agent, a local Claude Code session following the skill book, groups failures and proposes ONE change (code, prompt, feature, cost, threshold) → a candidate system version with its own config hash and author. Muse agents are reserved for the product, later; `iterate.py`'s Muse proposer is a secondary tool. |
+| …to skills, tools, routing or context | Every change is labelled with one of these four kinds; the table below lists common ones, not a closed list. |
 | Each change must prove itself on held-out work | Chosen on the training stream's failures, judged on a frozen held-out split the agent never sees. |
-| Keep making progress over a long task | Version registry + runs log + tried-ideas memory persist in MongoDB; the loop is resumable, budgeted, and stops after N non-improving tries. |
-| Adopt only confirmed changes, roll back the rest | The `current` version pointer moves only when the gate passes; failed candidates are kept as `rejected` versions with their evidence, so nothing is lost and nothing regresses. |
+| Keep making progress over a long task | Version registry + runs log + tried-ideas memory persist in MongoDB; the session's work is resumable and budgeted, and the skill book says when to stop. |
+| Adopt only confirmed changes, roll back the rest | The `current` version pointer moves only when the session judges the held-out evidence better; failed candidates are kept as `rejected` versions with their evidence, so nothing is lost and nothing regresses. |
 
 ```mermaid
 flowchart LR
   STREAM["Training stream<br/>first 60% of clips, in order"] --> FAIL["Failures<br/>VTT ≠ STT"]
-  FAIL --> AGENT["Iteration agent<br/>reads failures + tried-ideas memory"]
-  AGENT --> CHANGE["ONE typed change<br/>skill · tool · route · context"]
+  FAIL --> AGENT["By: Claude Code session, local · skill book<br/>reads failures + tried-ideas memory"]
+  AGENT --> CHANGE["ONE change<br/>code · prompt · feature · cost · threshold<br/>labelled skill · tool · route · context"]
   CHANGE --> CAND["Candidate version<br/>new config hash"]
-  CAND --> GATE{"Held-out split<br/>next 20%, frozen<br/>word accuracy up ≥ 1 pt,<br/>viseme accuracy not down?"}
+  CAND --> GATE{"Held-out split<br/>next 20%, frozen<br/>session judges: word accuracy up,<br/>viseme accuracy not down?"}
   GATE -- yes --> ADOPT["Adopt: current → candidate<br/>(live moves only with your OK)"]
   GATE -- no --> ROLL["Roll back: current unchanged<br/>candidate kept as rejected + why"]
   ADOPT --> AGENT
@@ -33,8 +33,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STREAM,FAIL building
-  class AGENT,CHANGE,CAND,GATE,ADOPT,ROLL,TEST planned
+  class CAND,ADOPT,ROLL,TEST built
+  class STREAM,FAIL,AGENT,CHANGE,GATE building
 ```
 
 ## Performance is versioning
@@ -42,7 +42,8 @@ flowchart LR
 Every point on the accuracy chart **is a system version**: `{id, parent, kind, change, hypothesis, failures cited,
 config hash, code commit, metrics per split, delta vs parent, cost, status}`. Adopting moves a pointer; rolling back
 moves nothing — the rejected version stays in the registry with its evidence. Two pointers keep autonomy and control
-apart: **`current`** is the loop's best version and moves on its own when the held-out gate passes; **`live`** is what
+apart: **`current`** is the best version so far, and the Claude Code session moves it when the held-out evidence says the
+candidate is better; **`live`** is what
 real users run and moves only when you approve. Any version can be rebuilt, re-evaluated, or made live again, because a
 version is a config over immutable raw outputs.
 

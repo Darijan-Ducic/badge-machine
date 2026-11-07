@@ -2,6 +2,8 @@
 
 Green = built and verified · amber = being built · grey dashed = planned. The app's Pipeline page (`/pipeline.html`) renders this file live; edit it and reload.
 
+**Who updates:** every iteration, system and personal, is run by a local Claude Code session following the skill book. Scripts are its instruments and report evidence; the session decides and versions each change. Nothing learns by itself in code. Muse agents are reserved for the product, later.
+
 ## Runtime: what happens to one clip
 
 ```mermaid
@@ -58,23 +60,25 @@ flowchart TD
   REPLAY["Tracker replay + knob sweep<br/>free"]
   KNOBS["Tracker thresholds"]
 
-  AGENT["Muse Spark agent reviews STT disagreements<br/>keeps a change only if replayed accuracy rises"]
-  PROMPTS["Few-shot clips, prompt hints, phrase bank,<br/>viseme substitution costs, new features"]
+  PAGENT["By: Claude Code session, local · skill book<br/>personal: decides when to re-fit,<br/>checks the user's newest clips, versions it"]
+  AGENT["By: Claude Code session, local · skill book<br/>system: reviews STT disagreements,<br/>keeps a change only if held-out accuracy rises"]
+  PROMPTS["Few-shot clips, prompt hints, phrase bank,<br/>viseme substitution costs, new features, code"]
 
   CLIP --> STORE
   STT --> MATCH --> STORE
   CONF --> STORE
   STORE --> PREQ --> UI
-  STORE --> STAGES --> FUSE
-  STORE --> GT --> REPLAY --> KNOBS
-  STORE --> AGENT --> PROMPTS
+  STORE --> PAGENT --> STAGES --> FUSE
+  STORE --> GT --> REPLAY --> AGENT
+  STORE --> AGENT --> PROMPTS & KNOBS
 
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STT,MATCH,GT,STORE,UI,REPLAY,KNOBS,CLIP,STAGES,PREQ,FUSE,AGENT built
+  class STT,MATCH,GT,STORE,UI,REPLAY,KNOBS,CLIP,STAGES,PREQ,FUSE built
   class PROMPTS building
-  class CONF planned
+  class AGENT building
+  class CONF,PAGENT planned
 ```
 
 ## Personal loop: learns from each user's own dictation
@@ -91,20 +95,22 @@ flowchart LR
   CAL["Camera framing calibration<br/>face width, mouth ratios"]
   OUT["Opt-in clips → system replay sets"]
   IN["New system version → re-fit<br/>from stored raw outputs"]
+  AG["By: Claude Code session, local · skill book<br/>reads this user's VTT vs STT, decides when to re-fit,<br/>runs the fit scripts, versions each personal model"]
 
   USE --> LBL
   USE --> CAL
-  LBL --> BANK & W & TH & FEW
+  LBL --> AG
+  AG --> BANK & W & TH & FEW & CAL
   W & TH --> READY
   LBL -.-> OUT
-  IN -.-> W
+  IN -.-> AG
 
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
   class LBL,BANK,W,TH built
   class USE,IN,READY building
-  class FEW,CAL,OUT planned
+  class FEW,CAL,OUT,AG planned
 ```
 
 ## System loop: what we iterate, versioned v1 → v2
@@ -113,12 +119,12 @@ flowchart LR
 flowchart LR
   SETS["Replay sets<br/>practice footage + opt-in user clips<br/>raw model outputs stored"]
   ERR["Review errors<br/>STT vs lip disagreements"]
-  AGENT["Agent proposes<br/>ONE change"]
+  AGENT["By: Claude Code session, local · skill book<br/>proposes ONE change, runs the replay scripts"]
   PAID["Call-level pieces<br/>re-calls the models, costs money<br/>───<br/>output schema + prompts<br/>grid · fps · crop<br/>K · temperature · effort"]
   FREE["Post-processing pieces<br/>replay is free<br/>───<br/>viseme substitution costs<br/>candidate pool rules + features<br/>stage plan + cold-start weights<br/>tracker knobs vs SAM ground truth"]
-  GATE{"Held-out accuracy up<br/>on the same clips?"}
+  GATE{"Session judges the evidence:<br/>held-out accuracy up on the same clips?"}
   VER["New system version<br/>config hash on every clip"]
-  REFIT["Every user's personal layers<br/>re-fit from stored raw outputs"]
+  REFIT["Every user's personal layers re-fit<br/>by the session, from stored raw outputs"]
 
   SETS --> ERR --> AGENT
   AGENT --> PAID & FREE
@@ -129,32 +135,34 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class PAID,FREE,GATE,ERR,AGENT,VER built
-  class SETS,REFIT building
+  class PAID,FREE,VER built
+  class SETS,REFIT,ERR,AGENT,GATE building
 ```
 
 ## Update cadence: when each piece learns
 
 ```mermaid
 flowchart LR
-  subgraph clip ["Every labeled clip · seconds"]
+  subgraph clip ["Every labeled clip · seconds · recorded, nothing learns"]
     direction TB
     C1["STT turn arrives → clip stored<br/>raw outputs + call-level config, never edited"]
     C2["Phrase bank count +1"]
-    C3["Personal scorer weights + threshold re-fit<br/>from all of this user's raw clips, < 1 s"]
+    C1 --> C2
+  end
+  subgraph milestone ["Personal iteration · by the Claude Code session · when the skill book says"]
+    direction TB
+    C3["Re-fit scorer weights + threshold<br/>from this user's raw clips, < 1 s script<br/>session checks the newest clips, versions it"]
+    M1["Stage unlocks more free weights<br/>defaults → temperature → core → full<br/>session decides; default plan 10 / 30 / 60 labels"]
     C4["Per-phrase readiness updated"]
-    C1 --> C2 --> C3 --> C4
+    C3 --> M1 --> C4
   end
-  subgraph milestone ["Label milestones · 10 / 30 / 60 clips"]
-    M1["Stage unlocks more free weights<br/>defaults → temperature → core → full"]
+  subgraph offline ["System iteration · by the Claude Code session · nightly or on demand"]
+    O1["Skill book drives the replay scripts<br/>free experiments run freely,<br/>paid ones only within a budget"]
   end
-  subgraph offline ["Offline · nightly or on demand"]
-    O1["Agent iteration on replay sets<br/>free experiments run freely,<br/>paid ones only within a budget"]
-  end
-  subgraph promote ["On promotion · gate passed + your OK"]
+  subgraph promote ["On promotion · session judges held-out + your OK"]
     direction TB
     P1["System version bump<br/>sys-v1 → sys-v2"]
-    P2["Every user's personal layers re-fit<br/>free when only post-processing changed"]
+    P2["Every user's personal layers re-fit by the session<br/>free when only post-processing changed"]
     P1 --> P2
   end
   clip --> milestone
@@ -165,8 +173,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class C2,C3,M1,O1 built
-  class C1,C4,P1,P2 building
+  class C2 built
+  class C1,C3,C4,M1,O1,P1,P2 building
 ```
 
 ## Versioning: what every clip, model, and run records
@@ -207,6 +215,7 @@ erDiagram
     string call_config "schema, prompt, grid, fps, crop, K, temperature, effort, models"
     string post_config "viseme costs, features, pool rules, stages, tracker knobs"
     string code_commit "git hash"
+    string author "Claude Code session or human"
     string status "live, current, adopted, rejected"
   }
   PERSONAL_MODEL {
@@ -214,13 +223,14 @@ erDiagram
     int trained_on "labeled clips"
     string stage
     float threshold
+    string author "Claude Code session"
   }
   RUN {
     string id
     string baseline_run
     string dataset_order "dataset id + order seed"
     string hypothesis "why this change"
-    string author "agent or human"
+    string author "Claude Code session or human"
     json metrics "VTT vs STT, held-out"
     string gate "pass or fail"
   }
@@ -231,7 +241,8 @@ erDiagram
 ```
 
 A personal model is never stored as opaque weights: it is a deterministic re-fit of (system version, the user's raw
-clips), so any version can be rebuilt, compared, or rolled back.
+clips up to `trained_on`), chosen and recorded by the Claude Code session, so any version can be rebuilt, compared,
+or rolled back.
 
 ## Agent iteration: how one change gets in
 
@@ -239,7 +250,7 @@ clips), so any version can be rebuilt, compared, or rolled back.
 sequenceDiagram
   autonumber
   participant S as Clip store
-  participant A as Iteration agent
+  participant A as Claude Code session (local, skill book)
   participant L as Replay lab
   participant R as Runs log
   participant H as You
@@ -254,12 +265,14 @@ sequenceDiagram
     L-->>A: pilot metrics
     A->>L: full re-run only if the pilot improves
   end
-  L-->>R: run record: config hash, metrics, gate
-  alt gate passes: held-out VTT accuracy up
+  L-->>R: run record: config hash, metrics, per-clip wins/losses
+  R-->>A: evidence
+  alt session judges: held-out VTT accuracy up
+    A->>V: adopt: current → candidate version
     R-->>H: proposed promotion + curve vs baseline (Training page)
-    H->>V: approve → new system version
-    V-->>S: every user's personal layers re-fit
-  else gate fails
+    H->>V: approve → live = current
+    A->>S: re-fit every user's personal layers
+  else not better
     R-->>A: logged as a failed idea, reverted
   end
 ```
