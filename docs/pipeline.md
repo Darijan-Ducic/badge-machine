@@ -44,7 +44,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   CLIP["Each recorded clip<br/>raw K samples + closed + Gemini outputs<br/>features recomputed from raw: replays are free"]
-  STT["STT on: Muse Voice Transcribe<br/>reference label"]
+  STT["STT on: dictation cut at our own pauses<br/>2–8 s turns, Muse Voice Transcribe per turn<br/>reference label"]
   CONF["Video only: the user's confirm<br/>answer is a label too"]
   MATCH["Transcript → phrase ID"]
   STORE[("Clip store<br/>MongoDB Atlas, local fallback")]
