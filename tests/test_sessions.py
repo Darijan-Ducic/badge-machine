@@ -20,8 +20,9 @@ from sessions import (MongoStore, get_session, list_sessions, parse_silences, pl
 FPS = 30
 LIST_KEYS = {"users", "sessions"}
 SUMMARY_KEYS = {"id", "t", "user_id", "dataset", "source", "start", "end", "duration_s", "status", "turns", "processed",
-                "skipped", "vtt_correct"}
-DETAIL_KEYS = {"id", "t", "user_id", "dataset", "source", "start", "end", "status", "video", "stt_text", "turns"}
+                "skipped", "vtt_correct", "speech_s", "covered_s", "lost_s"}
+DETAIL_KEYS = {"id", "t", "user_id", "dataset", "source", "start", "end", "status", "video", "stt_text", "turns",
+               "speech_s", "covered_s", "lost_s"}
 TURN_KEYS = {"i", "start", "end", "stt", "status", "reason", "clip_id", "vtt", "vtt_gemini", "vtt_muse", "correct"}
 
 
@@ -424,6 +425,45 @@ def test_get_session_matches_the_contract(store, recording):
         {"text": "turn of the lights", "p": 0.42}, {"vtt": True, "gemini": False, "muse": True})
     assert (skipped["clip_id"], skipped["vtt"], skipped["vtt_gemini"], skipped["vtt_muse"], skipped["correct"]) == (
         None, None, None, None, None)
+
+
+LENGTHS_S = [round(b - a, 2) for a, b in TURNS_S]  # 7.3 processed, 0.3 too short, 7.5 no speech, 1.0 (turn 3)
+
+
+def test_the_summary_accounts_each_turns_speech_as_covered_by_a_processed_turn_or_lost_with_its_reason(store,
+                                                                                                       recording):
+    run(recording, store, clips=FakeClips(fail_turn=3))
+
+    (summary,) = list_sessions("u1", store=store)["sessions"]
+    assert summary["speech_s"] == pytest.approx(sum(LENGTHS_S), abs=0.1)
+    assert summary["covered_s"] == pytest.approx(LENGTHS_S[0], abs=0.07)
+    assert summary["lost_s"] == {"too short": pytest.approx(LENGTHS_S[1], abs=0.07),
+                                 "no speech": pytest.approx(LENGTHS_S[2], abs=0.07),
+                                 "RuntimeError: muse 503": pytest.approx(LENGTHS_S[3], abs=0.07)}
+
+
+def test_get_session_carries_the_sessions_coverage(store, recording):
+    result = run(recording, store, clips=FakeClips(fail_turn=3))
+
+    detail = get_session(result["session"], store=store)
+    (summary,) = list_sessions("u1", store=store)["sessions"]
+    assert (detail["speech_s"], detail["covered_s"], detail["lost_s"]) == (
+        summary["speech_s"], summary["covered_s"], summary["lost_s"])
+    assert detail["covered_s"] > 0 and len(detail["lost_s"]) == 3
+
+
+def test_pending_turns_are_speech_that_is_neither_covered_nor_lost_yet(store, recording):
+    later = Later()
+    result = start_session(recording, user_id="u1", boxes=[], flags={}, process_turn=FakeClips(), executor=later,
+                           transcribe=FakeSTT(STT), store=store)
+
+    waiting = get_session(result["session"], store=store)
+    later.run()
+    finished = get_session(result["session"], store=store)
+
+    assert waiting["speech_s"] == pytest.approx(sum(LENGTHS_S), abs=0.1)
+    assert (waiting["covered_s"], set(waiting["lost_s"])) == (0, {"too short", "no speech"})
+    assert finished["covered_s"] == pytest.approx(LENGTHS_S[0] + LENGTHS_S[3], abs=0.1)
 
 
 def test_without_a_user_the_listing_is_the_most_recent_sessions_user(store, live_recording):
