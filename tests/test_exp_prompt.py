@@ -125,7 +125,9 @@ def test_static_video_keeps_the_frame_count_and_shows_only_the_middle_frame(tmp_
 
     grids = labeled_grids(out)
     assert grids.n_frames == 30
-    assert {centre_index(tile) for image in grids.images for tile in tiles(image)} == {15}
+    shown = {centre_index(tile) for image, frames in zip(grids.images, grids.frames)
+             for tile in list(tiles(image))[:len(frames)]}  # the last grid's black padding tiles are not frames
+    assert shown == {15}
 
 
 # ---------------------------------------------------------------- metrics
