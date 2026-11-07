@@ -173,3 +173,39 @@ test('g2: with no previous box the first keyframe takes the largest face', async
   const { results } = await trackClip(frames, sam, QUIET);
   assert.ok(dist(mid(results[0].face), mid(OTHER)) <= 1, `picked ${results[0].face}, largest is ${OTHER}`);
 });
+
+test('h: a talking mouth does not drag the anchor (center within 1.5 px, scale within 2%)', async () => {
+  const face = makeFace(180, 220, 7);
+  const frames = clip(45, (i) => [{ face, x: STILL[0], y: STILL[1], mouthOpen: 0.5 + 0.5 * Math.sin((2 * Math.PI * 3 * i) / FPS) }]);
+  const { sam, calls } = fakeSam(() => [STILL]);
+  const { results } = await trackClip(frames, sam, QUIET);
+  assert.deepEqual(calls.map((c) => c.i), [0], 'SAM must not rescue the tracker here');
+  const want = trueAnchorBox(STILL);
+  results.forEach((r, i) => {
+    const err = dist(mid(r.anchor), mid(want)), ds = r.anchor[2] / want[2] - 1;
+    assert.ok(err <= 1.5 && Math.abs(ds) <= 0.02, `frame ${i}: anchor off ${err.toFixed(2)} px, scale off ${(100 * ds).toFixed(1)}%`);
+  });
+});
+
+// SAM face boxes swing with head pose (an ear comes into the box), so a keyframe box can sit off the face's
+// true features. A confident track within SNAP_TOL keeps its own anchor; beyond it, SAM wins (drift insurance).
+async function keyframeShift(shiftFrac) {
+  const face = makeFace(180, 220, 7);
+  const frames = clip(40, () => [{ face, x: STILL[0], y: STILL[1] }]);
+  const shifted = [STILL[0] + shiftFrac * STILL[2], STILL[1], STILL[2], STILL[3]];
+  const { sam, calls } = fakeSam((i) => [i === 0 ? STILL : shifted]);
+  const { results } = await trackClip(frames, sam, { ...QUIET, T_REFRESH: 0.5 });
+  assert.ok(calls.length >= 2, 'no refresh keyframe happened; test is vacuous');
+  return { results, shifted };
+}
+
+test('i1: a refresh keyframe whose SAM box is off by half of SNAP_TOL keeps the tracked anchor', async () => {
+  const { results } = await keyframeShift(C.SNAP_TOL / 2);
+  results.forEach((r, i) => assert.ok(dist(mid(r.anchor), trueAnchorCenter(STILL)) <= 1.5, `frame ${i}: anchor moved to ${r.anchor}`));
+});
+
+test('i2: a refresh keyframe whose SAM box is off by twice SNAP_TOL re-places the anchor on SAM', async () => {
+  const { results, shifted } = await keyframeShift(2 * C.SNAP_TOL);
+  const k = Math.round(0.5 * FPS);
+  results.slice(k).forEach((r, i) => assert.ok(dist(mid(r.anchor), trueAnchorCenter(shifted)) <= 1.5, `frame ${k + i}: anchor ${r.anchor} did not follow SAM`));
+});
