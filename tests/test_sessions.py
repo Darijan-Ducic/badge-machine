@@ -205,11 +205,11 @@ class FakeClips:
                             **(probe(segment_path) if self.probe_segments else {})}
         if turn == self.fail_turn:
             raise RuntimeError("muse 503")
-        vtt_right = turn % 2 == 0
+        # Verdicts differ per reader (VTT right on even turns, Gemini never, Muse always) so counts can't mix them up.
         return {"clip_id": f"clip-{session_id}-{turn}",
                 "vtt": {"text": transcript, "p": 0.81}, "vtt_gemini": {"text": transcript, "p": 0.64},
                 "vtt_muse": {"text": "turn of the lights", "p": 0.42},
-                "correct": {"vtt": vtt_right, "gemini": vtt_right, "muse": False}}
+                "correct": {"vtt": turn % 2 == 0, "gemini": False, "muse": True}}
 
 
 class Later:
@@ -404,7 +404,7 @@ def test_get_session_matches_the_contract(store, recording):
     processed, skipped = detail["turns"][0], detail["turns"][1]
     assert (processed["clip_id"], processed["vtt"], processed["vtt_gemini"], processed["vtt_muse"], processed["correct"]) == (
         f"clip-{sid}-0", {"text": "turn on the lights", "p": 0.81}, {"text": "turn on the lights", "p": 0.64},
-        {"text": "turn of the lights", "p": 0.42}, {"vtt": True, "gemini": True, "muse": False})
+        {"text": "turn of the lights", "p": 0.42}, {"vtt": True, "gemini": False, "muse": True})
     assert (skipped["clip_id"], skipped["vtt"], skipped["vtt_gemini"], skipped["vtt_muse"], skipped["correct"]) == (
         None, None, None, None, None)
 
