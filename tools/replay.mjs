@@ -81,7 +81,7 @@ function crops(results, cfg, resmooth) {
 }
 
 function metrics(results, cropList, gt, cfg, samCalls) {
-  const errs = [];
+  const errs = [], slow = [];
   let vsMouth = 0, vsFace = 0, noCrop = 0;
   results.forEach((r, i) => {
     const g = gt.byIndex.get(i);
@@ -92,6 +92,8 @@ function metrics(results, cropList, gt, cfg, samCalls) {
     if (!c) { noCrop++; return; }
     const [cx, cy] = center(c);
     errs.push(Math.hypot(cx - ref[0], cy - ref[1]) / g.face[2]);
+    const s = gt.slowMouth.get(i);
+    if (s) slow.push(Math.hypot(cx - s[0], cy - s[1]) / g.face[2]);
   });
   const acc = [];
   for (let i = 1; i + 1 < cropList.length; i++) {
@@ -101,7 +103,20 @@ function metrics(results, cropList, gt, cfg, samCalls) {
   const gate = qualityGate(results.map((r) => r.flags), cfg);
   const seconds = results.length / gt.fps;
   return { mean: errs.length ? mean(errs) : NaN, p95: errs.length ? quantile(errs, 0.95) : NaN, vsMouth, vsFace, noCrop,
+    slowMean: slow.length ? mean(slow) : NaN, slowP95: slow.length ? quantile(slow, 0.95) : NaN,
     jitter: acc.length ? Math.sqrt(mean(acc.map((x) => x * x))) : NaN, samCalls, samPerSec: samCalls / seconds, flagged: gate.ratio, ok: gate.ok };
+}
+
+// GT mouth center averaged over +-0.25 s: keeps head motion, drops syllable-rate lip motion and SAM mask noise,
+// which a rigid crop should not follow (the raw metric rewards a crop that chases the lips).
+function slowMouth(gt) {
+  const k = Math.round(0.25 * gt.fps), out = new Map();
+  for (const { i } of gt.frames) {
+    const pts = [];
+    for (let j = i - k; j <= i + k; j++) { const m = gt.byIndex.get(j)?.mouth; if (m) pts.push(center(m)); }
+    if (pts.length) out.set(i, [mean(pts.map((p) => p[0])), mean(pts.map((p) => p[1]))]);
+  }
+  return out;
 }
 
 const count = (items) => Object.entries(items.reduce((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {})).map(([k, n]) => `${k} ${n}`).join(', ') || 'none';
@@ -110,6 +125,7 @@ const pct = (x) => `${(100 * x).toFixed(1)}%`;
 function report(m, results, cfg, stepMs) {
   console.log(`mouth-crop center error / GT face width  (vs GT mouth on ${m.vsMouth} frames, vs mouthFromAnchor(GT face) on ${m.vsFace}${m.noCrop ? `, ${m.noCrop} frames had no crop` : ''})`);
   console.log(`  mean ${m.mean.toFixed(4)}   p95 ${m.p95.toFixed(4)}   (crop jitter ${m.jitter.toFixed(4)})`);
+  console.log(`  vs GT mouth averaged over +-0.25 s (head motion, no lip motion): mean ${m.slowMean.toFixed(4)}   p95 ${m.slowP95.toFixed(4)}`);
   console.log(`SAM calls: ${m.samCalls} (${m.samPerSec.toFixed(2)}/s)   reasons: ${count(results.flatMap((r) => r.sam?.reasons ?? []))}`);
   console.log(`flagged: ${pct(m.flagged)} of frames   (${count(results.flatMap((r) => r.flags))})`);
   console.log(`quality gate: ${m.ok ? 'ACCEPT' : 'REJECT - ask the user to repeat'}   (flagged ${pct(m.flagged)} vs T_BAD ${pct(cfg.T_BAD)})`);
@@ -137,9 +153,9 @@ async function sweep(frames, gt, base, { top, tol }) {
   rows.sort((a, b) => Math.round(a.mean / tol) - Math.round(b.mean / tol) || a.samPerSec - b.samPerSec || a.jitter - b.jitter);
   const keys = [...new Set([...TRACK_AXES, ...POST_AXES].flatMap((ax) => Object.keys(ax[0])))];
   console.log(`\nsweep: ${rows.length} configs (${tracks.length} tracking x ${rows.length / tracks.length} smoothing), ranked by mean error (bucket ${tol}), then SAM/s, then jitter`);
-  console.log(['rank', 'mean', 'p95', 'jitter', 'SAM/s', 'flagged', 'gate', ...keys].join('\t'));
+  console.log(['rank', 'mean', 'p95', 'slowGT', 'jitter', 'SAM/s', 'flagged', 'gate', ...keys].join('\t'));
   rows.slice(0, top).forEach((r, i) =>
-    console.log([i + 1, r.mean.toFixed(4), r.p95.toFixed(4), r.jitter.toFixed(4), r.samPerSec.toFixed(2), pct(r.flagged), r.ok ? 'accept' : 'REJECT', ...keys.map((k) => r.knobs[k])].join('\t')));
+    console.log([i + 1, r.mean.toFixed(4), r.p95.toFixed(4), r.slowMean.toFixed(4), r.jitter.toFixed(4), r.samPerSec.toFixed(2), pct(r.flagged), r.ok ? 'accept' : 'REJECT', ...keys.map((k) => r.knobs[k])].join('\t')));
   return withConfig({ ...base, ...rows[0].knobs });
 }
 
@@ -148,6 +164,7 @@ async function main() {
   const [src, gtPath] = opts.pos;
   const gt = JSON.parse(readFileSync(gtPath, 'utf8'));
   gt.byIndex = new Map(gt.frames.map((f) => [f.i, f]));
+  gt.slowMouth = slowMouth(gt);
   const { width: W, height: H, fps } = gt;
   const buf = await decode(src, W, H);
   const n = Math.floor(buf.length / (W * H));
