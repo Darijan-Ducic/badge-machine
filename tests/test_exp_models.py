@@ -70,6 +70,24 @@ def test_sign_test_is_the_exact_two_sided_binomial():
     assert tool.sign_test(3, 3) == 1.0
 
 
+STTS = ["we will take every step possible", "immigration reform", "students teachers and parents across the country"]
+
+
+def test_content_lift_is_zero_for_the_length_null_text_at_the_read_length():
+    nulls = [" ".join(tool.NULL_WORDS[:n]) for n in (6, 2, 7)]
+    assert tool.content_lifts(nulls, STTS, "word") == [0.0, 0.0, 0.0]
+
+
+def test_content_lift_credits_reading_the_words_and_removes_the_length_credit():
+    perfect = tool.content_lifts(STTS, STTS, "word")
+    assert all(c > 0.5 for c in perfect)
+    # a wrong read of exactly the STT's length earns lift from length alone; content lift takes it back
+    wrong = [" ".join("zebra" + c for c in "abcdefg"[:len(s.split())]) for s in STTS]  # _normalize drops repeats
+    assert sum(tool.lifts(wrong, STTS, "word")) / len(STTS) > 0.5
+    # per turn the null's own chance hits ("we", "and") move it a little; on average a wordless read earns ~0
+    assert abs(sum(tool.content_lifts(wrong, STTS, "word")) / len(STTS)) < 0.1
+
+
 def _sample(*tops):
     return {"output": {"hypotheses": [{"text": t, "s": s} for t, s in tops]}}
 

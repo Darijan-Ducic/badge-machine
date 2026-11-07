@@ -41,6 +41,7 @@ from scorers import FPS  # noqa: E402
 CONCURRENCY = 4
 MODALITIES = ("grids", "video")
 SKIPPED = "skipped: lab-models experiment (open samples only)"
+LIFT_KEYS = ("cviseme", "cword", "viseme", "word")  # c = content lift (length null removed); cviseme is primary
 
 
 # ---------------------------------------------------------------- requests and parsing
@@ -145,6 +146,22 @@ def lifts(reads: list[str | None], stts: list[str], unit: str) -> list[float]:
     return out
 
 
+# Length null, the same text as lab-prompt's (tools/exp_prompt.py) so content lifts compare across labs. Lift rewards
+# matching the STT's length and a read's length follows the clip's duration, so content lift = lift(read) - lift(this
+# text cut to the read's word count).
+NULL_WORDS = ("we have to keep working together so that every family in this country can count on a good job a "
+              "decent wage and a secure retirement and that means we need to invest in the things that help our "
+              "economy grow like education and research and roads and bridges because that is how we make sure that "
+              "the next generation has the same chances that we had and that is what I will keep fighting for every "
+              "single day thank you god bless you and god bless the united states of america ").split() * 3
+
+
+def content_lifts(reads: list[str | None], stts: list[str], unit: str) -> list[float]:
+    """Per turn: the read's lift minus the lift of the length-null text at the read's word count."""
+    nulls = [" ".join(NULL_WORDS[:len(_normalize(r or "").split())]) for r in reads]
+    return [a - b for a, b in zip(lifts(reads, stts, unit), lifts(nulls, stts, unit))]
+
+
 def call_cost(usage: dict | None, model: str) -> float:
     import experiment
     if not usage:
@@ -228,11 +245,12 @@ def summarize(arm_name: str, model: str, turns: list[dict], per_turn: list[list[
     reads = [muse_pick(s) for s in per_turn]
     samples = [x for s in per_turn for x in s]
     lift = {u: lifts(reads, stts, u) for u in ("word", "viseme")}
+    lift.update({f"c{u}": content_lifts(reads, stts, u) for u in ("word", "viseme")})
     import experiment
     from candidates import match
     m = {
         "arm": arm_name, "n": len(turns),
-        "lift_word": sum(lift["word"]) / len(turns), "lift_viseme": sum(lift["viseme"]) / len(turns),
+        **{f"lift_{u}": sum(v) / len(turns) for u, v in lift.items()},  # lift_cviseme = content lift, primary
         "word_acc": experiment.word_acc([r or "" for r in reads], stts),
         "viseme_acc": experiment.viseme_acc([r or "" for r in reads], stts),
         "best_word_acc": experiment.word_acc([best_of_k(s, t, "word") or "" for s, t in zip(per_turn, stts)], stts),
@@ -248,7 +266,7 @@ def summarize(arm_name: str, model: str, turns: list[dict], per_turn: list[list[
         "_lift": lift, "_reads": reads,
     }
     if control is not None:
-        for u in ("word", "viseme"):
+        for u in LIFT_KEYS:
             diffs = [a - b for a, b in zip(lift[u], control["_lift"][u])]
             up, down = sum(d > 1e-12 for d in diffs), sum(d < -1e-12 for d in diffs)
             m[f"up_{u}"], m[f"down_{u}"], m[f"p_{u}"] = up, down, sign_test(up, down)
@@ -256,9 +274,10 @@ def summarize(arm_name: str, model: str, turns: list[dict], per_turn: list[list[
 
 
 def _row(m: dict) -> str:
-    paired = (f" lift-viseme up/down {m['up_viseme']}/{m['down_viseme']} p={m['p_viseme']:.3f}"
-              f" | lift-word {m['up_word']}/{m['down_word']} p={m['p_word']:.3f}") if "up_viseme" in m else ""
-    return (f"{m['arm']:<30} n={m['n']} LIFT word {m['lift_word']:+.3f} viseme {m['lift_viseme']:+.3f} | acc word "
+    paired = "".join(f" | {u} up/down {m[f'up_{u}']}/{m[f'down_{u}']} p={m[f'p_{u}']:.3f}" for u in LIFT_KEYS
+                     if f"up_{u}" in m)
+    return (f"{m['arm']:<30} n={m['n']} CONTENT LIFT viseme {m['lift_cviseme']:+.3f} word {m['lift_cword']:+.3f} | "
+            f"LIFT viseme {m['lift_viseme']:+.3f} word {m['lift_word']:+.3f} | acc word "
             f"{m['word_acc']:.3f} viseme {m['viseme_acc']:.3f} | best-of-K {m['best_word_acc']:.3f}/"
             f"{m['best_viseme_acc']:.3f} | len {m['read_words']:.1f}w (STT {m['stt_words']:.1f}) | valid "
             f"{m['valid_rate']:.0%} (output {m['output_rate']:.0%}) | {m['s_per_turn']:.1f}s/turn "
@@ -266,18 +285,18 @@ def _row(m: dict) -> str:
 
 
 def _verdict(m: dict) -> str:
-    if "p_viseme" not in m:
+    if "p_cviseme" not in m:
         return "control"
-    if m["p_viseme"] < 0.05 and m["up_viseme"] > m["down_viseme"]:
-        return "better than today on viseme lift (one speaker; not active until a second speaker confirms)"
-    if m["p_viseme"] < 0.05:
-        return "worse than today on viseme lift"
-    return f"no detectable difference from today (viseme-lift sign test p={m['p_viseme']:.2f})"
+    if m["p_cviseme"] < 0.05 and m["up_cviseme"] > m["down_cviseme"]:
+        return "better than today on content viseme lift (one speaker; not active until a second speaker confirms)"
+    if m["p_cviseme"] < 0.05:
+        return "worse than today on content viseme lift"
+    return f"no detectable difference from today (content-viseme-lift sign test p={m['p_cviseme']:.2f})"
 
 
 def _run_record(m: dict, *, name: str, user: str, turns, hypothesis: str, baseline: str | None, flips) -> dict:
     import experiment
-    lift = m["_lift"]["viseme"]
+    lift = m["_lift"]["cviseme"]
     return {
         "id": uuid.uuid4().hex[:12], "t": time.time(), "name": f"{name} · {m['arm']}", "dataset": user,
         "user_id": user, "config": {"arm": m["arm"], "prompt_id": CONFIG["prompt_id"],
@@ -288,7 +307,7 @@ def _run_record(m: dict, *, name: str, user: str, turns, hypothesis: str, baseli
                     **{k: v for k, v in m.items() if not k.startswith("_") and k != "arm"}},
         "curve": [{"i": i, "vtt": sum(lift[:i + 1]) / (i + 1), "gemini": None, "muse": None} for i in range(len(lift))],
         "hypothesis": hypothesis, "author": "agent:lab-models", "loop": "framework", "lever": "model",
-        "turn_ids": [t["id"] for t in turns], "flips": flips, "p": m.get("p_viseme"),
+        "turn_ids": [t["id"] for t in turns], "flips": flips, "p": m.get("p_cviseme"),
         "cost": m["usd_per_turn"] * m["n"], "verdict": _verdict(m), "code_commit": experiment._head(),
         "system_version": None, "candidate_version": None, "parent_version": None,
     }
@@ -350,7 +369,7 @@ def main(argv=None) -> int:
     for i, t in enumerate(turns):
         print(f"\n#{i} {t['id']} STT {t['label']['stt_text']}")
         for m in rows:
-            print(f"  {m['arm'][:28]:<28} {m['_lift']['viseme'][i]:+.2f} {m['_reads'][i]}")
+            print(f"  {m['arm'][:28]:<28} {m['_lift']['cviseme'][i]:+.2f} {m['_reads'][i]}")
     errors = Counter((m, (x["error"] or "")[:80]) for (a, _), s in results.items() for m in [f"{a[0]}:{a[1]}"]
                      for x in s if x["error"])
     for (arm, err), count in errors.most_common(8):
@@ -361,7 +380,7 @@ def main(argv=None) -> int:
         import runs
         runs.save(base)
         for m in rows[1:]:
-            flips = {u: {"up": m[f"up_{u}"], "down": m[f"down_{u}"], "p": m[f"p_{u}"]} for u in ("word", "viseme")}
+            flips = {u: {"up": m[f"up_{u}"], "down": m[f"down_{u}"], "p": m[f"p_{u}"]} for u in LIFT_KEYS}
             runs.save(_run_record(m, name=args.name, user=args.user, turns=turns, baseline=base["id"], flips=flips,
                                   hypothesis=args.hypothesis or f"{m['arm']} reads lips better than today"))
         print("saved runs, control", base["id"])
