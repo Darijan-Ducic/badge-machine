@@ -11,13 +11,13 @@ final class HandCursor: @unchecked Sendable {
     private var run: UUID?
     private var sessionObservers: [NSObjectProtocol] = []
 
-    func start(onPoint: @escaping (CGPoint?, TimeInterval) -> Void, onStart: @escaping (Bool) -> Void,
+    func start(onGesture: @escaping (HandGesture, TimeInterval) -> Void, onStart: @escaping (Bool) -> Void,
                onFailure: @escaping () -> Void) {
         queue.async { [self] in
             guard self.configure() else { onStart(false); return }
             let run = UUID()
             self.run = run
-            let tracker = HandFrameTracker(onPoint: onPoint)
+            let tracker = HandFrameTracker(onGesture: onGesture)
             self.tracker = tracker
             self.output.setSampleBufferDelegate(tracker, queue: self.frameQueue)
             self.sessionObservers = [AVCaptureSession.runtimeErrorNotification,
@@ -76,22 +76,82 @@ final class HandCursor: @unchecked Sendable {
         return true
     }
 
-    static func rightIndex(in hands: [VNHumanHandPoseObservation]) -> CGPoint? {
-        hands.compactMap { hand -> VNRecognizedPoint? in
-            guard hand.chirality == .right,
-                  let tip = try? hand.recognizedPoint(.indexTip),
-                  tip.confidence >= 0.6 else { return nil }
-            return tip
-        }.max(by: { $0.confidence < $1.confidence })?.location
+    static func gesture(in hands: [VNHumanHandPoseObservation]) -> HandGesture {
+        let rightHands = hands.filter { $0.chirality == .right }
+        guard rightHands.count == 1, let hand = rightHands.first,
+              let points = try? hand.recognizedPoints(.all) else { return .lost }
+        func point(_ joint: VNHumanHandPoseObservation.JointName) -> CGPoint? {
+            guard let value = points[joint], value.confidence >= 0.55 else { return nil }
+            return value.location
+        }
+        guard let indexBase = point(.indexMCP), let indexJoint = point(.indexPIP), let indexTip = point(.indexTip),
+              let middleBase = point(.middleMCP), let middleJoint = point(.middlePIP), let middleTip = point(.middleTip),
+              let palmEdge = point(.littleMCP) else { return .lost }
+        let palm = Palm(center: CGPoint(x: (indexBase.x + palmEdge.x) / 2,
+                                        y: (indexBase.y + palmEdge.y) / 2),
+                        width: hypot(palmEdge.x - indexBase.x, palmEdge.y - indexBase.y))
+        return HandGesture.classify(
+            index: Finger(base: indexBase, joint: indexJoint, tip: indexTip),
+            middle: Finger(base: middleBase, joint: middleJoint, tip: middleTip),
+            palm: palm
+        )
+    }
+}
+
+struct Finger {
+    let base: CGPoint
+    let joint: CGPoint
+    let tip: CGPoint
+
+    var reach: CGFloat { hypot(tip.x - base.x, tip.y - base.y) }
+
+    var straightness: CGFloat? {
+        let a = CGPoint(x: joint.x - base.x, y: joint.y - base.y)
+        let b = CGPoint(x: tip.x - joint.x, y: tip.y - joint.y)
+        let length = hypot(a.x, a.y) * hypot(b.x, b.y)
+        guard length > 0.00001 else { return nil }
+        return (a.x * b.x + a.y * b.y) / length
+    }
+}
+
+struct Palm {
+    let center: CGPoint
+    let width: CGFloat
+
+    func isNear(_ other: Palm) -> Bool {
+        hypot(center.x - other.center.x, center.y - other.center.y) <= 0.7 * other.width
+    }
+}
+
+enum HandGesture {
+    case pointing(CGPoint, Palm)
+    case fist(Palm)
+    case other
+    case lost
+
+    static func classify(index: Finger, middle: Finger, palm: Palm) -> HandGesture {
+        guard palm.width >= 0.025, let indexAngle = index.straightness,
+              let middleAngle = middle.straightness else { return .lost }
+        if indexAngle > 0.8, middleAngle > 0.8,
+           index.reach > 0.55 * palm.width, middle.reach > 0.55 * palm.width,
+           hypot(index.tip.x - middle.tip.x, index.tip.y - middle.tip.y) <= 0.5 * palm.width {
+            return .pointing(CGPoint(x: (index.tip.x + middle.tip.x) / 2,
+                                     y: (index.tip.y + middle.tip.y) / 2), palm)
+        }
+        if indexAngle < 0.3, middleAngle < 0.3,
+           index.reach < 0.8 * palm.width, middle.reach < 0.8 * palm.width {
+            return .fist(palm)
+        }
+        return .other
     }
 }
 
 private final class HandFrameTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let request = VNDetectHumanHandPoseRequest()
-    private let onPoint: (CGPoint?, TimeInterval) -> Void
+    private let onGesture: (HandGesture, TimeInterval) -> Void
 
-    init(onPoint: @escaping (CGPoint?, TimeInterval) -> Void) {
-        self.onPoint = onPoint
+    init(onGesture: @escaping (HandGesture, TimeInterval) -> Void) {
+        self.onGesture = onGesture
         super.init()
         request.maximumHandCount = 2
     }
@@ -103,28 +163,78 @@ private final class HandFrameTracker: NSObject, AVCaptureVideoDataOutputSampleBu
         let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up)
         do {
             try handler.perform([request])
-            onPoint(HandCursor.rightIndex(in: request.results ?? []), timestamp)
+            onGesture(HandCursor.gesture(in: request.results ?? []), timestamp)
         } catch {
-            onPoint(nil, timestamp)
+            onGesture(.lost, timestamp)
         }
     }
 }
 
 struct HandPointer {
+    enum Event {
+        case move(CGPoint)
+        case click(CGPoint)
+
+        func post() {
+            switch self {
+            case .move(let point):
+                CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                        mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+            case .click(let point):
+                guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
+                                         mouseCursorPosition: point, mouseButton: .left),
+                      let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
+                                       mouseCursorPosition: point, mouseButton: .left) else { return }
+                down.setIntegerValueField(.mouseEventClickState, value: 1)
+                up.setIntegerValueField(.mouseEventClickState, value: 1)
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
+            }
+        }
+    }
+
     private var displayBounds: CGRect?
     private var filtered: CGPoint?
     private var posted: CGPoint?
+    private var lastSampleAt: TimeInterval?
+    private var pointingSince: TimeInterval?
+    private var armed: (time: TimeInterval, palm: Palm)?
+    private var fistSince: TimeInterval?
 
-    mutating func position(for tip: CGPoint?, in bounds: CGRect) -> CGPoint? {
-        if displayBounds != bounds {
+    mutating func event(for gesture: HandGesture, at time: TimeInterval, in bounds: CGRect) -> Event? {
+        if displayBounds != bounds || lastSampleAt.map({ time - $0 > 0.18 }) == true {
             self = HandPointer()
             displayBounds = bounds
         }
-        guard let tip else {
-            filtered = nil
-            posted = nil
+        lastSampleAt = time
+        switch gesture {
+        case .pointing(let tip, let palm):
+            fistSince = nil
+            if pointingSince == nil { pointingSince = time }
+            if let pointingSince, time - pointingSince >= 0.05 { armed = (time, palm) }
+            return position(for: tip, in: bounds).map(Event.move)
+        case .fist(let palm):
+            pointingSince = nil
+            guard let armed, time - armed.time <= 0.65, palm.isNear(armed.palm), let posted else {
+                self.armed = nil
+                fistSince = nil
+                return nil
+            }
+            if fistSince == nil { fistSince = time }
+            guard let fistSince, time - fistSince >= 0.07 else { return nil }
+            self.armed = nil
+            return .click(posted)
+        case .other:
+            pointingSince = nil
+            fistSince = nil
+            return nil
+        case .lost:
+            self = HandPointer()
             return nil
         }
+    }
+
+    private mutating func position(for tip: CGPoint, in bounds: CGRect) -> CGPoint? {
         // Mirror camera x for selfie-style motion and convert Vision's upward y to screen y.
         let x = min(1, max(0, (0.82 - tip.x) / 0.64))
         let y = min(1, max(0, (0.82 - tip.y) / 0.64))

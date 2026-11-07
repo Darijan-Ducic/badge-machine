@@ -19,7 +19,7 @@ final class Studio: ObservableObject {
         var description: String {
             switch self {
             case .whisper: "Move your lips silently and type at the text cursor."
-            case .cursor: "Raise your right index finger in view of the camera to move the pointer."
+            case .cursor: "Point with your right index and middle fingers together. Close them to click."
             }
         }
     }
@@ -138,20 +138,21 @@ final class Studio: ObservableObject {
         let run = UUID()
         handRun = run
         handPointer = HandPointer()
-        handCamera.start(onPoint: { [weak self] tip, timestamp in
+        handCamera.start(onGesture: { [weak self] gesture, timestamp in
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.handRun == run, self.phase == .handCursor,
-                      ProcessInfo.processInfo.systemUptime - timestamp < 0.2 else { return }
+                guard let self, self.handRun == run, self.phase == .handCursor else { return }
+                guard ProcessInfo.processInfo.systemUptime - timestamp < 0.2 else {
+                    self.handPointer = HandPointer()
+                    return
+                }
                 let bounds = CGDisplayBounds(CGMainDisplayID())
-                guard let point = self.handPointer.position(for: tip, in: bounds) else { return }
-                CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                        mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+                self.handPointer.event(for: gesture, at: timestamp, in: bounds)?.post()
             }
         }, onStart: { [weak self] running in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.handRun == run else { return }
                 self.phase = running ? .handCursor : .ready
-                self.status = running ? "Move Cursor is on. Raise your right index finger." : "Could not start the camera."
+                self.status = running ? "Move Cursor is on. Point with two fingers together." : "Could not start the camera."
                 if !running { self.handRun = nil }
             }
         }, onFailure: { [weak self] in
