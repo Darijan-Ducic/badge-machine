@@ -25,28 +25,33 @@ def video_block(client: OpenAI, source: str) -> dict:
     return {"type": "input_video", "video_url": f"data:video/mp4;base64,{data}"}
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("video", help="mp4 file path or public URL")
-    parser.add_argument("prompt", nargs="?", default="Describe what happens in this video.")
-    args = parser.parse_args()
-
+def make_client() -> OpenAI:
     # The OpenAI SDK does not auto-read MODEL_API_KEY, so pass it explicitly.
-    client = OpenAI(base_url=BASE_URL, api_key=os.environ["MODEL_API_KEY"], timeout=600)
+    return OpenAI(base_url=BASE_URL, api_key=os.environ["MODEL_API_KEY"], timeout=600)
+
+
+def ask(client: OpenAI, prompt: str, media: dict, **options) -> str:
     response = client.responses.create(
         model=MODEL,
         input=[
             {
                 "type": "message",
                 "role": "user",
-                "content": [
-                    {"type": "input_text", "text": args.prompt},
-                    video_block(client, args.video),
-                ],
+                "content": [{"type": "input_text", "text": prompt}, media],
             }
         ],
+        **options,
     )
-    print(response.output_text)
+    return response.output_text
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("video", help="mp4 file path or public URL")
+    parser.add_argument("prompt", nargs="?", default="Describe what happens in this video.")
+    args = parser.parse_args()
+    client = make_client()
+    print(ask(client, args.prompt, video_block(client, args.video)))
 
 
 if __name__ == "__main__":
