@@ -68,12 +68,12 @@ def test_no_vtt_text_misses_every_stt_viseme():
 # ---- chronological splits: 60 / 20 / 20 of the clips that have STT ----
 
 def test_splits_are_chronological_60_20_20():
-    records = [{"id": i, "stt": "stop"} for i in range(10)]
+    records = [{"id": i, "stt": "stop"} for i in range(20)]
 
     parts = splits(records)
 
     assert {name: [r["id"] for r in part] for name, part in parts.items()} == {
-        "train": [0, 1, 2, 3, 4, 5], "heldout": [6, 7], "test": [8, 9]}
+        "train": list(range(12)), "heldout": [12, 13, 14, 15], "test": [16, 17, 18, 19]}
 
 
 def test_splits_skip_clips_without_stt_and_round_down():

@@ -157,14 +157,30 @@ def test_train_split_is_predict_then_train_over_the_first_60_percent(small):
     assert (metrics["autosend_precision"], metrics["autosend_coverage"]) == (None, None)  # trained without a gate
 
 
+def test_train_stream_scores_each_clip_before_learning_its_label():
+    # Weak signals, and every feature fit from 1 label on: a model that already saw a clip memorizes it (measured on
+    # seeds 0-2: 4-6 of 24 clips flip to right), so scoring with it would show up in the per-clip curve.
+    records = simulate(1, 40, muse=0.3, closed=0.3, gemini=0.3, to_visemes=visemes.to_visemes)
+    plan = {"defaults": 0, "full": 1}
+    history = prequential(clips_of(records)[:24], stages=[(1, "full"), (0, "defaults")])
+
+    curve = run(records, {"stages": plan}, dataset="sim:viseme-world:1", name="eager")["curve"]
+
+    assert [point["vtt"] for point in curve] == pytest.approx(
+        [np.mean([h["fused"] for h in history[max(0, i - 19):i + 1]]) for i in range(24)])
+
+
 def test_every_split_reports_every_metric(small):
     for split in ("train", "heldout", "test"):
         assert set(evaluate(small, {}, split)) == SPLIT_METRICS
 
 
-def test_top3_holds_every_candidate_when_the_pool_has_three(world60):
-    capped = evaluate(world60, {"pool_cap": 4}, "heldout")  # 3 real candidates + ∅
-    full = evaluate(world60, {}, "heldout")
+def test_top3_holds_every_candidate_when_the_pool_has_three():
+    # Pool misses with bad-quality reports teach the model to rank ∅ high; ∅ must not take a top-3 place.
+    records = simulate(7, 60, muse=1, closed=1, gemini=1, visemes=0.3, miss_rate=0.3, to_visemes=visemes.to_visemes)
+
+    capped = evaluate(records, {"pool_cap": 4}, "heldout")  # 3 real candidates + ∅
+    full = evaluate(records, {}, "heldout")
 
     assert capped["top3_acc"] == pytest.approx(capped["pool_recall"])
     assert full["sentence_acc"] <= full["top3_acc"] <= full["pool_recall"]
@@ -206,7 +222,7 @@ def test_curve_is_rolling_accuracy_over_the_last_20_train_clips(world60):
     curve = run(world60, dataset="sim:viseme-world:0", name="baseline")["curve"]
 
     assert [point["i"] for point in curve] == list(range(36))
-    for i in (0, 5, 19, 20, 35):
+    for i in range(36):
         window = history[max(0, i - 19):i + 1]
         for key, name in (("vtt", "fused"), ("gemini", "gemini"), ("muse", "muse")):
             assert curve[i][key] == pytest.approx(np.mean([h[name] for h in window]))
