@@ -109,18 +109,20 @@ def prequential(clips: list[Clip], stages: list[tuple[int, str]] = STAGES) -> li
 
     fused: top non-∅ candidate matches STT and ∅ didn't win; gemini: Gemini's argmax phrase matches STT;
     muse: the most common top hypothesis across samples matches STT; pool_hit: STT text is in the pool.
+    An unlabeled clip (a lip-mode clip before the user labels it) is scored, but all four are None.
     """
     history = []
     for i, clip in enumerate(clips):
         model = train(clips[:i], gate=False, stages=stages)
         probs = predict(model, [clip])[0]
         top, none = int(probs.argmax()), len(clip.pool) - 1
+        labeled = clip.label is not None
         history.append({
             "stage": model.stage,
-            "fused": top != none and _matches(clip.stt, clip.pool[top]),
-            "gemini": _matches(clip.stt, clip.gemini_pick),
-            "muse": _matches(clip.stt, clip.muse_pick),
+            "fused": (top != none and _matches(clip.stt, clip.pool[top])) if labeled else None,
+            "gemini": _matches(clip.stt, clip.gemini_pick) if labeled else None,
+            "muse": _matches(clip.stt, clip.muse_pick) if labeled else None,
             "confidence": float(probs.max()),
-            "pool_hit": clip.label != none,
+            "pool_hit": clip.label != none if labeled else None,
         })
     return history

@@ -1,7 +1,6 @@
-"""Local server: serves static/ plus the API for transcripts, SAM boxes, preheat clips, lip mode, dictation sessions
-and the clip explorer."""
+"""Local server: serves static/ plus the API for transcripts, SAM boxes, preheat clips, lip mode, dictation sessions,
+the clip explorer and training (runs, readiness, system versions)."""
 
-import functools
 import json
 import os
 import re
@@ -11,20 +10,40 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from asr import transcribe, transcribe_turns
-from clips import (DEFAULT_USER, backend, clip_detail, clip_list, label_clip, load, process_clip, process_turn, stats,
-                   vtt_clip)
+from clips import (DEFAULT_USER, backend, clip_detail, clip_list, label_clip, load, phrase_readiness, process_clip,
+                   process_turn, stats, vtt_clip)
+from runs import list_runs
 from sam import segment_image
 from scorers import load_phrases
-from sessions import get_session, list_sessions, session_video, start_session
+from sessions import get_session, list_sessions, resume_pending, session_video, start_session
+from versions import Registry
 
 PORT = int(os.environ.get("PORT", 8765))
 STORE = None  # clip store: None = MongoDB when MONGODB_URI is set, else data/clips (clips.backend)
 SESSIONS = None  # session store: None = MongoDB when MONGODB_URI is set, else data/sessions (sessions._backend)
+RUNS = None  # experiment runs: None = MongoDB when MONGODB_URI is set, else data/runs (runs._backend)
+VERSIONS = None  # system versions: None = MongoDB when MONGODB_URI is set, else data/versions (versions.Registry)
 TURNS = ThreadPoolExecutor(4)  # dictation turns are read here, after /dictation has answered
 CLIP_ROUTE = re.compile(r"^/clips/([^/]+)(/video)?$")
 SESSION_ROUTE = re.compile(r"^/sessions/([^/]+)(/video)?$")
 LABEL_ROUTE = re.compile(r"^/vtt/([^/]+)/label$")
 STATIC = Path(__file__).parent / "static"
+
+
+def read_turn(segment: Path, **turn) -> dict:
+    """The dictation turn adapter (sessions' `process_turn`): clips.process_turn on this server's phrases and store."""
+    return process_turn(segment, phrases=load_phrases(), store=STORE, **turn)
+
+
+def resume_turns() -> int:
+    """Queue again the pending dictation turns a restart lost, with the adapter and pool /dictation uses."""
+    return resume_pending(read_turn, TURNS, SESSIONS)
+
+
+def practice_dataset(user_id: str) -> str | None:
+    """`practice:<dataset>:<speaker>` -> the dataset (its sessions skip the daily cap); any other user has none."""
+    parts = user_id.split(":", 2)
+    return parts[1] if len(parts) == 3 and parts[0] == "practice" and parts[1] else None
 
 
 def tracker_headers(headers) -> tuple[list | None, list[str]]:
@@ -63,7 +82,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         clip, session = CLIP_ROUTE.match(url.path), SESSION_ROUTE.match(url.path)
-        if url.path not in ("/phrases", "/stats", "/clips", "/sessions") and not clip and not session:
+        api = ("/phrases", "/stats", "/clips", "/sessions", "/runs", "/readiness", "/versions")
+        if url.path not in api and not clip and not session:
             super().do_GET()
             return
         user = parse_qs(url.query).get("user", [""])[0] or None  # none: the user of the latest clip / session
@@ -76,6 +96,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(200, clip_list(STORE, load_phrases(), user))
             elif url.path == "/sessions":
                 self.send_json(200, list_sessions(user, store=SESSIONS))
+            elif url.path == "/runs":
+                self.send_json(200, {"runs": list_runs(RUNS, user_id=user)})  # no user: every run
+            elif url.path == "/readiness":
+                self.send_json(200, phrase_readiness(STORE, load_phrases(), user))
+            elif url.path == "/versions":
+                self.send_json(200, Registry(VERSIONS).payload())
             elif session and session.group(2):
                 video = session_video(session.group(1), store=SESSIONS)  # (bytes, content type)
                 self.send_bytes(video[1], video[0]) if video else self.send_json(404, {"error": "no session"})
@@ -131,9 +157,9 @@ class Handler(SimpleHTTPRequestHandler):
             elif url.path == "/dictation":
                 # A dictation session -> its STT now; its turns are cut at the pauses and read as clips on TURNS.
                 boxes, flags = tracker_headers(self.headers)
-                turn = functools.partial(process_turn, phrases=load_phrases(), store=STORE)
-                body = start_session(data, user_id=query.get("user", [""])[0] or DEFAULT_USER, boxes=boxes,
-                                     flags=flags, process_turn=turn, executor=TURNS, transcribe=transcribe_turns,
+                user = query.get("user", [""])[0] or DEFAULT_USER
+                body = start_session(data, user_id=user, boxes=boxes, flags=flags, dataset=practice_dataset(user),
+                                     process_turn=read_turn, executor=TURNS, transcribe=transcribe_turns,
                                      store=SESSIONS)
             else:
                 # One JPEG/PNG frame -> SAM boxes [x, y, w, h] in that frame's pixels; ids are per-request ordinals.
@@ -148,5 +174,6 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    print(f"Resumed {resume_turns()} pending dictation turns")
     print(f"Open http://localhost:{PORT}")
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

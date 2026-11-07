@@ -1,5 +1,6 @@
-"""HTTP contract of /stats, /clips, /clips/<id>, /clips/<id>/video, /preheat/clip, /vtt, /vtt/<id>/label, /dictation
-and /sessions, served from a real ThreadingHTTPServer over each store backend — model calls are fakes, no network."""
+"""HTTP contract of /stats, /clips, /clips/<id>, /clips/<id>/video, /preheat/clip, /vtt, /vtt/<id>/label, /dictation,
+/sessions, /runs, /readiness and /versions, served from a real ThreadingHTTPServer over each store backend — model
+calls are fakes, no network."""
 
 import json
 import math
@@ -15,11 +16,13 @@ import pytest
 
 import clips
 import muse_sampler
+import runs
 import scorers
 import server
 import sessions
+import versions
 from candidates import FEATURES
-from clips import backend, load, record_clip
+from clips import backend, label_clip, load, record_clip
 from tests.fakes import PHRASES, Gemini, SampleOpen, ScoreClosed, readers, v1_output
 from tests.test_sessions import media
 
@@ -472,3 +475,101 @@ def test_a_29_s_session_of_tracker_boxes_fits_in_one_header(api, store, dictatio
     session = post_dictation(api, session_recording, **{"X-Tracker-Boxes": boxes})["session"]
 
     assert [t["status"] for t in finished(api, session)["turns"]] == ["processed", "processed"]
+
+
+def test_a_practice_users_dictation_belongs_to_their_dataset_and_skips_the_daily_cap(api, dictation,
+                                                                                      session_recording, monkeypatch):
+    monkeypatch.setattr(sessions, "DAILY_CAP", 0)
+
+    response = api.post("/dictation?user=practice:obama-weekly:obama", content=session_recording)
+
+    detail = finished(api, response.json()["session"])
+    assert detail["dataset"] == "obama-weekly"
+    assert [t["status"] for t in detail["turns"]] == ["processed", "processed"]
+
+
+def test_any_other_users_dictation_has_no_dataset_and_spends_the_daily_cap(api, dictation, session_recording,
+                                                                            monkeypatch):
+    monkeypatch.setattr(sessions, "DAILY_CAP", 0)
+
+    detail = finished(api, post_dictation(api, session_recording)["session"])
+
+    assert detail["dataset"] is None
+    assert [(t["status"], t["reason"]) for t in detail["turns"]] == [("skipped", "daily cap")] * 2
+
+
+def test_startup_resumes_the_pending_turns_a_restart_lost(store, dictation, session_recording, monkeypatch):
+    class Lost:  # the queue of a server that stopped before running its turns
+        def submit(self, *args, **kwargs):
+            pass
+
+    session = sessions.start_session(session_recording, user_id="ann", boxes=[], flags=[],
+                                     process_turn=server.read_turn, executor=Lost(),
+                                     transcribe=server.transcribe_turns, store=server.SESSIONS)["session"]
+    monkeypatch.setattr(sessions, "_RUN", "the next server run")
+
+    assert server.resume_turns() == 2
+    server.TURNS.shutdown(wait=True)
+
+    turns = sessions.get_session(session, store=server.SESSIONS)["turns"]
+    assert [t["status"] for t in turns] == ["processed", "processed"]
+    assert [backend(store).get(t["clip_id"])["session_id"] for t in turns] == [session, session]
+
+
+# ---------------------------------------------------------------- /runs, /versions, /readiness
+
+
+@pytest.fixture
+def run_store(store, monkeypatch, tmp_path):
+    kept = tmp_path / "runs" if isinstance(store, Path) else runs.MongoRuns(store.db)
+    monkeypatch.setattr(server, "RUNS", kept)
+    return kept
+
+
+def test_runs_route_lists_every_run_oldest_first(api, run_store):
+    for run_id, t, user in [("r2", 2.0, "bob"), ("r1", 1.0, "ann"), ("r3", 3.0, "ann")]:
+        runs.save({"id": run_id, "t": t, "user_id": user, "name": f"run {run_id}"}, run_store)
+
+    body = get(api, "/runs")
+
+    assert [r["id"] for r in body["runs"]] == ["r1", "r2", "r3"]
+    assert body["runs"][0] == {"id": "r1", "t": 1.0, "user_id": "ann", "name": "run r1"}
+
+
+def test_runs_route_lists_one_users_runs(api, run_store):
+    for run_id, t, user in [("r2", 2.0, "bob"), ("r1", 1.0, "ann"), ("r3", 3.0, "ann")]:
+        runs.save({"id": run_id, "t": t, "user_id": user, "name": f"run {run_id}"}, run_store)
+
+    assert [r["id"] for r in get(api, "/runs?user=ann")["runs"]] == ["r1", "r3"]
+
+
+def test_versions_route_serves_the_registry(api, store, monkeypatch, tmp_path):
+    kept = tmp_path / "versions" if isinstance(store, Path) else store.db
+    baseline = versions.Registry(kept).create_baseline(versions.default_config())
+    monkeypatch.setattr(server, "VERSIONS", kept)
+
+    body = get(api, "/versions")
+
+    assert (body["live"], body["current"]) == (baseline["id"], baseline["id"])
+    assert [(v["id"], v["status"], v["kind"]) for v in body["versions"]] == [(baseline["id"], "live", "baseline")]
+
+
+def test_readiness_route_counts_the_phrases_this_user_labeled(api, store, recording):
+    for said in ["yes"] * 5 + ["no"] * 2:
+        add(store, recording, said, said, gemini=said)
+    labeled_later = add(store, recording, None, "no", gemini="no", mode="lip")
+    label_clip(store, labeled_later, "no", "confirm")
+    add(store, recording, None, "yes", gemini="yes", mode="lip")  # never labeled: no phrase to count it under
+    add(store, recording, "yes", "yes", gemini="yes", user="bob")
+
+    body = get(api, "/readiness?user=ann")
+
+    # every clip is read right, so VTT accuracy is 1; "yes" has the 5 clips ready needs, "no" only 3
+    assert body == {"phrases": [{"text": "yes", "n": 5, "vtt_acc": 1.0, "ready": True},
+                                {"text": "no", "n": 3, "vtt_acc": 1.0, "ready": False}]}
+
+
+def test_readiness_of_a_user_without_clips_is_empty(api, store, recording):
+    add(store, recording, "yes", "yes", gemini="yes", user="bob")
+
+    assert get(api, "/readiness?user=ann") == {"phrases": []}
