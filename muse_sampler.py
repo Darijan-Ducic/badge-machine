@@ -9,6 +9,7 @@ stamped on every grid tile so the model cites real frames."""
 import base64
 import io
 import json
+import re
 import subprocess
 import tempfile
 import time
@@ -24,10 +25,11 @@ from muse_video import MODEL, make_client
 from scorers import FPS
 
 # visemes-v1, in the doc's table order. Changing it makes old samples incomparable: bump CONFIG["visemes"].
+# TODO: import ALPHABET from visemes.py (merged on main)
 VISEMES = ["P", "F", "TH", "W", "R", "CH", "S", "T", "K", "A", "E", "O", "REST"]
 
-# Logged with every sample. Bump prompt_id when either prompt changes, crop/grid when the images change.
-CONFIG = {"prompt_id": "p1", "schema": "v1", "visemes": "visemes-v1", "crop": "full-frame-v0", "grid": "2x2",
+# Logged with every sample. Bump prompt_id when either prompt or the wire schema changes, crop/grid when the images do.
+CONFIG = {"prompt_id": "p2", "schema": "v1", "visemes": "visemes-v1", "crop": "full-frame-v0", "grid": "2x2",
           "tile_width": 320, "fps": FPS, "model": MODEL, "temperature": 1.0, "effort": "low"}
 MAX_IMAGES = 48  # Muse takes at most 50 images per request
 
@@ -53,6 +55,33 @@ SCHEMA_V1 = _obj(
     hypotheses={"type": "array", "items": _obj(text={"type": "string"}, s=_SCORE)},
 )
 _V1 = Draft202012Validator(SCHEMA_V1)
+
+
+def _wire(schema: dict, start: int = 1) -> dict:
+    """`schema` with every object key prefixed by its position. Meta generates keys in alphabetical order whatever
+    the schema says, so the prefixes make generation follow the reasoning order."""
+    if "anyOf" in schema:
+        return {**schema, "anyOf": [_wire(branch) for branch in schema["anyOf"]]}
+    if schema.get("type") == "array":
+        return {**schema, "items": _wire(schema["items"])}
+    if schema.get("type") == "object":
+        properties = {f"{i}_{name}": _wire(sub) for i, (name, sub) in enumerate(schema["properties"].items(), start)}
+        return {**schema, "properties": properties, "required": list(properties)}
+    return schema
+
+
+# What the API sees: 0_schema_version, 1_speech{1_present, 2_frames}, ... Outputs go through from_wire() at once.
+WIRE_SCHEMA = _wire(SCHEMA_V1, start=0)
+
+
+def from_wire(value):
+    """A wire-format output in schema v1 names: strip the ordinal key prefixes at every level. Keys without a prefix
+    pass through unchanged, so the v1 validator flags them."""
+    if isinstance(value, dict):
+        return {re.sub(r"^\d+_", "", key): from_wire(sub) for key, sub in value.items()}
+    if isinstance(value, list):
+        return [from_wire(sub) for sub in value]
+    return value
 
 
 # ---------------------------------------------------------------- labeled grids
@@ -168,7 +197,8 @@ Read their lips and report what you see, with your uncertainty.
 
 {_frames_note(grids)}
 
-Fill in the JSON fields in order; each step is the evidence for the next.
+Fill in the JSON fields in order; each step is the evidence for the next. Every JSON key starts with its number in \
+that order (0_schema_version, 1_speech, 2_quality, ...; inside an object 1_, 2_, ...); the names below omit it.
 
 1. speech: present is true only if you see a mouth making speech movements. frames is the [first, last] frame number \
 of the speech, or null when present is false.
@@ -240,11 +270,12 @@ def sample_open(clip: Path, k: int) -> list[dict]:
     """K parallel open samples (schema v1). Outputs violating v1 or citing frames outside the clip keep their
     output and list the violations in `error`."""
     grids = labeled_grids(clip, CONFIG["grid"], CONFIG["tile_width"])
-    request = _request(_open_prompt(grids), grids, "lipread_v1", SCHEMA_V1)
+    request = _request(_open_prompt(grids), grids, "lipread_v1", WIRE_SCHEMA)
 
     def finish(raw):
-        problems = validate_open(raw, grids.n_frames)
-        return raw, ("; ".join(problems) or None)
+        output = from_wire(raw)
+        problems = validate_open(output, grids.n_frames)
+        return output, ("; ".join(problems) or None)
 
     client = make_client()
     with ThreadPoolExecutor(max_workers=max(k, 1)) as pool:
