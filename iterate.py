@@ -36,8 +36,7 @@ PILOT_CLIPS = 20
 PATIENCE = 5
 MAX_EXAMPLES = 12
 MAX_CONFUSIONS = 5
-# Estimate from docs/training-v1.md §8: one 5,587-token Muse call ≈ $0.02. Output tokens are priced the same (rough).
-MUSE_USD_PER_TOKEN = 0.02 / 5587
+MUSE_PRICE = (1.25, 4.25)  # $ per 1M input / output tokens, as experiment.PRICES["muse"]
 CLUSTERS = {
     "pool_miss": "STT was not among the candidates at all: no source proposed it",
     "ranked_wrong": "STT was a candidate but another candidate scored higher",
@@ -304,8 +303,8 @@ class MuseProposer:
                 response_format={"type": "json_schema",
                                  "json_schema": {"name": "one_change", "schema": schema, "strict": True}})
             usage = getattr(response, "usage", None)
-            cost += MUSE_USD_PER_TOKEN * ((getattr(usage, "prompt_tokens", 0) or 0)
-                                          + (getattr(usage, "completion_tokens", 0) or 0))
+            cost += ((getattr(usage, "prompt_tokens", 0) or 0) * MUSE_PRICE[0]
+                     + (getattr(usage, "completion_tokens", 0) or 0) * MUSE_PRICE[1]) / 1e6
             content = response.choices[0].message.content
             raw = from_wire(json.loads(content))
             proposal = {"pattern": raw.get("pattern"), "hypothesis": raw.get("hypothesis", ""),
