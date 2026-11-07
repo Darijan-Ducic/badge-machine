@@ -202,7 +202,8 @@ struct HandPointer {
     private var fistSince: TimeInterval?
 
     mutating func event(for gesture: HandGesture, at time: TimeInterval, in bounds: CGRect) -> Event? {
-        if displayBounds != bounds || lastSampleAt.map({ time - $0 > 0.18 }) == true {
+        let interval = lastSampleAt.map { time - $0 } ?? 0
+        if displayBounds != bounds || interval > 0.18 {
             self = HandPointer()
             displayBounds = bounds
         }
@@ -212,7 +213,7 @@ struct HandPointer {
             fistSince = nil
             if pointingSince == nil { pointingSince = time }
             if let pointingSince, time - pointingSince >= 0.05 { armed = (time, palm) }
-            return position(for: tip, in: bounds).map(Event.move)
+            return position(for: tip, after: interval, in: bounds).map(Event.move)
         case .fist(let palm):
             pointingSince = nil
             guard let armed, time - armed.time <= 0.65, palm.isNear(armed.palm), let posted else {
@@ -234,17 +235,23 @@ struct HandPointer {
         }
     }
 
-    private mutating func position(for tip: CGPoint, in bounds: CGRect) -> CGPoint? {
+    private mutating func position(for tip: CGPoint, after interval: TimeInterval, in bounds: CGRect) -> CGPoint? {
         // Mirror camera x for selfie-style motion and convert Vision's upward y to screen y.
         let x = min(1, max(0, (0.82 - tip.x) / 0.64))
         let y = min(1, max(0, (0.82 - tip.y) / 0.64))
         let target = CGPoint(x: bounds.minX + x * max(0, bounds.width - 1),
                              y: bounds.minY + y * max(0, bounds.height - 1))
         let previous = filtered ?? target
-        let point = CGPoint(x: previous.x + 0.35 * (target.x - previous.x),
-                            y: previous.y + 0.35 * (target.y - previous.y))
+        let dx = target.x - previous.x
+        let dy = target.y - previous.y
+        let screenDistance = hypot(dx, dy) / max(1, min(bounds.width, bounds.height))
+        // Respond to deliberate movement while smoothing near-stationary samples.
+        let motion = min(1, max(0, (screenDistance - 0.003) / 0.02))
+        let timeConstant = 0.085 - motion * (0.085 - 0.014)
+        let gain = 1 - exp(-max(0, interval) / timeConstant)
+        let point = CGPoint(x: previous.x + gain * dx, y: previous.y + gain * dy)
         filtered = point
-        if let posted, hypot(point.x - posted.x, point.y - posted.y) < 2 { return nil }
+        if let posted, hypot(point.x - posted.x, point.y - posted.y) < 1 { return nil }
         posted = point
         return point
     }
