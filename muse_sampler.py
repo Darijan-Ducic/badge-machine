@@ -29,7 +29,7 @@ from scorers import FPS
 VISEMES = ["P", "F", "TH", "W", "R", "CH", "S", "T", "K", "A", "E", "O", "REST"]
 
 # Logged with every sample. Bump prompt_id when either prompt or the wire schema changes, crop/grid when the images do.
-CONFIG = {"prompt_id": "p2", "schema": "v1", "visemes": "visemes-v1", "crop": "full-frame-v0", "grid": "2x2",
+CONFIG = {"prompt_id": "p3", "schema": "v1", "visemes": "visemes-v1", "crop": "full-frame-v0", "grid": "2x2",
           "tile_width": 320, "fps": FPS, "model": MODEL, "temperature": 1.0, "effort": "low"}
 MAX_IMAGES = 48  # Muse takes at most 50 images per request
 
@@ -223,15 +223,27 @@ Rules:
 slots and hypotheses."""
 
 
+def _phrase_ids(n: int) -> list[str]:
+    # Zero-padded to one width, so the alphabetical key order Meta generates in is the list order (01, 02, ..., 10).
+    width = len(str(n))
+    return [f"{i:0{width}d}" for i in range(1, n + 1)]
+
+
+def closed_from_wire(raw: dict, phrases: list[str]) -> dict:
+    """A closed wire output {"1_scores": {id: s}, "2_none": s} as {"scores": {phrase: s}, "none": s}."""
+    return {"scores": {phrase: raw["1_scores"][i] for i, phrase in zip(_phrase_ids(len(phrases)), phrases)},
+            "none": raw["2_none"]}
+
+
 def _closed_prompt(grids: Grids, phrases: list[str]) -> str:
-    menu = "\n".join(f"{i}: {phrase}" for i, phrase in enumerate(phrases, 1))
+    menu = "\n".join(f"{i}: {phrase}" for i, phrase in zip(_phrase_ids(len(phrases)), phrases))
     return f"""You are an expert lip reader. The images show a muted video clip of a person; there is no audio.
 
 {_frames_note(grids)}
 
-For every numbered phrase below, give s: your own subjective confidence, from 0 to 1, that the person said exactly \
-that phrase in this clip. Then give none: your confidence that they said none of these phrases (including saying \
-nothing, or no visible mouth). Judge each phrase on its own; scores need not sum to 1.
+First, in 1_scores, give every numbered phrase below its s: your own subjective confidence, from 0 to 1, that the \
+person said exactly that phrase in this clip. Then, in 2_none, give your confidence that they said none of these \
+phrases (including saying nothing, or no visible mouth). Judge each phrase on its own; scores need not sum to 1.
 
 {menu}"""
 
@@ -285,13 +297,12 @@ def sample_open(clip: Path, k: int) -> list[dict]:
 def score_closed(clip: Path, phrases: list[str]) -> dict:
     """One call scoring every phrase plus "none of these"; `output` = {"scores": {phrase: s}, "none": s}, raw scores."""
     grids = labeled_grids(clip, CONFIG["grid"], CONFIG["tile_width"])
-    ids = [str(i) for i in range(1, len(phrases) + 1)]  # numbered menu: phrases with spaces never become JSON keys
-    schema = _obj(scores=_obj(**{i: _SCORE for i in ids}), none=_SCORE)
+    # Numbered menu, so phrases with spaces never become JSON keys; wire keys put every phrase score before "none".
+    schema = _obj(**{"1_scores": _obj(**{i: _SCORE for i in _phrase_ids(len(phrases))}), "2_none": _SCORE})
 
     def finish(raw):
         problems = [f"{e.json_path}: {e.message}" for e in Draft202012Validator(schema).iter_errors(raw)]
-        output = {"scores": {phrase: raw["scores"][i] for i, phrase in zip(ids, phrases)}, "none": raw["none"]}
-        return output, ("; ".join(problems) or None)
+        return closed_from_wire(raw, phrases), ("; ".join(problems) or None)
 
     request = _request(_closed_prompt(grids, phrases), grids, "phrase_scores", schema)
     return _call(make_client(), "closed", 0, request, finish)
