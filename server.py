@@ -7,12 +7,14 @@ import tempfile
 import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 from muse_video import BASE_URL
+from sam import segment_image
 
-PORT = 8765
+PORT = int(os.environ.get("PORT", 8765))
 STATIC = Path(__file__).parent / "static"
 # Dedicated ASR model: muse-spark-1.3 claimed "no audio attached" on ~half of identical input_audio requests.
 ASR_REQUEST = {"mode": "ENDPOINTING", "model": "muse-voice-transcribe-1.0", "audioEncoding": "WAV"}
@@ -46,11 +48,20 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=STATIC, **kwargs)
 
     def do_POST(self):
-        if self.path != "/transcribe":
+        url = urlparse(self.path)
+        if url.path not in ("/transcribe", "/sam"):
             self.send_error(404)
             return
         try:
-            body = {"transcript": transcribe(self.rfile.read(int(self.headers["Content-Length"])))}
+            data = self.rfile.read(int(self.headers["Content-Length"]))
+            if url.path == "/transcribe":
+                body = {"transcript": transcribe(data)}
+            else:
+                # One JPEG/PNG frame -> SAM boxes [x, y, w, h] in that frame's pixels; ids are per-request ordinals.
+                prompt = parse_qs(url.query).get("prompt", [""])[0].strip()
+                if not prompt:
+                    raise ValueError("missing ?prompt=<noun phrase>")
+                body = {"objects": segment_image(data, prompt)}
             code = 200
         except Exception as e:
             body, code = {"error": str(e)}, 500
