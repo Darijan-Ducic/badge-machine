@@ -26,13 +26,17 @@ def test_runs_baseline_and_variants_prints_a_table_and_saves_every_run(tmp_path,
 
     main(["--simulate", "0:40", "--sim-knobs", VISEME_WORLD, "--variant", 'no-visemes={"drop": ["viseme_sim"]}',
           "--variant", f"early-full={spec_file}", "--hypothesis", "viseme_sim carries the signal", "--author", "agent",
-          "--system-version", "sys-v1", "--store", str(tmp_path / "runs")])
+          "--system-version", "sys-v1", "--parent-version", "sys-v1", "--candidate-version", "sys-v2a",
+          "--candidate-version", "sys-v2b", "--store", str(tmp_path / "runs")])
 
     saved = runs.list_runs(tmp_path / "runs")
     assert [r["name"] for r in saved] == ["baseline", "no-visemes", "early-full"]
     base, *variants = saved
     assert all(v["baseline"] == base["id"] and v["gate"] in ("pass", "fail") for v in variants)
     assert [v["hypothesis"] for v in variants] == ["viseme_sim carries the signal"] * 2
+    assert [(v["parent_version"], v["candidate_version"]) for v in variants] == [("sys-v1", "sys-v2a"),
+                                                                                ("sys-v1", "sys-v2b")]
+    assert (base["parent_version"], base["candidate_version"]) == (None, None)
     assert {(r["author"], r["system_version"]) for r in saved} == {("agent", "sys-v1")}
     assert variants[0]["config"]["drop"] == ["viseme_sim"]
     assert variants[1]["config"]["stages"] == {"defaults": 0, "temperature": 10, "full": 30}

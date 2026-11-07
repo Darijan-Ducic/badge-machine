@@ -3,13 +3,16 @@
 Simulated raw outputs go through the REAL featurizer with the REAL viseme functions (`visemes.to_visemes` for the
 simulated observations too), so the viseme-cost knob acts on real codes.
 
+Splits are chronological (docs/self-improvement.md): train = first 60% (predict-then-train), heldout = next 20%
+(scored by one model trained on train: the gate), test = last 20% (scored by one model trained on train + heldout).
+
 Reference points measured on these simulator worlds with candidates + scorer alone (no harness), which the
 thresholds below lean on:
   "visemes carry the signal" (muse/closed/gemini 0.5, visemes 0.8), seeds 0-3:
-    140 clips, model on the first 112 (full stage): held-out VTT 1.0; same with `viseme_sim` zeroed: 0.29-0.43.
-    60 clips, model on the first 48: core stage (default plan) 0.17-0.42; full stage 1.0.
-    70 clips: the hand-set default weights score 0.07-0.36 on the last 14.
-  strong signals (muse/closed/gemini 3), 100 clips: model on the first 80 auto-sends all of the last 20, all right.
+    140 clips, model on the first 84 (full stage), heldout VTT 1.0; with `viseme_sim` zeroed 0.25-0.54.
+    60 clips, model on the first 36: core stage (default plan) 0.17-0.5; full stage 1.0.
+    70 clips: the hand-set default weights score 0.29-0.36 on clips 42-55 and 0.07-0.36 on clips 56-69.
+  strong signals (muse/closed/gemini 3), 100 clips: a model on the first 80 auto-sends all of the last 20, all right.
 """
 
 import json
@@ -21,15 +24,18 @@ import pytest
 
 import visemes
 from candidates import featurize, match
-from experiment import compare, config_for, run
+from experiment import compare, config_for, evaluate, run
 from readiness import readiness
 from scorer import predict, prequential, train
 from tests.simulator import simulate
 
 VISEME_WORLD = dict(muse=0.5, closed=0.5, gemini=0.5, visemes=0.8, to_visemes=visemes.to_visemes)
 CONTRACT = {"id", "t", "name", "dataset", "user_id", "config", "baseline", "metrics", "gate", "curve"}
+NOTES = {"hypothesis", "author", "code_commit", "system_version", "candidate_version", "parent_version"}
 METRICS = {"clips", "vtt_acc", "vtt_acc_heldout", "gemini_acc", "muse_acc", "pool_recall", "autosend_precision",
            "autosend_coverage"}
+SPLIT_METRICS = {"clips", "word_acc", "sentence_acc", "viseme_acc", "top3_acc", "gemini_acc", "muse_acc",
+                 "pool_recall", "autosend_precision", "autosend_coverage", "cost_per_clip"}
 FLAT_COSTS = {"alphabet": "visemes-v1", "default_sub": 0, "ins": 0, "del": 0, "sub": {}}  # every distance 0
 
 
@@ -59,12 +65,17 @@ def vtt_correct(clip, probs):
     return top != len(clip.pool) - 1 and match(clip.stt, [clip.pool[top]]) is not None
 
 
-# ---- the gate: same clips, same order, strictly better held-out VTT ----
+def defaults_accuracy(clips):
+    return np.mean([vtt_correct(c, p) for c, p in zip(clips, predict(train([]), clips))])
+
+
+# ---- the gate: same clips, same order, strictly better heldout VTT ----
 
 def test_identical_configs_give_identical_metrics_and_fail_the_gate(world140):
     base, same = compare(world140, {"same": {}}, dataset="sim:viseme-world:4")
 
     assert same["metrics"] == base["metrics"]
+    assert same["splits"] == base["splits"]
     assert same["curve"] == base["curve"]
     assert same["config"]["hash"] == base["config"]["hash"]
     assert same["gate"] == "fail"  # no improvement is not a pass
@@ -106,43 +117,96 @@ def test_a_baseline_run_on_other_clips_is_refused(small):
         run(small, dataset="sim:other", name="other dataset", baseline=base)
 
 
-# ---- metrics ----
+# ---- splits: each one scored only by what came before it ----
 
-def test_heldout_is_scored_by_a_model_trained_only_on_the_first_80_percent():
-    # 70 clips -> train on the first 56, score the last 14. With `full` from 57 labels on, a model trained on the
-    # first 56 is still at the hand-set defaults; one more clip (any leak) would switch it to the full fit.
+def test_heldout_is_scored_by_a_model_trained_only_on_the_train_split():
+    # 70 clips -> train 0-41, heldout 42-55. With `full` from 43 labels on, a model trained on the 42 train clips is
+    # still at the hand-set defaults; any leaked heldout clip would switch it to the full fit (which scores 1.0 here).
     records = simulate(1, 70, **VISEME_WORLD)
-    clips = clips_of(records)
-    defaults_acc = np.mean([vtt_correct(c, p) for c, p in zip(clips[56:], predict(train([]), clips[56:]))])
-    assert defaults_acc < 0.6  # the full fit scores 1.0 here, so a leak would show
+    expected = defaults_accuracy(clips_of(records)[42:56])
+    assert expected < 0.6  # so a leak would show
 
-    record = run(records, {"stages": {"defaults": 0, "full": 57}}, dataset="sim:leak", name="leak check")
+    metrics = evaluate(records, {"stages": {"defaults": 0, "full": 43}}, "heldout")
 
-    assert record["metrics"]["vtt_acc_heldout"] == pytest.approx(defaults_acc)
-    assert record["metrics"]["autosend_coverage"] == 0.0  # the defaults stage never auto-sends
-    assert record["metrics"]["autosend_precision"] is None
+    assert metrics["clips"] == 14
+    assert metrics["sentence_acc"] == pytest.approx(expected)
+    assert (metrics["autosend_coverage"], metrics["autosend_precision"]) == (0.0, None)  # defaults never send
 
 
-def test_all_clip_metrics_follow_the_predict_then_train_history(small):
-    history = prequential(clips_of(small))
+def test_test_split_is_scored_by_a_model_trained_only_on_train_and_heldout():
+    records = simulate(1, 70, **VISEME_WORLD)
+    expected = defaults_accuracy(clips_of(records)[56:70])
+    assert expected < 0.6
 
-    metrics = run(small, dataset="sim:small", name="baseline")["metrics"]
+    metrics = evaluate(records, {"stages": {"defaults": 0, "full": 57}}, "test")
 
-    assert metrics["clips"] == 20
-    assert metrics["vtt_acc"] == pytest.approx(np.mean([h["fused"] for h in history]))
+    assert metrics["clips"] == 14
+    assert metrics["sentence_acc"] == pytest.approx(expected)
+
+
+def test_train_split_is_predict_then_train_over_the_first_60_percent(small):
+    history = prequential(clips_of(small)[:12])
+
+    metrics = evaluate(small, {}, "train")
+
+    assert metrics["clips"] == 12
+    assert metrics["sentence_acc"] == pytest.approx(np.mean([h["fused"] for h in history]))
     assert metrics["gemini_acc"] == pytest.approx(np.mean([h["gemini"] for h in history]))
     assert metrics["muse_acc"] == pytest.approx(np.mean([h["muse"] for h in history]))
     assert metrics["pool_recall"] == pytest.approx(np.mean([h["pool_hit"] for h in history]))
-    assert metrics["pool_recall"] < 1.0  # the fixture has pool misses, so recall is really measured
+    assert (metrics["autosend_precision"], metrics["autosend_coverage"]) == (None, None)  # trained without a gate
 
 
-def test_curve_is_rolling_accuracy_over_the_last_20_clips(world60):
-    history = prequential(clips_of(world60))
+def test_every_split_reports_every_metric(small):
+    for split in ("train", "heldout", "test"):
+        assert set(evaluate(small, {}, split)) == SPLIT_METRICS
+
+
+def test_top3_holds_every_candidate_when_the_pool_has_three(world60):
+    capped = evaluate(world60, {"pool_cap": 4}, "heldout")  # 3 real candidates + ∅
+    full = evaluate(world60, {}, "heldout")
+
+    assert capped["top3_acc"] == pytest.approx(capped["pool_recall"])
+    assert full["sentence_acc"] <= full["top3_acc"] <= full["pool_recall"]
+
+
+def test_a_runs_stored_config_reevaluates_to_its_split_metrics(small):
+    record = run(small, {"drop": ["prior"], "pool_cap": 10}, dataset="sim:small", name="v")
+
+    assert evaluate(small, record["config"], "heldout") == record["splits"]["heldout"]
+
+
+def test_unknown_split_is_refused(small):
+    with pytest.raises(ValueError):
+        evaluate(small, {}, "validation")
+
+
+# ---- the run record's headline metrics ----
+
+def test_headline_metrics_come_from_the_train_stream_and_the_heldout_split(small):
+    record = run(small, dataset="sim:small", name="baseline")
+    train_split, heldout = record["splits"]["train"], record["splits"]["heldout"]
+
+    assert set(record["splits"]) == {"train", "heldout"}  # the final test split is only evaluated on request
+    assert record["metrics"] == {
+        "clips": 20,
+        "vtt_acc": train_split["sentence_acc"],
+        "vtt_acc_heldout": heldout["sentence_acc"],
+        "gemini_acc": train_split["gemini_acc"],
+        "muse_acc": train_split["muse_acc"],
+        "pool_recall": train_split["pool_recall"],
+        "autosend_precision": heldout["autosend_precision"],
+        "autosend_coverage": heldout["autosend_coverage"],
+    }
+
+
+def test_curve_is_rolling_accuracy_over_the_last_20_train_clips(world60):
+    history = prequential(clips_of(world60)[:36])
 
     curve = run(world60, dataset="sim:viseme-world:0", name="baseline")["curve"]
 
-    assert [point["i"] for point in curve] == list(range(60))
-    for i in (0, 5, 19, 20, 59):
+    assert [point["i"] for point in curve] == list(range(36))
+    for i in (0, 5, 19, 20, 35):
         window = history[max(0, i - 19):i + 1]
         for key, name in (("vtt", "fused"), ("gemini", "gemini"), ("muse", "muse")):
             assert curve[i][key] == pytest.approx(np.mean([h[name] for h in window]))
@@ -155,6 +219,7 @@ def test_clips_without_stt_are_not_scored(small):
     labeled_only = run(small, dataset="sim:small", name="baseline")
 
     assert with_unlabeled["metrics"] == labeled_only["metrics"]
+    assert with_unlabeled["splits"] == labeled_only["splits"]
 
 
 def test_strong_signals_auto_send_precisely():
@@ -166,16 +231,16 @@ def test_strong_signals_auto_send_precisely():
 
 
 def test_pool_cap_keeps_only_the_first_candidates(small):
-    first_is_right = np.mean([c.label == 0 for c in clips_of(small)])
+    first_is_right = np.mean([c.label == 0 for c in clips_of(small)[:12]])
 
     capped = run(small, {"pool_cap": 2}, dataset="sim:small", name="one candidate")  # one real candidate + ∅
 
     assert capped["metrics"]["pool_recall"] == pytest.approx(first_is_right)
 
 
-def test_readiness_uses_the_runs_knobs(small):
-    history = prequential(clips_of(small))
-    stts = [r["stt"] for r in small]
+def test_readiness_uses_the_runs_knobs_on_the_train_stream(small):
+    history = prequential(clips_of(small)[:12])
+    stts = [r["stt"] for r in small[:12]]
     knobs = {"n_min": 1, "window": 3, "acc_min": 0.5}
 
     default = run(small, dataset="sim:small", name="baseline")
@@ -186,15 +251,22 @@ def test_readiness_uses_the_runs_knobs(small):
     assert relaxed["readiness"] != default["readiness"]
 
 
+def test_too_few_clips_for_three_splits_is_refused(small):
+    with pytest.raises(ValueError):
+        run(small[:2], dataset="sim:tiny", name="baseline")
+
+
 # ---- the record ----
 
 def test_record_matches_the_runs_contract(small):
-    base, variant = compare(small, {"no-prior": {"drop": ["prior"]}}, dataset="sim:small", user_id="practice:sim",
-                            hypotheses={"no-prior": "the prior is noise on simulated data"}, author="agent",
-                            system_version="sys-v1")
+    base, variant = compare(
+        small, {"no-prior": {"drop": ["prior"]}}, dataset="sim:small", user_id="practice:sim", author="agent",
+        system_version="sys-v1",
+        variant_notes={"no-prior": {"hypothesis": "the prior is noise on simulated data", "candidate_version": "sys-v2",
+                                    "parent_version": "sys-v1"}})
 
     for record in (base, variant):
-        assert CONTRACT <= set(record)
+        assert CONTRACT | NOTES | {"splits", "readiness"} == set(record)
         assert set(record["metrics"]) == METRICS
         assert isinstance(record["metrics"]["clips"], int)
         assert all(isinstance(record["metrics"][k], float) for k in METRICS - {"clips", "autosend_precision"})
@@ -203,7 +275,9 @@ def test_record_matches_the_runs_contract(small):
             "sim:small", "practice:sim", "sys-v1", "agent")
         json.dumps(record)  # stores as plain JSON (no numpy scalars)
     assert (base["name"], variant["name"]) == ("baseline", "no-prior")
-    assert variant["hypothesis"] == "the prior is noise on simulated data"
+    assert (base["hypothesis"], base["candidate_version"], base["parent_version"]) == ("", None, None)
+    assert (variant["hypothesis"], variant["candidate_version"], variant["parent_version"]) == (
+        "the prior is noise on simulated data", "sys-v2", "sys-v1")
     assert variant["gate"] in ("pass", "fail")
     assert variant["id"] != base["id"]
 
@@ -262,7 +336,8 @@ def test_hash_ignores_how_the_same_config_is_written(small, tmp_path):
 def test_record_hash_ignores_the_run_notes(small):
     first = run(small, dataset="sim:small", name="a", hypothesis="one idea", author="human")
     second = run(small, dataset="sim:small", name="b", hypothesis="another idea", author="agent",
-                 system_version="sys-v2", code_commit="deadbeef", user_id="someone")
+                 system_version="sys-v2", code_commit="deadbeef", user_id="someone", candidate_version="sys-v3",
+                 parent_version="sys-v2")
 
     assert first["config"]["hash"] == second["config"]["hash"] == hash_of(small)
 
