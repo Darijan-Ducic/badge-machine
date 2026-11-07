@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Preheat</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* page-specific; every value is pre-coach's (studio/static/app.css) */
+    .summary { margin-bottom: 22px; }                                  /* the board's gap, app.css:502 */
+    .stat div .sub { display: block; }
+    .board > .framing { width: auto; position: sticky; top: 24px; }   /* sticky like .c-coach, app.css:504 */
+    .framing .opts { justify-content: center; margin-top: 14px; }      /* .framing .meta margin, app.css:530 */
+    #hold { touch-action: none; user-select: none; -webkit-user-select: none; }
+    .clip { padding: 22px; animation: pop .35s var(--ease) both; }     /* .c-coach padding, app.css:504; .msg pop, app.css:220 */
+    .clip > .msg { margin-top: 12px; }                                 /* .tip-text margin, app.css:125 */
+    .clip .heard { margin: 16px 0 0; font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: 8px; } /* .saidlist margin + .stat small, app.css:173,475 */
+    .clip .tip-text { margin-top: 4px; }                               /* .stat div margin, app.css:476 */
+    .saidlist li b { font-weight: 500; }                               /* .eyebrow b, app.css:32 */
+    .saidlist li.offlist { background: var(--well); }
+    .saidlist li.offlist .ic, .saidlist li.offlist small { color: var(--ink-3); }
+  </style>
+</head>
+<body>
+  <div class="haze" aria-hidden="true"></div>
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
+  <main class="section"><div class="page">
+    <header class="top">
+      <h1>Preheat</h1>
+      <p class="meta">STT on: what you say labels each clip, and the lip readers are scored against it.</p>
+    </header>
+    <section class="stats summary" aria-live="polite">
+      <div class="stat"><small id="s-acc-label">Video only vs STT</small><div id="s-acc">—</div></div>
+      <div class="stat"><small>Labeled clips</small><div id="s-labeled">—</div></div>
+      <div class="stat"><small>Training stage</small><div id="s-stage">—</div></div>
+    </section>
+    <div class="board">
+      <section class="framing">
+        <div class="cam"><video id="preview" autoplay muted playsinline></video><div class="thirds" aria-hidden="true"></div></div>
+        <p class="eyebrow"><b>Say</b><span id="say-n"></span></p>
+        <h2 class="headline" id="phrase">…</h2>
+        <div class="opts"><button class="opt" id="skip" type="button" disabled>Skip</button></div>
+        <p class="meta"><span>Camera <b id="fps">…</b></span><i></i><span><kbd>Space</kbd> hold to record</span></p>
+        <p class="meta" id="fps-warn-row" hidden><span class="chip near" id="fps-warn"></span></p>
+        <p class="note" id="note">Requesting camera…</p>
+      </section>
+      <section class="col" id="clips" aria-live="polite">
+        <p class="eyebrow" id="clips-hint">Clips land here, newest first. Each takes about 15–20 s to read; keep recording meanwhile.</p>
+      </section>
+    </div>
+  </div></main>
+  <div class="status" id="rec" hidden><span class="rec"></span>Recording</div>
+  <nav class="dock"><button class="go" id="hold" type="button" disabled><span class="dot" id="hold-icon"></span><span id="hold-label">Hold to record</span></button></nav>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const MIN_MS = 500, FEED_FPS = 24;
+    const ICON = {
+      yes: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+      no: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+      none: '<path d="M7 12h10"/>',
+    };
+    let stream, fps = null, phrases = [], at = 0, rec = null;
+
+    const note = (text) => { $("note").textContent = text; };
+    const pct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
+    const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    const json = (r) => r.json().then((d) => (r.ok ? d : Promise.reject(new Error(d.error || r.statusText))));
+    const value = (target, main, sub) => { target.replaceChildren(main, ...(sub ? [" ", el("span", "sub", sub)] : [])); };
+
+    function showStats(s) {
+      $("s-acc-label").textContent = `Video only vs STT · last ${s.window} clips`;
+      value($("s-acc"), pct(s.accuracy.recent.fused), s.accuracy.recent.fused == null ? "no labeled clips yet" : null);
+      value($("s-labeled"), String(s.labeled), `of ${s.clips} clips`);
+      value($("s-stage"), s.stage, s.next_stage ? `next: ${s.next_stage.name} at ${s.next_stage.at}` : "final stage");
+    }
+
+    function showPhrase() {
+      $("phrase").textContent = phrases[at];
+      $("say-n").textContent = `· ${at + 1} of ${phrases.length}`;
+    }
+    const nextPhrase = () => { at = (at + 1) % phrases.length; showPhrase(); };
+    const ready = () => { $("hold").disabled = !(stream && phrases.length); $("skip").disabled = !phrases.length; };
+
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", frameRate: { ideal: 30 } }, audio: true })
+      .then((s) => {
+        stream = s;
+        $("preview").srcObject = s;
+        fps = s.getVideoTracks()[0].getSettings().frameRate ?? null;
+        $("fps").textContent = fps == null ? "fps unknown" : `${+fps.toFixed(1)} fps`;
+        if (fps != null && fps < FEED_FPS) {
+          $("fps-warn").textContent = `Below ${FEED_FPS} fps: the lip readers are fed ${FEED_FPS}`;
+          $("fps-warn-row").hidden = false;
+        }
+        note("Camera ready. Hold Space, or the button, and say the phrase.");
+        ready();
+      })
+      .catch((err) => { note(`Camera unavailable: ${err.message}`); });
+
+    fetch("/phrases").then(json)
+      .then((d) => { phrases = d.phrases; showPhrase(); ready(); })
+      .catch((err) => { $("phrase").textContent = "No phrases"; note(`Couldn't load phrases: ${err.message}`); });
+    fetch("/stats").then(json).then(showStats).catch(() => {});
+
+    function start() {
+      if (rec || $("hold").disabled) return;
+      const recorder = new MediaRecorder(stream), chunks = [];
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      rec = { recorder, chunks, prompted: at, t0: performance.now() };
+      recorder.start();
+      $("rec").hidden = false;
+      $("hold-icon").className = "sq";
+      $("hold-label").textContent = "Release to stop";
+    }
+
+    function stop() {
+      if (!rec) return;
+      const { recorder, chunks, prompted, t0 } = rec, ms = performance.now() - t0;
+      rec = null;
+      $("rec").hidden = true;
+      $("hold-icon").className = "dot";
+      $("hold-label").textContent = "Hold to record";
+      if (ms < MIN_MS) {
+        recorder.stop();
+        note("Too short: hold for at least half a second while you say it.");
+        return;
+      }
+      recorder.onstop = () => send(new Blob(chunks, { type: recorder.mimeType }), prompted, ms);
+      recorder.stop();
+      nextPhrase();
+      note("Sent. Say the next one while it reads.");
+    }
+
+    addEventListener("keydown", (e) => { if (e.code !== "Space") return; e.preventDefault(); if (!e.repeat) start(); });
+    addEventListener("keyup", (e) => { if (e.code !== "Space") return; e.preventDefault(); stop(); });
+    addEventListener("blur", stop);
+    $("hold").addEventListener("pointerdown", (e) => { $("hold").setPointerCapture(e.pointerId); start(); });
+    $("hold").addEventListener("pointerup", stop);
+    $("hold").addEventListener("pointercancel", stop);
+    $("hold").addEventListener("contextmenu", (e) => e.preventDefault());
+    $("skip").addEventListener("click", nextPhrase);
+
+    function icon(kind, label) {
+      const span = el("span", "ic");
+      span.setAttribute("role", "img");
+      span.setAttribute("aria-label", label);
+      span.innerHTML = `<svg viewBox="0 0 24 24">${ICON[kind]}</svg>`;
+      return span;
+    }
+
+    async function send(blob, prompted, ms) {
+      $("clips-hint").hidden = true;
+      const card = el("article", "card clip");
+      const head = el("p", "eyebrow");
+      const state = el("span", "chip", "Reading lips");
+      head.append(el("b", null, `“${phrases[prompted]}”`), `· prompted · ${(ms / 1000).toFixed(1)} s`, state);
+      const pending = el("div", "msg coach typing");
+      pending.setAttribute("aria-label", "Reading");
+      pending.append(el("i"), el("i"), el("i"));
+      card.append(head, pending);
+      $("clips").prepend(card);
+
+      try {
+        const query = new URLSearchParams({ fps: fps ?? "", prompted });
+        const data = await fetch(`/preheat/clip?${query}`, { method: "POST", body: blob }).then(json);
+        state.remove();
+        head.append(` · ${data.clip}`);
+        const heard = el("p", "heard", "STT heard");
+        if (data.label == null) heard.append(el("span", "chip near", "off-list"));
+        const list = el("ul", "saidlist");
+        for (const [key, name] of [["fused", "Video read"], ["gemini", "Gemini"], ["muse", "Muse"]]) {
+          const ok = data.correct ? data.correct[key] : null;
+          const li = el("li", ok == null ? "offlist" : ok ? "" : "unsaid");
+          const text = el("span");
+          text.append(el("b", null, name), ` · ${data.read[key].phrase}`);
+          li.append(icon(ok == null ? "none" : ok ? "yes" : "no", ok == null ? "off-list, not scored" : ok ? "✓ matches STT" : "✗ differs from STT"), text, el("small", null, `p ${data.read[key].p.toFixed(2)}`));
+          list.append(li);
+        }
+        pending.replaceWith(heard, el("p", "tip-text", data.stt), list);
+        showStats(data.stats);
+      } catch (err) {
+        state.className = "chip over";
+        state.textContent = "Failed";
+        pending.replaceWith(el("p", "msg error", err.message));
+      }
+    }
+  </script>
+</body>
+</html>
