@@ -1,25 +1,30 @@
-"""The self-improvement loop (docs/self-improvement.md): train failures -> ONE typed change -> held-out gate.
+"""The evaluation loop (docs/self-improvement.md): train failures -> ONE typed change -> held-out evidence, unjudged.
 
 One iteration:
   (a) failures   evaluator.failures(train split, current config): clips where VTT != STT, with their candidate pools
   (b) propose    the proposer receives ONLY the context {failures summary (bounded, clustered), current config, the
                  current version's train metrics, tried-ideas memory, change space} — never a held-out or test clip,
-                 id or text — and returns ONE change + hypothesis + the failure ids it cites
+                 id or text — and returns ONE change + hypothesis + the failure ids it cites. GivenChange is the
+                 session's own change (tools/iterate.py --proposer none, the default); MuseProposer asks Muse Spark.
   (c) check      before anything is evaluated: in the change space (versions.validate_change), not a change already
-                 rejected, not a config already evaluated, runnable by the evaluator, a paid pilot within budget
-  (d) build      the candidate version in the registry; evaluate it on train (for the chart) and on heldout
-  (e) gate       HELD-OUT only: adopt iff word_acc gains >= min_gain points AND viseme_acc drops <= 0.5 points;
-                 adopting moves `current` (never `live`); rejecting moves nothing and keeps the evidence
-  (f) log        then repeat, until `iterations`, `patience` consecutive non-adoptions, a dry proposer, or the budget
+                 rejected, not a system already evaluated, runnable by the evaluator, a paid pilot within budget
+  (d) build      the candidate version in the registry, on the current version
+  (e) evaluate   train (for the chart) and heldout; the evidence (both splits, the parent's, the deltas in points,
+                 the records' count + sha256) goes on the version, which becomes `evaluated`
+  (f) log        then repeat, until `iterations`, a dry proposer, or the budget
+The loop never judges: it never adopts, rejects, rolls back or promotes, so `current` and `live` never move here. The
+session reads the evidence and judges with tools/versions.py. Every proposal therefore builds on the same current.
 Paid (skills) changes run a PILOT_CLIPS-clip pilot on held-out first (candidate vs parent, same clips) and get the
-full evaluation only if the pilot improves word_acc and the estimated cost fits the budget; free-only runs never
-offer them. Budget = this invocation's dollars: proposer calls + paid evaluations (free replays cost nothing).
-Resumable: all state is the registry. The baseline is created and evaluated once; a candidate a crash left unjudged
-is evaluated and gated on restart instead of being proposed again. The test split is evaluated only by `final()`
-(`tools/iterate.py --final`); the loop's evaluator refuses it.
+full evaluation only if the pilot improves word_acc and the estimated cost fits the budget (a spend guard, recorded as
+a note in the evidence); free-only runs never offer them. Budget = this invocation's dollars: proposer calls + paid
+evaluations (free replays cost nothing).
+Resumable: all state is the registry. The baseline is created and evaluated once; a candidate a crash left
+unevaluated is evaluated on restart instead of being proposed again. The test split is evaluated only by `final()`
+(`tools/iterate.py --final`), once per version; the loop's evaluator refuses it.
 """
 
 import copy
+import hashlib
 import json
 import math
 from collections import Counter
@@ -28,14 +33,12 @@ from candidates import FEATURES, NONE, POOL_CAP
 from evaluator import PilotUnsupported, split
 from muse_video import MODEL
 from versions import (CODES, MAX_K, MAX_STAGE, OPS, PAID_KINDS, SOURCES, InvalidChange, apply, canonical,
-                      config_hash, default_config, is_paid, kind_of, validate_change)
+                      config_hash, default_config, is_paid, kind_of, validate_change, version_hash)
 
-MIN_GAIN = 1.0  # held-out word_acc points a change must add to be adopted
-MAX_VISEME_DROP = 0.5  # held-out viseme_acc points a change may cost
 PILOT_CLIPS = 20
-PATIENCE = 5
 MAX_EXAMPLES = 12
 MAX_CONFUSIONS = 5
+DELTA_KEYS = ("word_acc", "sentence_acc", "viseme_acc", "top3_acc")
 MUSE_PRICE = (1.25, 4.25)  # $ per 1M input / output tokens, as experiment.PRICES["muse"]
 CLUSTERS = {
     "pool_miss": "STT was not among the candidates at all: no source proposed it",
@@ -62,22 +65,21 @@ FIELD_DOCS = {
 }
 
 
-# ---------------------------------------------------------------- gate, summary, memory
+# ---------------------------------------------------------------- evidence, summary, memory
 
 
 def _pts(fraction: float) -> float:
-    return round(100 * fraction, 6)  # rounding keeps 0.51 - 0.50 = 1.0000000000000009 from deciding a boundary
+    return round(100 * fraction, 6)  # rounding keeps 0.51 - 0.50 from reading as 1.0000000000000009 points
 
 
-def gate(parent: dict, candidate: dict, min_gain: float = MIN_GAIN) -> tuple[bool, str]:
-    """Adopt iff held-out word_acc rises >= min_gain points and viseme_acc falls <= MAX_VISEME_DROP points."""
-    gain = _pts(candidate["word_acc"] - parent["word_acc"])
-    drop = _pts(parent["viseme_acc"] - candidate["viseme_acc"])
-    if gain < min_gain:
-        return False, f"held-out word_acc {gain:+.2f} pts < +{min_gain:.1f} required"
-    if drop > MAX_VISEME_DROP:
-        return False, f"held-out viseme_acc {-drop:+.2f} pts: more than {MAX_VISEME_DROP} pts down"
-    return True, f"held-out word_acc {gain:+.2f} pts, viseme_acc {-drop:+.2f} pts"
+def heldout_delta(parent: dict, candidate: dict) -> dict:
+    """candidate - parent for each accuracy metric, in points. Evidence only: nothing here decides adoption."""
+    return {k: _pts(candidate[k] - parent[k]) for k in DELTA_KEYS}
+
+
+def records_digest(records: list[dict]) -> dict:
+    """Count + sha256 of the records as JSON, the same bytes tools/compare.py hashes for a snapshot."""
+    return {"count": len(records), "sha256": hashlib.sha256(json.dumps(records, default=str).encode()).hexdigest()}
 
 
 def _cluster(failure: dict) -> str:
@@ -162,6 +164,21 @@ class FakeProposer:
         return None
 
 
+class GivenChange:
+    """The session's own ONE change (tools/iterate.py --proposer none): proposed once, checked and evaluated like
+    any other proposal, then nothing more."""
+
+    def __init__(self, change, hypothesis: str = ""):
+        self.proposal = {"change": change, "hypothesis": hypothesis, "failures_cited": []}
+        self.given = False
+
+    def propose(self, context: dict, check=None) -> dict | None:
+        if self.given:
+            return None
+        self.given = True
+        return {**copy.deepcopy(self.proposal), "cost_usd": 0.0}
+
+
 def _obj(**properties) -> dict:
     return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
 
@@ -199,9 +216,9 @@ def proposal_schema(context: dict) -> dict:
 
 SYSTEM_PROMPT = """You are the iteration agent of a lip-reading system. VTT (video-to-text) is what the system reads \
 from a muted mouth crop; STT (speech-to-text) is the reference label. You improve the system ONE typed change at a \
-time. Every change you propose is evaluated on held-out clips you never see, adopted only if held-out word accuracy \
-rises by at least {min_gain} point(s) while viseme accuracy drops by at most 0.5 points, and rolled back otherwise. \
-A rejected idea stays rejected: proposing it again wastes an iteration."""
+time. Every change you propose is evaluated on held-out clips you never see; a reviewer reads that evidence and \
+adopts the change only if held-out word accuracy rises without viseme accuracy falling. A rejected idea stays \
+rejected: proposing it again wastes an iteration."""
 
 USER_PROMPT = """<pipeline>
 Per clip: Muse Spark open samples (up to 5 stored; the config's k uses the first k) each give visemes, word-slot \
@@ -271,7 +288,7 @@ Before answering, check each Required item against the inputs above; if any fail
 </self_check>"""
 
 
-def build_prompt(context: dict, min_gain: float = MIN_GAIN) -> list[dict]:
+def build_prompt(context: dict) -> list[dict]:
     summary = context["failures"]
     user = USER_PROMPT.format(
         features=", ".join(FEATURES), train_clips=summary["train_clips"], n_failures=summary["failures"],
@@ -279,15 +296,15 @@ def build_prompt(context: dict, min_gain: float = MIN_GAIN) -> list[dict]:
         current_id=context["current"]["id"], config=json.dumps(context["config"]),
         train_metrics=json.dumps(context["current"]["train"]), memory=json.dumps(context["memory"], indent=1),
         change_space=json.dumps(context["change_space"], indent=1))
-    return [{"role": "system", "content": SYSTEM_PROMPT.format(min_gain=min_gain)}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 
 class MuseProposer:
     """Muse Spark over Chat Completions with json_schema structured output (temperature 1.0, effort low). The
     proposal is checked with the loop's own `check`; an invalid one is sent back once with the reason."""
 
-    def __init__(self, client=None, model: str = MODEL, min_gain: float = MIN_GAIN):
-        self.client, self.model, self.min_gain = client, model, min_gain
+    def __init__(self, client=None, model: str = MODEL):
+        self.client, self.model = client, model
 
     def propose(self, context: dict, check) -> dict:
         from muse_sampler import _wire, from_wire  # ordinal key prefixes: Meta generates keys alphabetically
@@ -295,7 +312,7 @@ class MuseProposer:
 
         client = self.client or make_client()
         schema = _wire(proposal_schema(context), start=1)
-        messages = build_prompt(context, self.min_gain)
+        messages = build_prompt(context)
         cost, proposal = 0.0, None
         for attempt in (1, 2):
             response = client.chat.completions.create(
@@ -345,13 +362,14 @@ def _charge(metrics: dict, config: dict) -> float:
 
 
 class _Loop:
-    def __init__(self, records, registry, evaluator, *, budget, min_gain, free_only, log):
+    def __init__(self, records, registry, evaluator, *, budget, free_only, log):
         self.records, self.registry, self.free_only, self.log = records, registry, free_only, log
         self.evaluator = evaluator
         self.ev = _NoTest(evaluator)
-        self.budget, self.min_gain = budget, min_gain
+        self.budget = budget
         self.train = split(records, "train")
         self.n_heldout = len(split(records, "heldout"))
+        self.digest = records_digest(records)
         self.spent = 0.0
         self.refused: list[dict] = []
 
@@ -391,7 +409,7 @@ class _Loop:
             self._metrics(vid, "train", config)
             self._metrics(vid, "heldout", config)
 
-    def check(self, config: dict):
+    def check(self, config: dict, code: str | None = None):
         versions = self.registry.versions()
         unsupported = getattr(self.evaluator, "unsupported", None)
 
@@ -403,7 +421,7 @@ class _Loop:
                 if v["status"] == "rejected" and v["change"] == change:
                     raise InvalidChange(f"already tried and rejected as {v['id']}: {v['reason']}")
             new = apply(config, change)
-            new_hash = config_hash(new)
+            new_hash = version_hash(new, code)
             for v in versions:
                 if v["config_hash"] == new_hash:
                     raise InvalidChange(f"the resulting config was already evaluated as {v['id']} ({v['status']})")
@@ -413,57 +431,56 @@ class _Loop:
 
         return check
 
-    # -------- judging one candidate
+    # -------- evaluating one candidate (never judging it)
 
-    def judge(self, vid: str, iteration) -> dict:
+    def _evaluated(self, iteration, vid: str, note: str | None = None) -> dict:
+        """Attach the evidence and leave the version unjudged; the step's reason is the evidence in one line."""
         record = self.registry.get(vid)
-        parent_id, parent = record["parent"], self.registry.get(record["parent"])
-        change, hypothesis = record["change"], record["hypothesis"]
-        if parent_id != self.registry.pointers()["current"]:
-            self.registry.reject(vid, "stale: its parent is no longer current")
-            return self._step(iteration, vid, change, hypothesis, "rejected", "stale: its parent is no longer current")
-        config, parent_config = self.registry.config(vid), self.registry.config(parent_id)
-        cost = 0.0
+        parent = self.registry.get(record["parent"])
+        mine, theirs = record["metrics"], parent["metrics"]
+        deltas = {split_name: heldout_delta(theirs[split_name], mine[split_name])
+                  if mine[split_name] and theirs[split_name] else None for split_name in ("train", "heldout")}
+        evidence = {"by": "iterate.py", "parent": parent["id"], "records": self.digest,
+                    "train": mine["train"], "heldout": mine["heldout"], "parent_train": theirs["train"],
+                    "parent_heldout": theirs["heldout"], "train_delta_pts": deltas["train"],
+                    "heldout_delta_pts": deltas["heldout"], "pilot": record["pilot"], "note": note}
+        self.registry.evaluated(vid, evidence)
+        held = deltas["heldout"]
+        reason = note or (f"held-out word_acc {held['word_acc']:+.2f} pts, viseme_acc {held['viseme_acc']:+.2f} pts "
+                          f"vs {parent['id']}; unjudged")
+        return self._step(iteration, vid, record["change"], record["hypothesis"], "evaluated", reason,
+                          mine["heldout"]["word_acc"] if mine["heldout"] else None)
+
+    def evaluate(self, vid: str, iteration) -> dict:
+        record = self.registry.get(vid)
+        config, parent_config = self.registry.config(vid), self.registry.config(record["parent"])
 
         def spend(usd):
-            nonlocal cost
-            cost += usd
             self.spent += usd
             self.registry.add_cost(vid, usd)
 
-        if _paid_config(config) and record["pilot"] is None:
+        if _paid_config(config) and record["pilot"] is None:  # spend guards: they skip spending, never judge
             try:
                 pilot = self.ev.evaluate(self.records, config, "heldout", limit=PILOT_CLIPS)
                 spend(_charge(pilot, config))
                 base = self.ev.evaluate(self.records, parent_config, "heldout", limit=PILOT_CLIPS)
                 spend(_charge(base, parent_config))
             except PilotUnsupported as e:
-                reason = f"paid change but no pilot possible: {e}"
-                self.registry.reject(vid, reason)
-                return self._step(iteration, vid, change, hypothesis, "rejected", reason)
+                return self._evaluated(iteration, vid, f"paid change but no pilot possible: {e}; nothing measured")
             self.registry.set_pilot(vid, {"candidate": pilot, "parent": base})
             if _pts(pilot["word_acc"] - base["word_acc"]) <= 0:
-                reason = (f"pilot on {pilot['clips']} held-out clips: word_acc {100 * base['word_acc']:.1f} -> "
-                          f"{100 * pilot['word_acc']:.1f}, no gain; full evaluation skipped")
-                self.registry.reject(vid, reason)
-                return self._step(iteration, vid, change, hypothesis, "rejected", reason)
+                return self._evaluated(iteration, vid, (
+                    f"pilot on {pilot['clips']} held-out clips: word_acc {100 * base['word_acc']:.1f} -> "
+                    f"{100 * pilot['word_acc']:.1f}, no gain; full evaluation skipped to save money"))
             full = (len(self.train) + self.n_heldout) * (pilot["cost_per_clip"] or 0.0)
             if self.spent + full > self.budget:
-                reason = f"pilot improved, but the full evaluation (~${full:.2f}) exceeds the budget"
-                self.registry.reject(vid, reason)
-                return self._step(iteration, vid, change, hypothesis, "rejected", reason)
+                return self._evaluated(iteration, vid, f"pilot improved, but the full evaluation (~${full:.2f}) "
+                                                       "exceeds the budget; full evaluation skipped")
 
         if record["metrics"]["train"] is None:
             spend(_charge(self._metrics(vid, "train", config), config))
-        heldout = self._metrics(vid, "heldout", config)
-        spend(_charge(heldout, config))
-        adopt, reason = gate(parent["metrics"]["heldout"], heldout, self.min_gain)
-        if adopt:
-            self.registry.adopt(vid, reason)
-        else:
-            self.registry.reject(vid, reason)
-        return self._step(iteration, vid, change, hypothesis, "adopted" if adopt else "rejected", reason,
-                          heldout["word_acc"])
+        spend(_charge(self._metrics(vid, "heldout", config), config))
+        return self._evaluated(iteration, vid)
 
     # -------- one proposal
 
@@ -492,7 +509,7 @@ class _Loop:
             "free_only": self.free_only,
             "budget_left": None if math.isinf(self.budget) else round(self.budget - self.spent, 4),
         }
-        check = self.check(config)
+        check = self.check(config, self.registry.code(current_id))
         proposal = proposer.propose(context, check)
         if proposal is None:
             return None
@@ -514,24 +531,19 @@ class _Loop:
             current_id, change, hypothesis=proposal.get("hypothesis", ""), author="agent",
             failures_cited=[c for c in proposal.get("failures_cited") or [] if c in shown],
             cost_usd=proposal.get("cost_usd", 0.0))
-        return self.judge(candidate["id"], iteration)
+        return self.evaluate(candidate["id"], iteration)
 
 
 def run(records: list[dict], registry, proposer, evaluator, *, baseline: dict | None = None, iterations: int = 20,
-        patience: int = PATIENCE, budget: float = math.inf, free_only: bool = False, min_gain: float = MIN_GAIN,
-        log=None) -> list[dict]:
-    """Run up to `iterations` proposals from the registry's current version; returns one step per proposal (and
-    one per unfinished candidate resumed). Stops early after `patience` consecutive non-adoptions, when the
-    proposer has nothing left, or when this run has spent `budget` dollars."""
-    loop = _Loop(records, registry, evaluator, budget=budget, min_gain=min_gain, free_only=free_only,
-                 log=log or (lambda line: None))
+        budget: float = math.inf, free_only: bool = False, log=None) -> list[dict]:
+    """Evaluate up to `iterations` proposals, each ONE change on the registry's current version, and record each as
+    `evaluated` with its evidence; returns one step per proposal (and one per unfinished candidate resumed). Moves no
+    pointer. Stops early when the proposer has nothing left or when this run has spent `budget` dollars."""
+    loop = _Loop(records, registry, evaluator, budget=budget, free_only=free_only, log=log or (lambda line: None))
     loop.ensure_baseline(baseline)
-    steps = [loop.judge(v["id"], "resume") for v in registry.versions() if v["status"] == "candidate"]
-    start, misses = len(registry.versions()) - 1, 0
+    steps = [loop.evaluate(v["id"], "resume") for v in registry.versions() if v["status"] == "candidate"]
+    start = len(registry.versions()) - 1
     for i in range(1, iterations + 1):
-        if misses >= patience:
-            loop.log(f"stop: {misses} consecutive changes without adoption")
-            break
         if loop.spent >= budget:
             loop.log(f"stop: budget spent (${loop.spent:.2f} of ${budget:.2f})")
             break
@@ -540,13 +552,15 @@ def run(records: list[dict], registry, proposer, evaluator, *, baseline: dict | 
             loop.log("stop: the proposer has no more ideas")
             break
         steps.append(step)
-        misses = 0 if step["decision"] == "adopted" else misses + 1
     return steps
 
 
 def final(records: list[dict], registry, evaluator, version: str | None = None) -> dict:
-    """Evaluate `version` (default: current) on the test split, once, and record it. The only path to `test`."""
+    """Evaluate `version` (default: current) on the test split and record it: once per version, never again. The
+    only path to `test`."""
     vid = version or registry.pointers()["current"]
+    if registry.get(vid)["metrics"]["test"] is not None:
+        raise RuntimeError(f"{vid} was already evaluated on the test split; the test split is read once")
     metrics = evaluator.evaluate(records, registry.config(vid), "test")
     registry.record_metrics(vid, "test", metrics)
     return metrics
@@ -563,7 +577,7 @@ def history(registry) -> list[dict]:
         rows.append({"iteration": v["seq"] - 1, "version": v["id"], "kind": v["kind"], "change": v["change"],
                      "hypothesis": v["hypothesis"], "decision": v["status"], "reason": v["reason"],
                      "heldout_word_acc": heldout["word_acc"] if heldout else None, "current": current["id"],
-                     "current_word_acc": current["metrics"]["heldout"]["word_acc"]})
+                     "current_word_acc": (current["metrics"]["heldout"] or {}).get("word_acc")})
     return rows
 
 

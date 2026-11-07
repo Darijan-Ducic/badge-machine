@@ -29,6 +29,25 @@ Every write needs `--registry`. Without it the CLI refuses and writes nothing.
 
 ## Commands
 
+Freeze the data once per line of changes. The export is a JSON array, and it is the `--records` input of
+tools/experiment.py, tools/iterate.py and tools/compare.py alike (each also reads JSON lines):
+
+```bash
+uv run --env-file .env python tools/compare.py --user <id> --base main --cand main --export /tmp/snap-<id>.json
+```
+
+Evaluate a config change on current. It records an `evaluated` version with its evidence (train and held-out
+metrics, the parent's, the deltas in points, the records' count and sha256) and prints it. It moves no pointer:
+
+```bash
+uv run --env-file .env python tools/iterate.py --registry real --records /tmp/snap-<id>.json \
+    --change '{"op": "set_pool_cap", "pool_cap": 12}' --hypothesis "<mechanism, tied to train failures>"
+```
+
+`--proposer muse --iterations N` lets Muse Spark propose N changes instead. Each one is recorded the same way, all
+on the same current, and all wait for you. `--final` scores current on the test split once, at the very end. A
+second `--final` on the same version is refused.
+
 Record a code change. Commit it first (an `attempt/` branch is fine), then compare it against the code of the
 version you're improving on (`tool-compare.md`): `show <current>` prints its `code`; when that is null, use `main`.
 Record it with that report as its evidence:
