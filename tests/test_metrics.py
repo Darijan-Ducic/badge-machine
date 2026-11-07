@@ -25,6 +25,11 @@ def test_phoneme_acc_separates_what_visemes_merge():
     assert metrics.phoneme_acc(["bat"], ["pat"]) == pytest.approx(2 / 3)
 
 
+def test_phoneme_acc_ignores_stress():
+    # incite = IH2 N S AY1 T, insight = IH1 N S AY2 T: the same phonemes once stress digits are stripped
+    assert metrics.phoneme_acc(["incite"], ["insight"]) == 1.0
+
+
 def test_phoneme_acc_out_of_vocabulary_word_matches_only_itself():
     assert metrics.phoneme_acc(["zxqv"], ["zxqv"]) == 1.0
     assert metrics.phoneme_acc(["blorpf"], ["zxqv"]) == 0.0  # one OOV token each: one substitution
@@ -91,6 +96,29 @@ def test_viseme_lift_of_a_constant_read_is_zero():
 def test_viseme_lift_turns_returns_one_value_per_turn():
     # constant "bob": turn bob = 1 - 2/3, turn top = 2/3 - 1
     assert metrics.viseme_lift_turns(["bob", "bob"], ["bob", "top"]) == pytest.approx([1 / 3, -1 / 3])
+
+
+def test_viseme_lift_nearest_uses_only_the_closest_length_impostors():
+    # viseme counts: bob 3, top 3, "the cat sat on a mat" 14. With nearest=1, bob's only impostor is top and top's
+    # is bob: constant "bob" -> turn bob 1 - 2/3, turn top 2/3 - 1 (the long STT is never an impostor for them)
+    stts = ["bob", "top", "the cat sat on a mat"]
+    lifts = metrics.viseme_lift_turns(["bob"] * 3, stts, nearest=1)
+    assert lifts[:2] == pytest.approx([1 / 3, -1 / 3])
+
+
+def test_viseme_lift_nearest_measures_length_distance_both_ways():
+    # turn 1 "the cat sat on a mat" has 14 visemes; "bob" is 11 shorter, "... a hat" (14) differs by one code.
+    # The impostor is the hat sentence: lift = 1 - 13/14
+    stts = ["bob", "the cat sat on a mat", "the cat sat on a hat"]
+    lifts = metrics.viseme_lift_turns(["x", "the cat sat on a mat", "y"], stts, nearest=1)
+    assert lifts[1] == pytest.approx(1 / 14)
+
+
+def test_viseme_lift_nearest_breaks_length_ties_by_turn_order():
+    # turn 0 (bob, 3): top (3) and pop (3) tie at distance 0; the earlier one, top, is the impostor.
+    # read "pop" vs STT bob: P A P = P A P -> 1; vs top (T A P): 2/3 -> lift 1/3 (pop as impostor would give 0)
+    lifts = metrics.viseme_lift_turns(["pop", "x", "y"], ["bob", "top", "pop"], nearest=1)
+    assert lifts[0] == pytest.approx(1 / 3)
 
 
 # ---------------------------------------------------------------- closed-set sentence identification
