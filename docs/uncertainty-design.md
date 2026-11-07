@@ -101,7 +101,8 @@ Per-clip raw input: `samples` (K open outputs, failed ones skipped), `closed` (`
 `gemini` (`{phrase: p}` over the phrase list), `bank` (phrase list + the user's past STT texts with counts).
 
 **Text matching** everywhere: `preheat._normalize` (lowercase, punctuation stripped, STT word-doubling collapsed),
-exact match first, else best `SequenceMatcher` ratio ≥ 0.85.
+then **exact** equality. No fuzzy fallback: at ratio ≥ 0.85 it merged opposite commands ("turn on/off the lights"
+= 0.92), sharing their votes and mislabeling clips; a near miss is a pool miss, absorbed by ∅.
 
 **Pool** (deduped by normalized text, capped at 24, ∅ always last): every hypothesis from every sample; per sample
 the top 3 slot recombinations (top 2 alts per slot, ranked by product of scores); top 3 closed-call phrases; top 3

@@ -11,7 +11,7 @@ Implements "Post-processor spec (exact)" in docs/uncertainty-design.md. Inputs p
 Readings chosen where the spec leaves room (simplest one each time):
   - The pool cap of 24 includes ∅, so at most 23 real candidates, kept in source order: hypotheses, slot
     recombinations, closed top 3, Gemini top 3, bank nearest 3. Empty texts (after normalizing) are not candidates.
-  - "Matches" is the spec's text matching (exact normalized, else best ratio >= .85) for votes, the closed/Gemini
+  - "Matches" is exact normalized text equality (no fuzzy fallback; see `match`) for votes, the closed/Gemini
     lookups, phrase-list membership, the user count and the label. For `mean_score` the matched hypothesis's `s` is
     used (the first exact match when a sample repeats a phrase). `slot_support` compares single words exactly.
   - Bank entries are the phrase list plus past STT texts, deduped by normalized text, phrase list first; bank size
@@ -29,13 +29,12 @@ from math import log, prod
 
 import numpy as np
 
-from preheat import _normalize, match_phrase
+from preheat import _normalize
 
 FEATURES = ["vote", "top_vote", "mean_score", "slot_support", "viseme_sim", "closed", "gemini", "prior", "in_bank",
             "is_none", "none_closed", "bad_quality", "no_speech"]
 NONE = "∅"
 POOL_CAP = 24
-MIN_RATIO = 0.85
 
 
 @dataclass
@@ -49,8 +48,13 @@ class Clip:
 
 
 def match(text: str, options: list[str]) -> int | None:
-    """Index of the option `text` matches (exact after normalizing, else best ratio >= .85), or None."""
-    return match_phrase(text, options, MIN_RATIO) if options else None
+    """Index of the option `text` equals after normalizing, or None.
+
+    Exact only: a fuzzy fallback (ratio >= .85) merged opposite commands like "turn on/off the lights" (.92), sharing
+    their votes and mislabeling clips. A near miss is a pool miss, which the ∅ candidate is there to absorb.
+    """
+    said = _normalize(text)
+    return next((i for i, option in enumerate(options) if _normalize(option) == said), None)
 
 
 def _top(scores: dict, n: int) -> list[str]:
