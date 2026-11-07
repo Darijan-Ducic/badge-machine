@@ -174,13 +174,14 @@ def _gemini_call(gemini, clip: Path, phrases: list[str]) -> dict:
 
 
 def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, k: int, transcribe=None,
-              transcript: str | None = None, faces: list | None = None, tracker_flags=(), fps: float | None = None,
-              prompted: int | None = None, extra: dict | None = None, sample_open=None, score_closed=None,
-              gemini=None) -> tuple[dict, bytes]:
+              transcript: str | None = None, faces: list | None = None, mouths: list | None = None,
+              tracker_flags=(), fps: float | None = None, prompted: int | None = None, extra: dict | None = None,
+              sample_open=None, score_closed=None, gemini=None) -> tuple[dict, bytes]:
     """Crop one recording and run every call on it in parallel; returns (record, crop bytes), not stored yet.
 
-    The label is `transcript` when given, else STT of the original recording (with audio) when `transcribe` is
-    given, else none. Readers default to the real calls, looked up at call time."""
+    Crop boxes: browser-tracker `mouths` [[t_ms, x, y, w, h]] or SAM `faces` [[x, y, w, h]] (see crop.crop). The
+    label is `transcript` when given, else STT of the original recording (with audio) when `transcribe` is given,
+    else none. Readers default to the real calls, looked up at call time."""
     sample_open = sample_open or muse_sampler.sample_open
     score_closed = score_closed or muse_sampler.score_closed
     gemini = gemini or scorers.gemini_scores
@@ -188,7 +189,7 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
     with tempfile.TemporaryDirectory() as tmp:
         source, clip = Path(tmp, "recording"), Path(tmp, "clip.mp4")
         source.write_bytes(recording)
-        crop_id = crop.crop(source, clip, faces)
+        crop_id = crop.crop(source, clip, faces=faces, mouths=mouths)
         frames = crop.count_frames(clip)
         with ThreadPoolExecutor(4) as pool:
             heard = pool.submit(transcribe, recording) if transcript is None and transcribe else None
@@ -369,12 +370,14 @@ def _muse_read(clip, samples: list[dict]) -> dict:
 
 
 def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=None, *, user_id: str = DEFAULT_USER,
-                 k: int = PREHEAT_K, sample_open=None, score_closed=None, gemini=None) -> dict:
-    """Preheat: STT-label one recording, read it with every model, store it, and read it back like the runtime would
-    (a model trained on this user's earlier clips only)."""
+                 k: int = PREHEAT_K, mouths: list | None = None, tracker_flags=(), sample_open=None,
+                 score_closed=None, gemini=None) -> dict:
+    """Preheat: STT-label one recording, crop it with the browser tracker's boxes (`mouths`; full frame without),
+    read it with every model, store it, and read it back like the runtime would (a model trained on this user's
+    earlier clips only)."""
     record = record_clip(recording, phrases=phrases, user_id=user_id, mode="stt_on", k=k, transcribe=transcribe,
-                         fps=fps, prompted=prompted, store=store, sample_open=sample_open,
-                         score_closed=score_closed, gemini=gemini)
+                         mouths=mouths, tracker_flags=tracker_flags, fps=fps, prompted=prompted, store=store,
+                         sample_open=sample_open, score_closed=score_closed, gemini=gemini)
     records = load(store, user_id)
     replay = _replayed(records, user_id, record["vocab"])
     i = [r["id"] for r in replay].index(record["id"])

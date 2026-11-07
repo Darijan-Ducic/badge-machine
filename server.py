@@ -48,6 +48,20 @@ def transcribe(recording: bytes) -> str:
     return response.json()["transcript"]
 
 
+def tracker_headers(headers) -> tuple[list | None, list[str]]:
+    """The browser tracker's crop boxes and flags sent with a recording: `X-Tracker-Boxes` a JSON list of
+    [t_ms, x, y, w, h] (already padded; absent = crop the full frame), `X-Tracker-Flags` a JSON list of strings or
+    a comma-separated list."""
+    boxes, flags = headers.get("X-Tracker-Boxes"), (headers.get("X-Tracker-Flags") or "").strip()
+    if boxes is not None:
+        boxes = json.loads(boxes)
+        if not all(isinstance(b, list) and len(b) == 5 for b in boxes):
+            raise ValueError("X-Tracker-Boxes must be a JSON list of [t_ms, x, y, w, h]")
+    if flags.startswith("["):
+        return boxes, [str(f) for f in json.loads(flags)]
+    return boxes, [f.strip() for f in flags.split(",") if f.strip()]
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC, **kwargs)
@@ -102,9 +116,11 @@ class Handler(SimpleHTTPRequestHandler):
                 body = {"transcript": transcribe(data)}
             elif url.path == "/preheat/clip":
                 fps, prompted = query.get("fps"), query.get("prompted")
+                mouths, flags = tracker_headers(self.headers)
                 body = process_clip(data, float(fps[0]) if fps else None, int(prompted[0]) if prompted else None,
                                     transcribe=transcribe, phrases=load_phrases(), store=STORE,
-                                    user_id=query.get("user", [""])[0] or DEFAULT_USER)
+                                    user_id=query.get("user", [""])[0] or DEFAULT_USER, mouths=mouths,
+                                    tracker_flags=flags)
             else:
                 # One JPEG/PNG frame -> SAM boxes [x, y, w, h] in that frame's pixels; ids are per-request ordinals.
                 prompt = query.get("prompt", [""])[0].strip()
