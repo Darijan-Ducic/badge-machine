@@ -35,8 +35,8 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class CAM,GEM,GATE,SAM,TRK,TRIG,QG,REPEAT built
-  class CROP,MUSEK,MUSEC,POOL,FEAT,FUSE building
+  class CAM,GEM,GATE,SAM,TRK,TRIG,QG,REPEAT,MUSEK,MUSEC,POOL,FEAT,FUSE built
+  class CROP building
   class SEND,CONFIRM planned
 ```
 
@@ -73,9 +73,66 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STT,MATCH,GT,STORE,UI,REPLAY,KNOBS built
-  class CLIP,STAGES,PREQ,FUSE building
+  class STT,MATCH,GT,STORE,UI,REPLAY,KNOBS,STAGES,PREQ,FUSE built
+  class CLIP building
   class CONF,AGENT,PROMPTS planned
+```
+
+## Personal loop: learns from each user's own dictation
+
+```mermaid
+flowchart LR
+  USE["User dictates normally<br/>STT on, no prompted phrases"]
+  LBL["Label = STT turn text<br/>video-only mode: confirm/edit = label"]
+  BANK["Phrase bank + frequencies<br/>feeds the prior feature"]
+  W["Scorer weights, staged<br/>0 → 10 → 30 → 60 labeled clips"]
+  TH["Auto-send threshold<br/>out-of-fold, precision 0.9"]
+  FEW["Few-shot examples<br/>user's own best clips in prompts"]
+  READY["Per-phrase readiness<br/>lip-only mode unlocks per phrase"]
+  CAL["Camera framing calibration<br/>face width, mouth ratios"]
+  OUT["Opt-in clips → system replay sets"]
+  IN["New system version → re-fit<br/>from stored raw outputs"]
+
+  USE --> LBL
+  USE --> CAL
+  LBL --> BANK & W & TH & FEW
+  W & TH --> READY
+  LBL -.-> OUT
+  IN -.-> W
+
+  classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
+  classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
+  class LBL,BANK,W,TH built
+  class USE,IN building
+  class READY,FEW,CAL,OUT planned
+```
+
+## System loop: what we iterate, versioned v1 → v2
+
+```mermaid
+flowchart LR
+  SETS["Replay sets<br/>practice footage + opt-in user clips<br/>raw model outputs stored"]
+  ERR["Review errors<br/>STT vs lip disagreements"]
+  AGENT["Agent proposes<br/>ONE change"]
+  PAID["Call-level pieces<br/>re-calls the models, costs money<br/>───<br/>output schema + prompts<br/>grid · fps · crop<br/>K · temperature · effort"]
+  FREE["Post-processing pieces<br/>replay is free<br/>───<br/>viseme substitution costs<br/>candidate pool rules + features<br/>stage plan + cold-start weights<br/>tracker knobs vs SAM ground truth"]
+  GATE{"Held-out accuracy up<br/>on the same clips?"}
+  VER["New system version<br/>config hash on every clip"]
+  REFIT["Every user's personal layers<br/>re-fit from stored raw outputs"]
+
+  SETS --> ERR --> AGENT
+  AGENT --> PAID & FREE
+  PAID & FREE --> GATE
+  GATE -- yes --> VER --> REFIT
+  GATE -- "no: revert" --> AGENT
+
+  classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
+  classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
+  class PAID,FREE built
+  class SETS,VER,REFIT building
+  class ERR,AGENT,GATE planned
 ```
 
 ## Stages at a glance

@@ -74,18 +74,33 @@ not probabilities.
 | `bad_quality` | Muse ×5 | share of samples reporting a partial/hidden mouth or heavy blur (∅ only) |
 | `no_speech` | Muse ×5 | share of samples reporting no speech (∅ only) |
 
-## 5. What v1 trains vs. keeps fixed
+## 5. What learns: personal vs. system
 
-| | Knob | v1 |
+**Personal** — learned automatically from each user's own dictation, per user. This is what v1 trains.
+
+| Piece | Learns from | Status |
 |---|---|---|
-| **Trained** | Scorer weights (13) | staged by labeled clips: 0 hand-set → 10 one scale → 30 nine weights → 60 all 13 |
-| **Trained** | Auto-send threshold | out-of-fold, target precision 0.9; ∅ never auto-sends |
-| Fixed | Prompt, schema, grid, fps, K, temperature, effort | as in section 2 |
-| Fixed | Viseme substitution costs | uniform (every mismatch costs 1) |
-| Fixed | Tracker knobs | current defaults |
-| Fixed | Pool rules | ≤24 candidates; top 3 from closed, Gemini, and nearest bank entries |
+| Scorer weights (13), staged 0 → 10 → 30 → 60 clips | STT label vs. candidates | built — **trained in v1** |
+| Auto-send threshold (precision 0.9; ∅ never auto-sends) | out-of-fold predictions | built — **trained in v1** |
+| Phrase bank + frequencies (the `prior` feature) | the user's STT texts | built — **trained in v1** |
+| Per-phrase readiness (lip-only mode unlocks per phrase) | per-phrase accuracy | planned |
+| Few-shot examples in prompts | the user's best labeled clips | planned |
+| Camera framing calibration | the user's first clips | planned |
+| Confirm/edit labels in video-only mode | the user's corrections | planned |
 
-Fixed knobs are v2 material: each change is one versioned experiment on the same clips.
+**System** — iterated by us + agents, versioned, the same for every user. **Fixed in v1**; each change is a v2 experiment on the same clips.
+
+| Piece | v1 setting | Replay cost of a change |
+|---|---|---|
+| Output schema + prompts | schema v1, prompt `p3` | paid (re-calls the models) |
+| Grid · fps · crop · K · temperature · effort | 2×2 · 24 · `v1-static-median` · 5 · 1.0 · low | paid |
+| Viseme substitution costs | uniform (every mismatch 1) | free |
+| Candidate pool rules + feature set | ≤24 candidates, 13 features | free |
+| Stage plan + cold-start default weights | hand-set | free |
+| Tracker knobs | current defaults (T_REFRESH 4 s) | free (vs SAM ground truth) |
+
+A system change never touches anyone's labels: after a new version, each user's personal layers are re-fit from
+their stored raw outputs (free for post-processing changes; call-level changes start a fresh clip history).
 
 ## 6. How v1 is measured
 
