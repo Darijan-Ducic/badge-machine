@@ -17,6 +17,7 @@ export const CONFIG = Object.freeze({
   T_SCALE: 0.15, // anchor size change since its keyframe (relative)
   T_REFRESH: 2, // s; drift insurance
   SAM_MIN_GAP: 0.25, // s; min time between triggered SAM calls (cost cap; forced calls ignore it)
+  SNAP_TOL: 0.15, // face widths; a confident track within this of SAM's anchor is kept on a keyframe (0 = always snap to SAM)
   MOTION_PIX: 16, // gray levels; a quarter-res pixel changing more than this counts as motion
   // occlusion + quality gate
   T_STILL: 0.1, // conf < T_CONF while motion < T_STILL = 'occluded?'
@@ -29,8 +30,10 @@ export const CONFIG = Object.freeze({
   // geometry, as fractions of a SAM face box (which includes the ears and runs ~13% below the chin).
   // Mouth: SAM "lips" on a 269-frame talking head measured (cx .56, cy .74, w .30, h .14); 9 stills
   // (.46, .67, .32, .11). cx uses the frontal-symmetric .5 (the two sources straddle it); the rest
-  // use the talking-head values. Anchor: nose tip (~.63) to just below the chin (~.87), ~1.5 mouth widths.
-  ANCHOR_X: 0.28, ANCHOR_Y: 0.63, ANCHOR_W: 0.44, ANCHOR_H: 0.27,
+  // use the talking-head values. Anchor: from above the nose tip (~.63) to just below the chin (~.87),
+  // ~1.5 mouth widths wide, with the lips masked out so only rigid nose/cheek/chin pixels are matched.
+  ANCHOR_X: 0.28, ANCHOR_Y: 0.55, ANCHOR_W: 0.44, ANCHOR_H: 0.35,
+  ANCHOR_MASK: 1.2, // lips mask = mouth box scaled by this (0 = match the whole patch)
   MOUTH_CX: 0.5, MOUTH_CY: 0.74, MOUTH_W: 0.3, MOUTH_H: 0.14,
   CROP_PAD: 1.6, // crop = mouth box scaled by this around its center
   // smoothing (One-Euro on crop center and size)
@@ -61,11 +64,14 @@ export function faceFromAnchor([x, y, w, h], cfg = CONFIG) {
   return [x - cfg.ANCHOR_X * fw, y - cfg.ANCHOR_Y * fh, fw, fh];
 }
 
-export function mouthFromAnchor(anchor, cfg = CONFIG) {
+// The mouth box implied by an anchor, scaled by pad around its center.
+function mouthBox(anchor, cfg, pad) {
   const [x, y, w, h] = faceFromAnchor(anchor, cfg);
-  const mw = cfg.MOUTH_W * w * cfg.CROP_PAD, mh = cfg.MOUTH_H * h * cfg.CROP_PAD;
+  const mw = cfg.MOUTH_W * w * pad, mh = cfg.MOUTH_H * h * pad;
   return [x + cfg.MOUTH_CX * w - mw / 2, y + cfg.MOUTH_CY * h - mh / 2, mw, mh];
 }
+
+export const mouthFromAnchor = (anchor, cfg = CONFIG) => mouthBox(anchor, cfg, cfg.CROP_PAD);
 
 export function iou(a, b) {
   const ix = Math.max(0, Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]));
@@ -122,9 +128,11 @@ export function pyramid(frame) {
 
 // ---------- template ----------
 // The anchor patch cut from each pyramid level it will be searched at.
+// The lips (mouth box x ANCHOR_MASK) are masked out: they deform while talking and would drag the match.
 export function cutAnchor(frame, anchor, cfg = CONFIG) {
   const pyr = pyramid(frame);
   const [ax, ay, aw, ah] = anchor;
+  const m = cfg.ANCHOR_MASK > 0 ? mouthBox(anchor, cfg, cfg.ANCHOR_MASK) : null;
   let fine = 0;
   while (fine < pyr.length - 1 && (aw * ah) / 4 ** fine > cfg.TPL_MAX_PX) fine++;
   let coarse = fine;
@@ -136,53 +144,67 @@ export function cutAnchor(frame, anchor, cfg = CONFIG) {
     const x1 = Math.max(x0 + 4, Math.min(img.w, Math.round((ax + aw) / f))), y1 = Math.max(y0 + 4, Math.min(img.h, Math.round((ay + ah) / f)));
     const w = x1 - x0, h = y1 - y0, data = new Float32Array(w * h);
     for (let j = 0; j < h; j++) data.set(img.data.subarray((y0 + j) * img.w + x0, (y0 + j) * img.w + x1), j * w);
-    // anchor center in template pixel coords (pixel i spans [i, i+1))
-    levels[L] = { data, w, h, ocx: (ax + aw / 2) / f - x0, ocy: (ay + ah / 2) / f - y0, cache: new Map() };
+    // anchor center and lip mask [x0, y0, x1, y1] in template pixel coords (pixel i spans [i, i+1))
+    const mask = m && [m[0] / f - x0, m[1] / f - y0, (m[0] + m[2]) / f - x0, (m[1] + m[3]) / f - y0];
+    levels[L] = { data, w, h, ocx: (ax + aw / 2) / f - x0, ocy: (ay + ah / 2) / f - y0, mask, cache: new Map() };
   }
   return { box: anchor.slice(), fine, coarse, levels };
 }
 
-// The level-L template resampled by exactly scale s (integer size only sets coverage), zero-mean,
-// with its anchor center in resampled coords.
+// The level-L template resampled by exactly scale s (integer size only sets coverage), zero-mean over
+// its unmasked pixels, with its anchor center and integer lip-mask rows/columns in resampled coords.
 function scaled(tpl, L, s) {
   const T = tpl.levels[L], key = Math.round(s * 1e4);
   let R = T.cache.get(key);
   if (R) return R;
   if (T.cache.size > 64) T.cache.clear();
   const w = Math.max(4, Math.floor(T.w * s)), h = Math.max(4, Math.floor(T.h * s));
-  const sx = s, sy = s, z = new Float32Array(w * h), src = T.data;
-  let sum = 0;
+  const clampTo = (v, hi) => Math.min(hi, Math.max(0, v));
+  let mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
+  if (T.mask) {
+    mx0 = clampTo(Math.floor(T.mask[0] * s), w); mx1 = clampTo(Math.ceil(T.mask[2] * s), w);
+    my0 = clampTo(Math.floor(T.mask[1] * s), h); my1 = clampTo(Math.ceil(T.mask[3] * s), h);
+    if (mx1 - mx0 >= w) mx1 = mx0; // never mask whole rows: keep the row-segment loop in ncc simple
+  }
+  const z = new Float32Array(w * h), src = T.data, inMask = (i, j) => j >= my0 && j < my1 && i >= mx0 && i < mx1;
+  let sum = 0, n = 0;
   for (let j = 0; j < h; j++) {
-    const v = Math.min(T.h - 1, Math.max(0, (j + 0.5) / sy - 0.5));
+    const v = Math.min(T.h - 1, Math.max(0, (j + 0.5) / s - 0.5));
     const j0 = Math.min(T.h - 2, Math.floor(v)), fv = v - j0;
     for (let i = 0; i < w; i++) {
-      const u = Math.min(T.w - 1, Math.max(0, (i + 0.5) / sx - 0.5));
+      if (inMask(i, j)) continue;
+      const u = Math.min(T.w - 1, Math.max(0, (i + 0.5) / s - 0.5));
       const i0 = Math.min(T.w - 2, Math.floor(u)), fu = u - i0, k = j0 * T.w + i0;
       const val = (src[k] * (1 - fu) + src[k + 1] * fu) * (1 - fv) + (src[k + T.w] * (1 - fu) + src[k + T.w + 1] * fu) * fv;
       z[j * w + i] = val;
       sum += val;
+      n++;
     }
   }
-  const mean = sum / (w * h);
+  const mean = sum / n;
   let ss = 0;
-  for (let k = 0; k < z.length; k++) { z[k] -= mean; ss += z[k] * z[k]; }
-  R = { z, w, h, n: w * h, norm: Math.sqrt(ss), cx: T.ocx * sx, cy: T.ocy * sy, s: Math.sqrt(sx * sy) };
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (!inMask(i, j)) { const k = j * w + i; z[k] -= mean; ss += z[k] * z[k]; }
+  R = { z, w, h, n, norm: Math.sqrt(ss), cx: T.ocx * s, cy: T.ocy * s, s, mx0, mx1, my0, my1 };
   T.cache.set(key, R);
   return R;
 }
 
-// NCC of template R placed with its top-left at integer (x, y) of image img; -2 if it does not fit.
+// NCC of template R (lip mask skipped) placed with its top-left at integer (x, y) of img; -2 if it does not fit.
 function ncc(img, x, y, R) {
   if (x < 0 || y < 0 || x + R.w > img.w || y + R.h > img.h) return -2;
   const d = img.data, z = R.z, iw = img.w, tw = R.w;
   let sI = 0, sII = 0, sIT = 0;
   for (let j = 0; j < R.h; j++) {
-    let o = (y + j) * iw + x, k = j * tw;
-    for (let i = 0; i < tw; i++, o++, k++) {
-      const v = d[o];
-      sI += v;
-      sII += v * v;
-      sIT += v * z[k];
+    const masked = j >= R.my0 && j < R.my1 && R.mx1 > R.mx0;
+    // one segment for a clear row, two (left and right of the lips) for a masked one
+    for (let a = 0, b = masked ? R.mx0 : tw, seg = 0; seg < (masked ? 2 : 1); seg++, a = R.mx1, b = tw) {
+      let o = (y + j) * iw + x + a, k = j * tw + a;
+      for (let i = a; i < b; i++, o++, k++) {
+        const v = d[o];
+        sI += v;
+        sII += v * v;
+        sIT += v * z[k];
+      }
     }
   }
   const varI = sII - (sI * sI) / R.n;
@@ -225,17 +247,19 @@ function vertex(a, b, c) {
 }
 
 // One tracking step: where the template's anchor is in `frame`, searched around prevBox.
+// Scale may change by at most SCALE_STEP per frame (heads do not zoom faster; caps lip-driven wobble).
 // Returns {box (float anchor box), conf (NCC peak, -1..1)}.
 export function trackAnchor(frame, tpl, prevBox, cfg = CONFIG) {
   const pyr = pyramid(frame);
   let [cx, cy] = center(prevBox);
-  let s = prevBox[2] / tpl.box[2];
-  const step = cfg.SCALE_STEP;
+  const step = cfg.SCALE_STEP, s0 = prevBox[2] / tpl.box[2];
+  const lim = (v) => Math.min(s0 * step, Math.max(s0 / step, v));
+  let s = s0;
   // coarse to fine: exhaustive window at the coarsest level, +-2 px below it, 3 scales each
   for (let L = tpl.coarse; L >= Math.min(tpl.coarse, tpl.fine + 1); L--) {
     const f = 2 ** L, img = pyr[L], r = L === tpl.coarse ? Math.max(2, Math.ceil(cfg.SEARCH_R / f)) : 2;
     let best = null;
-    for (const sc of [s / step, s, s * step]) {
+    for (const sc of [lim(s / step), s, lim(s * step)]) {
       const R = scaled(tpl, L, sc);
       const b = bestInWindow(img, R, Math.round(cx / f - R.cx), Math.round(cy / f - R.cy), r);
       if (!best || b.score > best.score) best = { ...b, R, sc };
@@ -251,10 +275,11 @@ export function trackAnchor(frame, tpl, prevBox, cfg = CONFIG) {
     const R = scaled(tpl, tpl.fine, sc);
     return { sc, R, ...climb(img, R, Math.round(cx / f - R.cx), Math.round(cy / f - R.cy)) };
   };
-  const cands = [at(s / q), at(s), at(s * q)];
+  const cands = [at(lim(s / q)), at(s), at(lim(s * q))];
   for (let it = 0; it < 4; it++) {
-    if (cands[0].score > cands[1].score && cands[0].score > cands[2].score) cands.unshift(at(cands[0].sc / q)) && cands.pop();
-    else if (cands[2].score > cands[1].score) cands.push(at(cands[2].sc * q)) && cands.shift();
+    const down = lim(cands[0].sc / q), up = lim(cands[2].sc * q);
+    if (cands[0].score > cands[1].score && cands[0].score > cands[2].score && down < cands[0].sc) cands.unshift(at(down)) && cands.pop();
+    else if (cands[2].score > cands[1].score && cands[2].score >= cands[0].score && up > cands[2].sc) cands.push(at(up)) && cands.shift();
     else break;
   }
   const k = cands[1].score >= cands[0].score && cands[1].score >= cands[2].score ? 1 : cands[0].score > cands[2].score ? 0 : 2;
@@ -264,7 +289,7 @@ export function trackAnchor(frame, tpl, prevBox, cfg = CONFIG) {
   let scale = c.R.s;
   if (k === 1) {
     const [a, b, d] = cands.map((o) => Math.log(o.R.s)), t = vertex(cands[0].score, c.score, cands[2].score);
-    scale = Math.exp(t < 0 ? b + t * (b - a) : b + t * (d - b));
+    scale = lim(Math.exp(t < 0 ? b + t * (b - a) : b + t * (d - b)));
   }
   const w = tpl.box[2] * scale, h = tpl.box[3] * scale;
   return { box: [px - w / 2, py - h / 2, w, h], conf: c.score };
@@ -377,10 +402,20 @@ export function createTracker({ samFace, config = {} } = {}) {
         const face = pickFace(faces, held && faceFromAnchor(held, cfg));
         if (face) {
           const a = anchorFromFace(face, cfg);
-          // SAM sees the face where we held it, yet NCC failed: a real occlusion, so keep the clean
-          // template (later occluded frames keep scoring low and stay flagged). Otherwise re-cut it.
-          if (!(occluded && iou(a, held) >= cfg.OCC_IOU)) { occluded = false; tpl = cutAnchor(frame, a, cfg); }
-          anchor = a;
+          const [ax, ay] = center(a), [tx, ty] = tracking ? center(anchor) : [Infinity, Infinity];
+          if (occluded && iou(a, held) >= cfg.OCC_IOU) {
+            // SAM sees the face where we held it, yet NCC failed: a real occlusion. Keep the clean
+            // template so later occluded frames keep scoring low and stay flagged.
+            anchor = a;
+          } else if (tracking && !lost && Math.hypot(ax - tx, ay - ty) <= cfg.SNAP_TOL * face[2]) {
+            // Healthy track that agrees with SAM: keep the tracked anchor (it follows the real nose and
+            // chin through head turns, which fixed face-box ratios cannot) and refresh its appearance.
+            tpl = cutAnchor(frame, anchor, cfg);
+          } else {
+            occluded = false;
+            anchor = a;
+            tpl = cutAnchor(frame, a, cfg);
+          }
           lastAnchorT = t;
           fixed = true;
         } else flags.push('no-face');
