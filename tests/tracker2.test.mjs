@@ -53,7 +53,7 @@ test('VERSION names the tracker for the upload headers', () => {
 test('a: keyframes on SAM lips put the mouth on the lips even when the face box is off-centre (turned head)', async () => {
   const face = makeFace(180, 220, 7), L = { face, x: 230, y: 130, mouthOpen: 0.4 };
   const fb = faceBox(L), mouth = mouthBox(L);
-  const shiftedFace = [fb[0] - 0.1 * fb[2], fb[1], fb[2] * 1.1, fb[3]]; // an ear in the box drags the face box sideways
+  const shiftedFace = [fb[0] - 0.1 * fb[2], fb[1], fb[2], fb[3]]; // a turned head: the face box sits 0.1 face widths off the mouth
   const frames = clip(20, () => [L]);
   const { sam } = fakeSam((i, p) => (p === 'face' ? [shiftedFace] : [mouth]));
   const { out } = await run(frames, sam, QUIET);
