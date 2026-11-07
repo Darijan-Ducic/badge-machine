@@ -11,8 +11,8 @@ edit; this file is the map you look things up in.
 - How: `versions:<op>` = a typed change in `versions.py` OPS · `experiment:<knob>` = `tools/experiment.py --variant`
   · CLI = a named flag · **code edit only** = no config path; edit on a branch and judge with
   [tool-compare.md](tool-compare.md).
-- As of `a87c507` the runtime did not read the version registry and no exporter fed `--records`. Both are landing;
-  check [instruments.md](instruments.md) → Missing instruments before relying on either. Tracker knobs are evaluated
+- As of `a87c507` the runtime did not read the version registry (still missing: instruments.md → Missing
+  instruments). Records for replay come from `tools/compare.py --user U --export PATH`. Tracker knobs are evaluated
   in [tracker-lab.md](tracker-lab.md).
 
 ## 1. Capture / tracker (static/tracker.js, static/capture.js, pages, emulator)

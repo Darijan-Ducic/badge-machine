@@ -5,12 +5,16 @@ Which lever to try next, what is already known about each, and which ones not to
 file is the short, ranked, living list you edit after every test. Line numbers are as of `a87c507`; grep the symbol
 if one moved.
 
+**IDs are stable; ranks change.** Other chapters and history entries cite levers by ID ("lever 1"). Never renumber:
+re-rank in the table, and give a new lever the next free ID.
+
 ## Status — every lever has exactly one
 
 | Status | Meaning | What you must record |
 |---|---|---|
 | **untested** | No measurement yet. Every lever starts here. | — |
-| **active** | Measured to move held-out word or viseme accuracy, or being changed now. | Version / run ids, delta with its CI, clip count, dataset. |
+| **inconclusive** | Measured, but on one speaker only, or with a CI that spans zero. | Run ids, delta with its CI, turn count, speakers, what would settle it. |
+| **active** | Measured to move held-out word or viseme accuracy on at least 2 speakers, or being changed now. | Version / run ids, delta with its CI, clip count, dataset, speakers. |
 | **parked** | Measured once; the effect was small. Frozen as is. | The same evidence, plus a **Reopen if** condition. |
 
 - Test a doubtful lever ONCE, on enough held-out clips that the CI means something. If the delta is small and the CI
@@ -22,84 +26,114 @@ if one moved.
 ## Read before judging any lever
 
 - **Natural speech breaks sentence-level metrics.** Labels are exact matches (lever 1), so on natural sentences
-  sentence accuracy and pool recall are 0 by construction. Judge on held-out **word accuracy** (1 − WER against the
-  STT text) and **viseme accuracy**. `tools/experiment.py`'s pass/fail column compares sentence accuracy: ignore it on
-  natural speech.
+  sentence accuracy and pool recall are 0 by construction, and compare.py's flips and sign test are always 0 flips /
+  p = 1. Judge on held-out **word accuracy** (1 − WER against the STT text, with its CI) and **viseme accuracy**.
+  `tools/experiment.py`'s pass/fail column compares sentence accuracy: ignore it on natural speech.
+- **A system claim needs at least two speakers.** A gain on one speaker may be that speaker's quirk, so one speaker
+  gives at most **inconclusive** (practice rule #10 in [iteration-log.md](../../../../docs/iteration-log.md)). Run
+  records are tagged `"loop": "framework"` (system) or `"personal"`.
+- **Selection can't beat what the readers saw.** On 46 Obama turns, a perfect selector picking the best of the K Muse
+  hypotheses reaches only word 0.087 / viseme 0.250, while the app's VTT is 0.022 / 0.160 against a shuffled control
+  of 0.013 / 0.151, near chance ([lab-fusion.md](lab-fusion.md)). Selection levers (1, 2, 5, 6) can gain at most that
+  gap; upstream levers (11, 17, 12, 19, 18, 4) raise the ceiling itself.
+- **No fixed adopt threshold.** Judge paired evidence against the minimum detectable effect for your n
+  ([metrics.md](metrics.md)); labs confirm on at least 30 turns (practice rules #6, #12).
 - **Below 10 labelled clips the scorer is the starting weights alone** (stage `defaults`: no fitting, no auto-send;
-  scorer.py:27, 85-86). Levers that act through fitting (stage plan, threshold, features the defaults weigh 0) cannot
+  scorer.py:27, 85-86). Levers that act through fitting (stage plan, threshold, features the defaults weigh 0) can't
   show an effect on a user with fewer clips.
-- **Splits are chronological 60/20/20.** 3 clips means 1 held-out clip. A result on a handful of held-out clips is an
-  anecdote: say so in the entry, gather more sessions, and don't adopt on it.
-- **Levers depend on each other.** Viseme costs (10) only reach VTT through `viseme_sim`, which the starting weights
-  (2) set to 0. A label-rule change (1) changes what counts as "right" for sentence metrics, so compare across it only
-  on word and viseme accuracy.
+- **Splits are chronological 60/20/20**, so a small dataset has a tiny held-out split. A result on a handful of
+  held-out clips is an anecdote: say so in the entry, gather more sessions, and don't adopt on it.
+- **Levers depend on each other.** Viseme costs (10) reach VTT through `viseme_sim`, which the starting weights (2)
+  set to 0, and through which bank phrases enter the pool. A label-rule change (1) changes what counts as "right" for
+  sentence metrics, so compare across it only on word and viseme accuracy.
 
 ## The ranking
 
-Ranked by expected effect on held-out word accuracy, from the code mechanism and the first real session
-(08c02d3c6374, see history.md). Where a free and a paid lever act on the same failure, the free one ranks first.
-Re-rank from evidence after every iteration: bucket sizes from `tools/diagnose.py failures` and paired flips from
-`tools/compare.py`.
+Ranked by expected effect on held-out word accuracy. The evidence: the labs (lab-fusion's ceiling, tracker-v2's crop
+geometry), a free diagnose run on `practice:obama-weekly:obama` (21 train clips), and the code mechanisms; see
+history.md. The bottleneck is upstream (what the readers see), so upstream levers rank first. Within a group, a free
+lever ranks before a paid one acting on the same failure. Re-rank from evidence after every iteration: bucket
+sizes and flags from `tools/diagnose.py failures`, and word deltas from `tools/compare.py`.
 
-| # | Lever | Class | Status |
-|---|---|---|---|
-| 1 | Label rule: exact sentence match, else ∅ | free · code edit | untested |
-| 2 | Starting weights (DEFAULT_WEIGHTS, CORE) | free · code edit | untested |
-| 3 | Gemini forced choice | free to mitigate · paid to fix | untested |
-| 4 | Muse sampling: temperature, effort, K identical requests | paid | untested |
-| 5 | Exact-match votes | free · code edit | untested |
-| 6 | Phrase bank, pool cap and source order | free / paid | untested |
-| 7 | STT label hygiene | free / capture | untested |
-| 8 | k: stored samples used | free | untested |
-| 9 | Stage plan 10 / 30 / 60 | free | untested |
-| 10 | Viseme substitution costs | free | untested |
-| 11 | Mouth crop position | capture / paid | untested |
-| 12 | Visual evidence per sample: grid, fps, image cap | paid | untested |
-| 13 | Auto-send precision target 0.9 | free · code edit | untested |
-| 14 | Session segmentation | paid | untested |
-| 15 | Tracker knobs | capture | untested |
-| 16 | Readiness rule | free | untested |
+| Rank | ID | Lever | Class | Status | Lab |
+|---|---|---|---|---|---|
+| 1 | 11 | Mouth crop position | capture / paid | untested (crop geometry measured) | lab-crop, tracker-lab |
+| 2 | 17 | Input sharpness: emulation → crop → tiles | capture / paid | inconclusive | lab-pixels, lab-crop |
+| 3 | 12 | Visual evidence per sample: grid, fps, image cap | paid | untested | lab-frames |
+| 4 | 19 | Reader model | paid | untested | lab-models |
+| 5 | 18 | Open-call prompt and schema | paid | untested | lab-prompt, lab-schema |
+| 6 | 4 | Muse sampling: temperature, effort, K identical requests | paid | untested | lab-decode |
+| 7 | 5 | Exact-match votes (ROVER-style word consensus) | free · code edit | inconclusive | lab-fusion |
+| 8 | 2 | Starting weights (DEFAULT_WEIGHTS, CORE) | free · code edit | untested | lab-fusion |
+| 9 | 1 | Label rule: exact sentence match, else ∅ | free · code edit | untested | lab-labels, metrics |
+| 10 | 6 | Phrase bank, pool cap and source order | free / paid | untested | — |
+| 11 | 3 | Gemini forced choice | free to mitigate · paid to fix | untested | lab-gemini |
+| 12 | 7 | STT label hygiene | free / capture | untested | lab-labels |
+| 13 | 8 | k: stored samples used | free | untested | — |
+| 14 | 10 | Viseme substitution costs | free | untested | — |
+| 15 | 9 | Stage plan 10 / 30 / 60 | free | untested | lab-personal |
+| 16 | 13 | Auto-send precision target 0.9 | free · code edit | untested | lab-personal |
+| 17 | 14 | Session segmentation | paid | untested | — |
+| 18 | 15 | Tracker knobs | capture | untested | tracker-lab |
+| 19 | 16 | Readiness rule | free | untested | lab-personal |
 
-## Entries
+## Labs
+
+Parallel labs are writing a deep-dive chapter per area, at `references/lab-<name>.md`, with run records tagged by
+loop. Read the lab chapter before testing a lever it covers. If a chapter is missing, it hasn't merged yet.
+- crop → [lab-crop.md](lab-crop.md) · prompt → [lab-prompt.md](lab-prompt.md) · schema →
+  [lab-schema.md](lab-schema.md) · frames → [lab-frames.md](lab-frames.md) · pixels → [lab-pixels.md](lab-pixels.md)
+- models → [lab-models.md](lab-models.md) · decode → [lab-decode.md](lab-decode.md) · fusion →
+  [lab-fusion.md](lab-fusion.md) · gemini → [lab-gemini.md](lab-gemini.md)
+- personal → [lab-personal.md](lab-personal.md) · labels → [lab-labels.md](lab-labels.md) · metrics →
+  [metrics.md](metrics.md) · bench → [lab-bench.md](lab-bench.md) · tracker → [tracker-lab.md](tracker-lab.md)
+
+## Entries (by ID)
 
 ### 1 · Label rule: exact sentence match, else ∅
 - **Where:** `candidates.match` (candidates.py:50-57); label (candidates.py:159-162). Objective: fusion.py:28-33.
 - **Mechanism:** a clip counts as right only if some candidate equals the STT text exactly after `_normalize`. Otherwise
   its label is ∅, and the scorer trains toward abstaining. On natural sentences that is every clip.
-- **Evidence:** 08c02d3c6374: 3 of 3 turns were pool misses; sentence accuracy 0.
+- **Evidence:** diagnose, 21 train clips: 21 of 21 are pool_miss. First session: 3 of 3.
 - **Try:** give word- or viseme-level credit to the closest candidate instead of ∅ for long utterances, and keep exact
   labels for commands. Judge with `tools/compare.py` on word and viseme accuracy.
 - **Watch:** fuzzy matching was removed because it merged "turn on / turn off the lights" (candidates.py:51-54). Check
-  one-word-apart command pairs in the paired flips.
+  one-word-apart command pairs.
 - **Status:** untested.
 
 ### 2 · Starting weights (DEFAULT_WEIGHTS, CORE)
 - **Where:** scorer.py:29-31.
-- **Mechanism:** these ARE the scorer below 10 labelled clips. `vote, top_vote, mean_score, closed, gemini,
-  none_closed, no_speech` = 1.0. `slot_support, viseme_sim, prior, in_bank` = 0 until stage `full` (60 clips). A command
-  with gemini≈1 plus a closed score beats a natural Muse hypothesis that has vote≈0.2.
-- **Evidence:** 08c02d3c6374: stage defaults on every clip, action confirm, p≈0.05 over a big pool.
-- **Try:** lower `gemini` and `closed`, and weigh `slot_support` and `viseme_sim` from the start. Zeroing is free
-  (`versions:set_feature`, `experiment:drop`); other weights are a code edit judged with compare.py.
+- **Mechanism:** these ARE the scorer below 10 labelled clips, and they shape the `temperature` stage until 30.
+  `vote, top_vote, mean_score, closed, gemini, none_closed, no_speech` = 1.0. `slot_support, viseme_sim, prior,
+  in_bank` = 0 until stage `full` (60 clips). When the samples disagree, every Muse sentence gets about the same vote,
+  top_vote and mean_score, so the candidates tie. The two features that could separate them by shared words and
+  mouth shapes (`slot_support`, `viseme_sim`) weigh 0.
+- **Evidence:** diagnose, 21 train clips: the top 3 candidates are Muse sentences at p≈0.051 each in `defaults` (about
+  1/20, a near-uniform pool), and 0.10–0.16 in `temperature`.
+- **Try:** weigh `slot_support` and `viseme_sim` from the start. Zeroing a feature is free (`versions:set_feature`,
+  `experiment:drop`); other weights are a code edit judged with compare.py.
 - **Status:** untested.
 
 ### 3 · Gemini forced choice
 - **Where:** scorers.py:19 (prompt), 55-66 (enum of phrase IDs, no "none"), 71-78 (renormalized to sum 1).
 - **Mechanism:** Gemini must name a phrase ID, and its probabilities are renormalized, so it reports p≈1 on some
-  command for any input.
-- **Evidence:** 08c02d3c6374: "play music" and "volume down" at p≈0.99999 on 20-word sentences.
+  command for any input. That is the **VTT · Gemini** readout, which never abstains (candidates.py:166). On natural
+  speech the Gemini candidates rarely reach VTT: Muse hypotheses fill the pool first, and the cap cuts closed/Gemini/bank
+  sources (candidates.py:115-119).
+- **Evidence:** first session: VTT · Gemini said "play music" and "volume down" at p≈0.99999 on 20-word sentences;
+  diagnose (21 clips) shows VTT's picks are Muse sentences, not commands.
 - **Free mitigation:** remove the source or the feature (`versions:set_sources`, `versions:set_feature gemini off`,
   `experiment:drop`). `gemini_below` drops Gemini when Muse AGREES (evaluator.py:125), the opposite of this failure;
-  only `gemini_below ≤ 1/k` removes it everywhere.
+  `gemini_below ≤ 1/k` removes it on every clip with a hypothesis (clips with none keep it).
 - **Paid fix:** a none/other ID and no renormalization (code edit + new calls).
 - **Status:** untested.
 
 ### 4 · Muse sampling: temperature, effort, K identical requests
 - **Where:** muse_sampler.py:33 (temperature 1.0, effort low), 215 ("3 to 5" readings), 259-264, 289, 298.
 - **Mechanism:** K identical requests differ only by sampling noise at T=1.0. On long sentences the readings diverge.
-- **Evidence:** 08c02d3c6374: 5 samples, 5 different sentences (vote share 0.2).
-- **Test once:** a paid pilot on a fixed clip set: temperature 1.0 vs a lower value on the same clips, then effort low
-  vs medium as a separate version. Park whichever barely moves.
+- **Evidence:** first session: 5 samples, 5 different sentences (vote share 0.2).
+- **Test once:** a paid pilot on a fixed clip set (instruments.md → Missing instruments: paid pilot): temperature 1.0
+  vs a lower value on the same clips, then effort low vs medium as a separate version. Park whichever barely moves.
 - **Reopen if:** the Muse model version or the open-call prompt/schema changes.
 - **Status:** untested.
 
@@ -107,14 +141,20 @@ Re-rank from evidence after every iteration: bucket sizes from `tools/diagnose.p
 - **Where:** candidates.py:137-139 (vote, top_vote, mean_score), 165 (tie → first sample's top).
 - **Mechanism:** sentences that differ by one word share no vote. On an all-way tie, VTT · Muse is simply the first
   sample's top, at p=0.2.
+- **Evidence:** diagnose, 21 train clips: near-identical top candidates ("I think we need to this now" / "I think be
+  need to together now") split the vote and tie.
 - **Try:** consensus at word or viseme level, or weigh `slot_support` (lever 2).
-- **Status:** untested.
+- **Lab evidence:** ROVER over the 5 top hypotheses: +0.016 word accuracy (p = 0.004, 16 up / 3 down) on 46 Obama
+  turns, mostly not clip-specific ([lab-fusion.md](lab-fusion.md)). The best measured selection gain so far, bounded
+  by the 0.087 ceiling.
+- **Status:** inconclusive (one speaker; needs a second before adoption).
 
 ### 6 · Phrase bank, pool cap and source order
 - **Where:** data/phrases.txt (24 commands); POOL_CAP 24 (candidates.py:37); source order (candidates.py:115-120).
 - **Mechanism:** closed, Gemini and bank sources only ever add commands. With K=5 disagreeing samples, hypotheses and
-  recombinations fill the 23 real slots, and the cap trims closed/Gemini/bank first. `curate_bank` adds only phrases
-  seen in train failures (iterate.py:57-58). Natural sentences don't repeat, so curation can't reach held-out.
+  recombinations fill the 23 real slots, and the cap trims closed/Gemini/bank first. The Muse proposer is told to
+  curate from train failures (iterate.py:57-58, guidance only; `versions.py:215-221` accepts any phrase). Natural
+  sentences don't repeat, so curation can't reach held-out sentences.
 - **Note:** the bank is the right tool for phrases a user repeats, and mostly noise for one-off sentences. Decide per
   dataset and write down which.
 - **Cost:** curation and cap-down are free; cap-up and order are a code edit; a new menu for closed/Gemini is paid.
@@ -124,9 +164,9 @@ Re-rank from evidence after every iteration: bucket sizes from `tools/diagnose.p
 - **Where:** `_normalize` (preheat.py:36-38); mic constraints (capture.js:14); ASR mode (asr.py:15, 41).
 - **Mechanism:** only a single repeated word is collapsed. A doubled span stays in the label, breaks exact matches, and
   inflates word accuracy's denominator. The mic uses browser-default processing; docs blame the doubling on it, but the
-  code can't confirm that.
-- **Evidence:** 08c02d3c6374: the whole-session STT doubled "facts facts". `diagnose.py failures` has an `stt_suspect`
-  bucket.
+  code can't confirm that. Turning that processing off is a capture experiment (new recordings).
+- **Evidence:** diagnose, 21 train clips: the `stt_suspect` flag on 4 (e.g. "common common sense", "workers were
+  workers were"). First session: "facts facts".
 - **Status:** untested.
 
 ### 8 · k: stored samples used
@@ -136,22 +176,26 @@ Re-rank from evidence after every iteration: bucket sizes from `tools/diagnose.p
 - **Status:** untested.
 
 ### 9 · Stage plan 10 / 30 / 60
-- **Where:** scorer.py:27; `versions:set_stages`, `experiment:stages`.
+- **Where:** scorer.py:27; `versions:set_stages`, `experiment:stages`. Global: one plan for every user.
 - **Mechanism:** decides when fitted weights replace the starting weights. No effect for users below the first stage.
 - **Status:** untested.
 
 ### 10 · Viseme substitution costs
 - **Where:** data/viseme_costs.json (all unit costs); `versions:set_viseme_cost`, `experiment:costs`.
-- **Mechanism:** feeds `viseme_sim` and bank-nearest, not the viseme-accuracy metric. Has no effect on VTT while
-  `viseme_sim` weighs 0 (lever 2).
+- **Mechanism:** feeds `viseme_sim` and decides which bank phrases enter the pool (bank-nearest, candidates.py:110-116);
+  not the viseme-accuracy metric. It reaches VTT through `viseme_sim` only once that weighs more than 0 (lever 2).
 - **Status:** untested.
 
 ### 11 · Mouth crop position
 - **Where:** MOUTH_CX/CY/W/H = 0.5, 0.74, 0.3, 0.14 (static/tracker.js:37; read by crop.py:23-32).
-- **Mechanism:** where the crop sits on the face. The crop is suspected to sit right of centre (STATUS open question).
-- **Test:** free first, tracker vs SAM lips ground truth ([tracker-lab.md](tracker-lab.md)); then a paid re-read
-  pilot.
-- **Status:** untested.
+- **Mechanism:** where the crop sits on the face. If the lips leave the crop, Muse can't read them.
+- **Evidence (tracker-v2, [tracker-lab.md](tracker-lab.md)):** the server median crop keeps only 74% of the lips' area,
+  and the lips are fully inside the crop in only 20% of frames. v1 centre error is 0.264 mouth widths (p95 0.51). Idea
+  A (SAM keyframes on "lips" plus a learned offset) cuts it 0.277 → 0.109, and on fast motion 0.336 → 0.120, with 8 of
+  8 clips better. That is crop geometry, not yet VTT.
+- **Test:** the VTT effect needs a paid re-read of the same turns (`tools/reread.py`, iteration log #8) with the better
+  crop, on 2 speakers.
+- **Status:** untested for VTT; geometry measured.
 
 ### 12 · Visual evidence per sample: grid, fps, image cap
 - **Where:** 256 px crop → 320 px tiles in 2×2 grids at 24 fps, ≤48 images = 8 s (crop.py:22; muse_sampler.py:33-34,
@@ -160,7 +204,7 @@ Re-rank from evidence after every iteration: bucket sizes from `tools/diagnose.p
 - **Status:** untested.
 
 ### 13 · Auto-send precision target 0.9
-- **Where:** scorer.py:81, 99; threshold search fusion.py:40-45. No config key: a code edit.
+- **Where:** scorer.py:81, 99; threshold search fusion.py:40-45. No config key: a code edit. Global.
 - **Mechanism:** trades auto-send coverage against precision. No effect below 10 labelled clips (defaults never send).
 - **Status:** untested.
 
@@ -175,7 +219,35 @@ Re-rank from evidence after every iteration: bucket sizes from `tools/diagnose.p
 - **Status:** untested.
 
 ### 16 · Readiness rule
-- **Where:** readiness.py:15-17 (N_MIN 5, WINDOW 5, ACC_MIN 0.8), 26-28 (phrase key = normalized STT).
-- **Mechanism:** a personal-loop lever: when lip-only mode unlocks a phrase. Natural sentences never repeat, so they
-  never become ready.
+- **Where:** readiness.py:15-17 (N_MIN 5, WINDOW 5, ACC_MIN 0.8), 26-28 (phrase key = normalized STT). Global.
+- **Mechanism:** when lip-only mode unlocks a phrase. Natural sentences never repeat, so they never become ready.
+- **Status:** untested.
+
+### 17 · Input sharpness: emulation → crop → tiles
+- **Where:** the emulated webcam is 640×480 (tools/webcam_emulate.py); the mouth crop is 256 px (crop.py:22),
+  upscaled to 320 px tiles (muse_sampler.py:33-34). See lever-catalog.md → Crop and Muse open.
+- **Mechanism:** Muse rates each sample's mouth visibility, blur and speech; a `bad_quality` or `no_speech` share
+  ≥ 0.5 raises the `bad_video` flag (tools/diagnose.py). A blurry crop gives Muse little to read.
+- **Evidence:** diagnose, 21 train clips: `bad_video` on 19. On clip 1794092238527070000 (not flagged), the samples
+  report the mouth fully visible with blur medium / medium / high. A 2× crop raised viseme accuracy 0.241 → 0.301 on 6
+  turns (noise-level; being confirmed, iteration log #8).
+- **Try:** first find where the blur comes from (source footage, the 640×480 emulation, the crop size, or the upscale),
+  free, by looking at stored crops. Then a capture or paid change. Check on a second speaker: emulated broadcast
+  footage may not look like a real webcam.
+- **Status:** inconclusive (one speaker, 6 turns).
+
+### 18 · Open-call prompt and schema
+- **Where:** `_open_prompt` (muse_sampler.py:194), prompt_id "p3" (muse_sampler.py:32), schema v1. See lever-catalog.md
+  → Muse open.
+- **Mechanism:** what Muse is asked for: quality → visemes → word slots → 3–5 hypotheses. It shapes how much the
+  samples agree, and how much word-level evidence `slot_support` can use.
+- **Note:** `prompt_hint` is not read anywhere today (lever-catalog.md → Code / doc disagreements), so a prompt change
+  is a code edit plus new paid calls.
+- **Status:** untested.
+
+### 19 · Reader model
+- **Where:** `muse_video.MODEL` and the open/closed calls (muse_sampler.py); Gemini's model (scorers.py). See
+  [lab-models.md](lab-models.md).
+- **Mechanism:** which model reads the lips. Six image-capable models are available: muse-spark-1.1 / 1.2 / 1.3,
+  1.2 / 1.3-contributor, and muse-wonder-1.0 (the fastest).
 - **Status:** untested.
