@@ -1,7 +1,6 @@
 """Local server: serves static/ plus the API for transcripts, SAM boxes, preheat clips, lip mode, dictation sessions,
 the clip explorer and training (runs, readiness, system versions)."""
 
-import functools
 import json
 import os
 import re
@@ -16,7 +15,7 @@ from clips import (DEFAULT_USER, backend, clip_detail, clip_list, label_clip, lo
 from runs import list_runs
 from sam import segment_image
 from scorers import load_phrases
-from sessions import get_session, list_sessions, session_video, start_session
+from sessions import get_session, list_sessions, resume_pending, session_video, start_session
 from versions import Registry
 
 PORT = int(os.environ.get("PORT", 8765))
@@ -29,6 +28,16 @@ CLIP_ROUTE = re.compile(r"^/clips/([^/]+)(/video)?$")
 SESSION_ROUTE = re.compile(r"^/sessions/([^/]+)(/video)?$")
 LABEL_ROUTE = re.compile(r"^/vtt/([^/]+)/label$")
 STATIC = Path(__file__).parent / "static"
+
+
+def read_turn(segment: Path, **turn) -> dict:
+    """The dictation turn adapter (sessions' `process_turn`): clips.process_turn on this server's phrases and store."""
+    return process_turn(segment, phrases=load_phrases(), store=STORE, **turn)
+
+
+def resume_turns() -> int:
+    """Queue again the pending dictation turns a restart lost, with the adapter and pool /dictation uses."""
+    return resume_pending(read_turn, TURNS, SESSIONS)
 
 
 def tracker_headers(headers) -> tuple[list | None, list[str]]:
@@ -142,9 +151,8 @@ class Handler(SimpleHTTPRequestHandler):
             elif url.path == "/dictation":
                 # A dictation session -> its STT now; its turns are cut at the pauses and read as clips on TURNS.
                 boxes, flags = tracker_headers(self.headers)
-                turn = functools.partial(process_turn, phrases=load_phrases(), store=STORE)
                 body = start_session(data, user_id=query.get("user", [""])[0] or DEFAULT_USER, boxes=boxes,
-                                     flags=flags, process_turn=turn, executor=TURNS, transcribe=transcribe_turns,
+                                     flags=flags, process_turn=read_turn, executor=TURNS, transcribe=transcribe_turns,
                                      store=SESSIONS)
             else:
                 # One JPEG/PNG frame -> SAM boxes [x, y, w, h] in that frame's pixels; ids are per-request ordinals.
@@ -159,5 +167,6 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    print(f"Resumed {resume_turns()} pending dictation turns")
     print(f"Open http://localhost:{PORT}")
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
