@@ -93,9 +93,6 @@ struct StudioView: View {
                         .disabled(studio.phase != .ready)
                     }
                 }
-                Text("Press a shortcut to start. Press it again to stop.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
             }
 
             if studio.needsFnSetup {
