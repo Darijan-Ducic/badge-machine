@@ -85,18 +85,15 @@ final class HandCursor: @unchecked Sendable {
             return value.location
         }
         guard let indexBase = point(.indexMCP), let palmEdge = point(.littleMCP) else { return .lost }
-        let palm = Palm(center: CGPoint(x: (indexBase.x + palmEdge.x) / 2,
-                                        y: (indexBase.y + palmEdge.y) / 2),
-                        width: hypot(palmEdge.x - indexBase.x, palmEdge.y - indexBase.y))
-        guard palm.width >= 0.025 else { return .lost }
-        // Fingers can briefly hide one another while closing, even while the palm is visible.
+        let palmWidth = hypot(palmEdge.x - indexBase.x, palmEdge.y - indexBase.y)
         guard let indexJoint = point(.indexPIP), let indexTip = point(.indexTip),
               let middleBase = point(.middleMCP), let middleJoint = point(.middlePIP),
               let middleTip = point(.middleTip) else { return .other }
         return HandGesture.classify(
             index: Finger(base: indexBase, joint: indexJoint, tip: indexTip),
             middle: Finger(base: middleBase, joint: middleJoint, tip: middleTip),
-            palm: palm
+            thumb: point(.thumbTip),
+            palmWidth: palmWidth
         )
     }
 }
@@ -117,33 +114,20 @@ struct Finger {
     }
 }
 
-struct Palm {
-    let center: CGPoint
-    let width: CGFloat
-
-    func isNear(_ other: Palm) -> Bool {
-        hypot(center.x - other.center.x, center.y - other.center.y) <= 0.7 * other.width
-    }
-}
-
 enum HandGesture {
-    case pointing(CGPoint, Palm)
-    case fist(Palm)
+    case pointing(CGPoint, thumbDistance: CGFloat?)
     case other
     case lost
 
-    static func classify(index: Finger, middle: Finger, palm: Palm) -> HandGesture {
-        guard palm.width >= 0.025 else { return .lost }
+    static func classify(index: Finger, middle: Finger, thumb: CGPoint?, palmWidth: CGFloat) -> HandGesture {
+        guard palmWidth >= 0.025 else { return .lost }
         guard let indexAngle = index.straightness, let middleAngle = middle.straightness else { return .other }
         if indexAngle > 0.8, middleAngle > 0.8,
-           index.reach > 0.55 * palm.width, middle.reach > 0.55 * palm.width,
-           hypot(index.tip.x - middle.tip.x, index.tip.y - middle.tip.y) <= 0.5 * palm.width {
+           index.reach > 0.55 * palmWidth, middle.reach > 0.55 * palmWidth,
+           hypot(index.tip.x - middle.tip.x, index.tip.y - middle.tip.y) <= 0.5 * palmWidth {
+            let thumbDistance = thumb.map { hypot($0.x - index.joint.x, $0.y - index.joint.y) / palmWidth }
             return .pointing(CGPoint(x: (index.tip.x + middle.tip.x) / 2,
-                                     y: (index.tip.y + middle.tip.y) / 2), palm)
-        }
-        if indexAngle < 0.3, middleAngle < 0.3,
-           index.reach < 0.8 * palm.width, middle.reach < 0.8 * palm.width {
-            return .fist(palm)
+                                     y: (index.tip.y + middle.tip.y) / 2), thumbDistance: thumbDistance)
         }
         return .other
     }
@@ -190,6 +174,7 @@ struct HandPointer {
                                        mouseCursorPosition: point, mouseButton: .left) else { return }
                 down.setIntegerValueField(.mouseEventClickState, value: 1)
                 up.setIntegerValueField(.mouseEventClickState, value: 1)
+                Event.move(point).post()
                 down.post(tap: .cghidEventTap)
                 up.post(tap: .cghidEventTap)
             }
@@ -200,9 +185,8 @@ struct HandPointer {
     private var filtered: CGPoint?
     private var posted: CGPoint?
     private var lastSampleAt: TimeInterval?
-    private var lastPointingAt: TimeInterval?
-    private var armed: (time: TimeInterval, palm: Palm)?
-    private var fistSince: TimeInterval?
+    private var clickArmed = false
+    private var thumbNearSince: TimeInterval?
 
     mutating func event(for gesture: HandGesture, at time: TimeInterval, in bounds: CGRect) -> Event? {
         let interval = lastSampleAt.map { time - $0 } ?? 0
@@ -212,32 +196,32 @@ struct HandPointer {
         }
         lastSampleAt = time
         switch gesture {
-        case .pointing(let tip, let palm):
-            fistSince = nil
-            // Two recent pointing frames rearm the click, even through a brief uncertain pose.
-            if let lastPointingAt, time > lastPointingAt, time - lastPointingAt <= 0.1 {
-                armed = (time, palm)
+        case .pointing(let tip, let thumbDistance):
+            let movement = position(for: tip, after: interval, in: bounds)
+            if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
+                return .click(posted)
             }
-            lastPointingAt = time
-            return position(for: tip, after: interval, in: bounds).map(Event.move)
-        case .fist(let palm):
-            lastPointingAt = nil
-            guard let armed, time - armed.time <= 0.65, palm.isNear(armed.palm), let posted else {
-                self.armed = nil
-                fistSince = nil
-                return nil
-            }
-            if fistSince == nil { fistSince = time }
-            guard let fistSince, time - fistSince >= 0.045 else { return nil }
-            self.armed = nil
-            return .click(posted)
+            return movement.map(Event.move)
         case .other:
-            fistSince = nil
+            thumbNearSince = nil
             return nil
         case .lost:
             self = HandPointer()
             return nil
         }
+    }
+
+    private mutating func shouldClick(thumbDistance: CGFloat?, at time: TimeInterval) -> Bool {
+        if let thumbDistance, thumbDistance >= 0.42 { clickArmed = true }
+        guard clickArmed, let thumbDistance, thumbDistance <= 0.28 else {
+            thumbNearSince = nil
+            return false
+        }
+        if thumbNearSince == nil { thumbNearSince = time }
+        guard let thumbNearSince, time - thumbNearSince >= 0.025 else { return false }
+        clickArmed = false
+        self.thumbNearSince = nil
+        return true
     }
 
     private mutating func position(for tip: CGPoint, after interval: TimeInterval, in bounds: CGRect) -> CGPoint? {
