@@ -608,3 +608,52 @@ def test_closed_api_error_becomes_an_error_item(short_clip, muse):
 
     assert set(item) == ITEM_KEYS
     assert item["output"] is None and "Connection error" in item["error"]
+
+
+# ---------------------------------------------------------------- experiment parameters (defaults keep p3)
+
+# sha256 of the default open request (every field but the images, plus the prompt text and the image count), taken
+# from the p3 code before the experiment parameters existed: without them, sample_open must send exactly this.
+P3_OPEN_REQUEST = "6ce9410e0a7c4c2f56859475b13d4eee407718584fb62ad9baa66c2ceee5810c"
+
+
+def request_digest(request) -> str:
+    import hashlib
+    body = {key: value for key, value in request.items() if key != "messages"}
+    body["text"] = [part["text"] for m in request["messages"] for part in m["content"] if part["type"] == "text"]
+    body["n_images"] = len(images_of(request))
+    return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+
+
+def test_open_request_without_experiment_parameters_is_the_p3_request(short_clip, muse):
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
+
+    sample_open(short_clip, 1)
+
+    assert request_digest(fake.requests[0]) == P3_OPEN_REQUEST
+
+
+def test_temperature_and_effort_parameters_reach_the_request_and_leave_config_alone(short_clip, muse):
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
+
+    sample_open(short_clip, 1, temperature=0.3, effort="medium")
+
+    assert (fake.requests[0]["temperature"], fake.requests[0]["reasoning_effort"]) == (0.3, "medium")
+    assert (CONFIG["temperature"], CONFIG["effort"]) == (1.0, "low")
+
+
+def test_context_sentences_appear_in_the_open_prompt_oldest_first(short_clip, muse):
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
+
+    sample_open(short_clip, 1, context=["the senate passed the bill", "we will rebuild the roads"])
+
+    text = text_of(fake.requests[0])
+    assert 0 <= text.index("the senate passed the bill") < text.index("we will rebuild the roads")
+
+
+def test_empty_context_sends_the_p3_request(short_clip, muse):
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
+
+    sample_open(short_clip, 1, context=[])
+
+    assert request_digest(fake.requests[0]) == P3_OPEN_REQUEST
