@@ -51,6 +51,11 @@ def test_mbr_uses_the_given_distance():
     assert mbr([W("a"), W("x y z"), W("p q r s"), W("t u v w")], distance=by_length) == 1
 
 
+def test_mbr_counts_substituted_words_not_only_the_length_difference():
+    # word edits: h0-h1 2, h0-h2 2, h1-h2 0 -> sums h0 4, h1 2, h2 2; a length-only distance would tie all at 0
+    assert mbr([W("a b"), W("c d"), W("c d")]) == 1
+
+
 def test_mbr_ties_go_to_the_first_hypothesis():
     assert mbr([W("a b"), W("c d")]) == 0
 
@@ -70,6 +75,11 @@ def test_rover_one_inserted_word_does_not_shift_the_other_hypotheses():
     assert rover(hyps) == W("we need to do more")
 
 
+def test_rover_a_word_only_a_later_hypothesis_inserts_is_outvoted_by_the_earlier_ones():
+    assert rover([W("we need"), W("we need"), W("we really need")]) == W("we need")
+    assert rover([W("we need"), W("we really need"), W("we really need")]) == W("we really need")
+
+
 def test_rover_weights_decide_a_column():
     assert rover([W("a b"), W("a c"), W("a c")], [3, 1, 1]) == W("a b")
     assert rover([W("a b"), W("a c"), W("a c")]) == W("a c")
@@ -77,6 +87,16 @@ def test_rover_weights_decide_a_column():
 
 def test_rover_ties_go_to_the_word_seen_first():
     assert rover([W("a b"), W("a c")]) == W("a b")
+
+
+def test_rover_a_tie_between_a_word_and_a_gap_goes_to_whichever_came_first():
+    assert rover([W("a b"), W("a")]) == W("a b")
+    assert rover([W("a"), W("a b")]) == W("a")
+
+
+def test_rover_a_word_one_of_three_hypotheses_says_does_not_survive():
+    # "z" aligns with "a" for free (the "c" column already holds a gap), so "c" keeps 1 of 3 votes and loses
+    assert rover([W("a c"), W("a"), W("z")]) == W("a")
 
 
 def test_rover_of_one_hypothesis_is_that_hypothesis():
