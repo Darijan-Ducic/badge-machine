@@ -25,7 +25,7 @@ PRICES = {"open": 0.02, "closed": 0.01, "gemini": 0.03, "crop": 0.01}
 
 def world(n=400, seed=7, **sim) -> list[dict]:
     """`n` chronological STT-labeled clips with ids, real visemes-v1 codes, and some off-bank (pool-miss) phrases."""
-    knobs = {"muse": 1.0, "closed": 1.5, "gemini": 0.3, "visemes": 0.5, "miss_rate": 0.15, **sim}
+    knobs = {"muse": 0.3, "closed": 1.0, "gemini": 0.3, "visemes": 0.4, "miss_rate": 0.2, **sim}
     raw = simulate(seed, n, to_visemes=visemes.to_visemes, **knobs)
     return [{"id": f"clip-{i:04d}", "t": 1_700_000_000 + 60 * i, **r} for i, r in enumerate(raw)]
 
@@ -57,17 +57,26 @@ class SimEvaluator:
     def __init__(self):
         self.calls = []  # (split, config hash, limit), in call order
         self.failure_calls = []  # ids of the records each failures() call was given
-        self._replays = {}
+        self._clip = {}  # (config hash, record id) -> Clip: replay is per record, so splits share it
+        self._preq = {}  # (config hash, record ids) -> predict-then-train probabilities
 
     def _clips(self, records, config):
-        key = (config_hash(config), tuple(r.get("id") for r in records))
-        if key not in self._replays:
-            self._replays[key] = evaluator.replay(records, config)
-        return self._replays[key]
+        h = config_hash(config)
+        missing = [r for r in records if (h, r["id"]) not in self._clip]
+        for record, clip in zip(missing, evaluator.replay(missing, config)):
+            self._clip[(h, record["id"])] = clip
+        return [self._clip[(h, r["id"])] for r in records]
+
+    def _prequential(self, records, config):
+        key = (config_hash(config), tuple(r["id"] for r in records))
+        if key not in self._preq:
+            self._preq[key] = evaluator.prequential_probs(self._clips(records, config), config["stages"])
+        return self._preq[key]
 
     def failures(self, train_records, config):
         self.failure_calls.append([r.get("id") for r in train_records])
-        return evaluator.failures(train_records, config)
+        labeled = [r for r in train_records if r.get("stt") is not None]
+        return evaluator.failures_from(labeled, self._clips(labeled, config), self._prequential(labeled, config))
 
     def evaluate(self, records, config, split, limit=None):
         self.calls.append((split, config_hash(config), limit))
@@ -77,7 +86,7 @@ class SimEvaluator:
         if limit is not None:
             hi = min(hi, lo + limit)
         if split == "train":
-            probs = evaluator.prequential_probs(clips[:hi], config["stages"])[lo:]
+            probs = self._prequential(labeled[:hi], config)[lo:]
             model = None
         else:
             model = evaluator.fit(clips[:lo], config["stages"], gate=True)
