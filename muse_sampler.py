@@ -223,6 +223,18 @@ Rules:
 slots and hypotheses."""
 
 
+def _context_note(context: list[str]) -> str:
+    """Experiment-only (tools/exp_prompt.py): the speaker's earlier STT sentences as a language prior."""
+    sentences = "\n".join(f"- {sentence}" for sentence in context)
+    return f"""
+
+Context: before this clip, the same speaker said the sentences below (audio transcripts, oldest first). The clip \
+shows what they said after them: new words, not a repeat of any of these sentences. Use them only as a prior on \
+topic, vocabulary and phrasing, to choose between look-alike words in the slots and to word the hypotheses; the mouth \
+shapes you see still decide every word.
+{sentences}"""
+
+
 def _phrase_ids(n: int) -> list[str]:
     # Zero-padded to one width, so the alphabetical key order Meta generates in is the list order (01, 02, ..., 10).
     width = len(str(n))
@@ -251,17 +263,20 @@ phrases (including saying nothing, or no visible mouth). Judge each phrase on it
 # ---------------------------------------------------------------- calls
 
 
-def _request(prompt: str, grids: Grids, name: str, schema: dict) -> dict:
+def _request(prompt: str, grids: Grids, name: str, schema: dict, temperature: float | None = None,
+             effort: str | None = None) -> dict:
+    # temperature / effort: experiment overrides; None keeps CONFIG's.
     images = [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}}
               for jpeg in grids.images]
     request = {
         "model": CONFIG["model"],
-        "temperature": CONFIG["temperature"],
+        "temperature": CONFIG["temperature"] if temperature is None else temperature,
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, *images]}],
         "response_format": {"type": "json_schema", "json_schema": {"name": name, "schema": schema, "strict": True}},
     }
-    if CONFIG["effort"] is not None:  # None = the model's default effort
-        request["reasoning_effort"] = CONFIG["effort"]
+    effort = CONFIG["effort"] if effort is None else effort
+    if effort is not None:  # None = the model's default effort
+        request["reasoning_effort"] = effort
     return request
 
 
@@ -282,11 +297,14 @@ def _call(client, call: str, sample_idx: int, request: dict, finish) -> dict:
     return item if usage is None else {**item, "usage": usage}
 
 
-def sample_open(clip: Path, k: int) -> list[dict]:
+def sample_open(clip: Path, k: int, *, temperature: float | None = None, effort: str | None = None,
+                context: list[str] | None = None) -> list[dict]:
     """K parallel open samples (schema v1). Outputs violating v1 or citing frames outside the clip keep their
-    output and list the violations in `error`."""
+    output and list the violations in `error`. Experiment overrides (tools/exp_prompt.py), all None = the p3
+    request: `temperature`, `effort`, and `context`, the speaker's earlier STT sentences appended as a prior."""
     grids = labeled_grids(clip, CONFIG["grid"], CONFIG["tile_width"])
-    request = _request(_open_prompt(grids), grids, "lipread_v1", WIRE_SCHEMA)
+    prompt = _open_prompt(grids) + (_context_note(context) if context else "")
+    request = _request(prompt, grids, "lipread_v1", WIRE_SCHEMA, temperature, effort)
 
     def finish(raw):
         output = from_wire(raw)
