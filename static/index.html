@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Webcam transcript</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="theme.css">
   <style>
     /* page-specific; every value is pre-coach's (studio/static/app.css) */
@@ -14,7 +15,8 @@
 </head>
 <body>
   <div class="haze" aria-hidden="true"></div>
-  <main class="framing-wrap">
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
+  <main class="section"><div class="framing-wrap">
     <div class="col">
       <section class="framing">
         <div class="cam"><video id="preview" autoplay muted playsinline></video><div class="thirds" aria-hidden="true"></div></div>
@@ -26,7 +28,7 @@
         <div class="tip-text" id="transcript"></div>
       </article>
     </div>
-  </main>
+  </div></main>
   <nav class="dock"><button class="go" id="toggle" disabled><span class="dot" id="toggle-icon"></span><span id="toggle-label">Start recording</span></button></nav>
   <script>
     const preview = document.getElementById("preview");

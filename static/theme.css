@@ -2,8 +2,9 @@
    Light and editorial: a #f5f5f7 page with a soft wash of color at the top, white rounded cards, a black floating dock.
    Gray builds structure; each color has one job: red = past the time / recording, yellow = heads-up,
    green = on plan / said, blue = the coach and the files it writes.
-   Selectors keep pre-coach's names so a rule here can be traced back to app.css. */
+   Selectors keep pre-coach's names so a rule here can be traced back to app.css (line numbers in each block). */
 @font-face { font-family: "Geist"; src: url("fonts/geist-latin.woff2") format("woff2"); font-weight: 300 700; font-display: swap; }
+/* app.css:5-18 */
 :root {
   --paper: #f5f5f7; --card: #fff; --well: #f2f2f5; --well-2: #e5e5ea;
   --ink: #111; --ink-2: #4a4a4a; --ink-3: #8b8b8b; --ink-4: #b9b9b9;
@@ -14,20 +15,44 @@
   --coach: #3a6cf4;  --coach-ink: #2752c9;  --coach-wash: #e8eefe;
   --press: var(--over);
   --lift: 0 1px 1px rgba(0,0,0,.03), 0 10px 28px rgba(0,0,0,.05), 0 28px 56px rgba(0,0,0,.035);
-  --r-card: 32px; --r-inner: 22px; --edge: 24px;
+  --r-card: 32px; --r-inner: 22px; --edge: 24px; --rail-w: 92px;
   --ease: cubic-bezier(.2,.7,.2,1);
   --font: "Geist", "Segoe UI Variable Display", "SF Pro Display", -apple-system, system-ui, sans-serif;
 }
+/* app.css:19-37 */
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; min-height: 100%; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 b { font-weight: 600; }
+.ic { display: inline-grid; place-items: center; width: 1.15em; height: 1.15em; flex: none; }
+.ic svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .eyebrow { margin: 0; font-size: 13px; color: var(--ink-3); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .eyebrow b { color: var(--ink); font-weight: 500; }
+.meta { margin: 0; font-size: 13px; color: var(--ink-3); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.meta b { color: var(--ink); font-weight: 500; }
+.meta i { width: 1px; height: 12px; background: var(--hair-2); }
+.meta .ic { margin-right: 4px; vertical-align: -2px; }
+/* app.css:38-43 */
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--well); font-size: 12px; font-weight: 500; color: var(--ink-2); white-space: nowrap; letter-spacing: .01em; }
+.chip.coach { background: var(--coach-wash); color: var(--coach-ink); }
+.chip.near { background: var(--near-wash); color: var(--near-ink); }
+.chip.onplan { background: var(--onplan-wash); color: var(--onplan-ink); }
+.chip.over { background: var(--over-wash); color: var(--over-ink); }
+/* app.css:48-52: a key per mark, beside its label */
+.legend { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 0; font-size: 12px; color: var(--ink-3); }
+.legend .key { width: 10px; height: 10px; border-radius: 3px; margin-right: -8px; background: var(--well-2); }
 
-/* the wash of color at the top of the page, fading into it (full strength only on pre-coach's Home) */
+/* the rail: the one switch between pages (app.css:55-61; links here, since each page is its own file) */
+.rail { position: fixed; left: 18px; top: 18px; z-index: 50; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 30px;
+  background: rgba(255, 255, 255, .72); -webkit-backdrop-filter: saturate(1.6) blur(18px); backdrop-filter: saturate(1.6) blur(18px); box-shadow: var(--lift); border: 1px solid rgba(255, 255, 255, .9); }
+.rail a { position: relative; width: 74px; padding: 9px 0 7px; border-radius: 24px; display: grid; justify-items: center; gap: 3px; font-size: 10.5px; font-weight: 500; color: var(--ink-3); text-decoration: none; transition: background .2s var(--ease), color .2s; }
+.rail a .ic { width: 22px; height: 22px; }
+.rail a:hover { background: var(--well); color: var(--ink); }
+.rail a.on { background: var(--ink); color: #fff; }
+
+/* the wash of color at the top of the page, fading into it (app.css:98-105; full strength only on pre-coach's Home) */
 .haze { position: absolute; left: 0; right: 0; top: 0; height: max(100vh, 760px); z-index: 0; pointer-events: none; overflow: hidden; transition: opacity .5s; }
 .haze::before { content: ""; position: absolute; inset: -12% -6% 0; filter: blur(28px);
   background: radial-gradient(36% 52% at 9% 3%, rgba(146, 158, 238, .58), transparent 70%), radial-gradient(28% 40% at 27% 30%, rgba(186, 214, 247, .5), transparent 72%),
@@ -37,27 +62,91 @@ b { font-weight: 600; }
 body:not([data-section="home"]) .haze { opacity: .45; }
 main { position: relative; z-index: 1; }
 @keyframes enter { from { opacity: 0; transform: translateY(12px); } }
-
-/* cards */
-.card { position: relative; background: var(--card); border-radius: var(--r-card); box-shadow: var(--lift); border: 1px solid rgba(0,0,0,.03); padding: 28px; min-width: 0; }
+@keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+/* app.css:107, 111: a page sits right of the rail */
+.section { min-height: 100vh; padding-left: calc(var(--rail-w) + 24px); }
+.page { max-width: 1120px; margin: 0 auto; padding: 44px 40px 140px; }
+/* app.css:500-505: a page's header and its two-column board */
+.top { margin-bottom: 28px; }
+.top h1 { margin: 0 0 6px; font-weight: 500; font-size: 34px; letter-spacing: -0.03em; line-height: 1.1; }
+.board { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 22px; align-items: start; }
 .col { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+
+/* cards (app.css:113, 118-125) */
+.card { position: relative; background: var(--card); border-radius: var(--r-card); box-shadow: var(--lift); border: 1px solid rgba(0,0,0,.03); padding: 28px; min-width: 0; }
 .headline { margin: 0; font-weight: 400; font-size: 30px; line-height: 1.18; letter-spacing: -0.025em; max-width: 18ch; }
 .headline b { font-weight: 600; }
+.support { margin: 14px 0 0; color: var(--ink-2); max-width: 44ch; }
 .tip-text { margin: 12px 0 0; font-size: 18px; line-height: 1.45; letter-spacing: -0.01em; }
+/* headline numbers (app.css:473-480) */
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.stat { padding: 16px 18px; border-radius: 22px; background: var(--card); box-shadow: var(--lift); }
+.stat small { display: block; font-size: 12px; color: var(--ink-3); }
+.stat div { font-size: 30px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.15; margin-top: 4px; }
+.stat div span { font-size: 15px; color: var(--ink-3); font-weight: 400; letter-spacing: 0; }
+.stat div { font-variant-numeric: proportional-nums; }  /* not pre-coach: big standalone numbers read tighter without tabular figures */
+/* lines that match or miss (app.css:173-178): green = said, yellow = never said */
+.saidlist { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 10px; }
+.saidlist li { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: start; padding: 10px 12px; border-radius: 16px; background: var(--onplan-wash); }
+.saidlist li .ic { width: 22px; height: 22px; color: var(--onplan-ink); }
+.saidlist li small { font-size: 12px; color: var(--onplan-ink); padding-top: 2px; }
+.saidlist li.unsaid { background: var(--near-wash); }
+.saidlist li.unsaid .ic, .saidlist li.unsaid small { color: var(--near-ink); }
+/* chat bubbles: the in-progress dots and the error bubble (app.css:220-232) */
+.msg { max-width: 90%; padding: 11px 15px; border-radius: 20px; line-height: 1.45; overflow-wrap: anywhere; animation: pop .35s var(--ease) both; }
+.msg.coach { background: var(--well); align-self: flex-start; border-bottom-left-radius: 8px; }
+.msg.error { background: var(--over-wash); color: var(--over-ink); }
+.msg.typing i { display: inline-block; width: 5px; height: 5px; margin: 0 2px; border-radius: 50%; background: var(--ink-3); animation: dot 1.2s infinite; }
+.msg.typing i:nth-child(2) { animation-delay: .2s; } .msg.typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes dot { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+/* choice pills: one pressed at a time (app.css:239-244) */
+.opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.opt { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px; max-width: 100%; padding: 7px 13px; border-radius: 16px; border: 1px solid var(--hair-2); background: var(--card); font-size: 13.5px; font-weight: 500; line-height: 1.3; text-align: left; transition: background .15s, border-color .15s, color .15s; }
+.opt:hover { border-color: rgba(0,0,0,.22); }
+.opt[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+.opt:disabled { opacity: .35; cursor: default; }
+/* a small floating label (app.css:278) */
+.event { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 16px; background: var(--card); border: 1px solid var(--hair-2); font-size: 12.5px; color: var(--ink-2); }
+/* steps and tracks (app.css:126-130, 370-372) */
+.progress { display: flex; gap: 4px; }
+.progress span { flex: 1; height: 6px; border-radius: 3px; background: var(--well-2); transition: background .3s; }
+.progress span.done { background: var(--ink-4); }
+.progress span.on { background: var(--ink); }
+.track { position: relative; height: 10px; }
+.track span { position: absolute; top: 0; height: 10px; border-radius: 4px; }
 
-/* the camera screen: a centered card with the self-view well (pre-coach's local recorder) */
+/* the camera screen: a centered card with the self-view well (pre-coach's local recorder, app.css:522-537) */
 .framing-wrap { min-height: 100vh; display: grid; place-items: center; padding: 40px 24px 120px; }
 .framing { width: min(560px, 100%); padding: 14px 14px 30px; background: var(--card); border-radius: var(--r-card); box-shadow: var(--lift); text-align: center; }
 .cam { position: relative; aspect-ratio: 16 / 10; border-radius: var(--r-inner); background: var(--well); overflow: hidden; }
 .cam video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
 .cam .thirds { position: absolute; inset: 0; background: linear-gradient(90deg, transparent 33.2%, rgba(255,255,255,.45) 33.3%, transparent 33.5%, transparent 66.5%, rgba(255,255,255,.45) 66.6%, transparent 66.8%); }
+.framing .eyebrow { justify-content: center; margin: 24px 0 8px; }
 .framing .headline { margin: 0 auto; max-width: 18ch; font-size: 26px; }
+.framing .meta { justify-content: center; margin: 14px 0 0; }
+.framing kbd { font: 500 12px/1 var(--font); padding: 4px 8px; border-radius: 7px; background: var(--card); border: 1px solid var(--hair-2); color: var(--ink); }
 .framing .note { margin: 14px 0 0; font-size: 13px; color: var(--ink-3); min-height: 20px; }
+/* the recording pill at the top center, shown only while capturing */
+.status { position: fixed; top: var(--edge); left: 50%; transform: translateX(-50%); z-index: 61; display: flex; align-items: center; gap: 8px; padding: 7px 16px; border-radius: 999px; background: var(--card); box-shadow: var(--lift); font-size: 13px; font-weight: 500; }
+.status .rec { width: 8px; height: 8px; border-radius: 50%; background: var(--over); }
 
-/* the dock: the page's actions, in a black pill floating at the bottom center */
+/* the dock: the page's actions, in a black pill floating at the bottom center (app.css:507-513) */
 .dock { position: fixed; left: 50%; bottom: var(--edge); transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 6px; padding: 6px; border-radius: 999px; background: var(--ink); box-shadow: 0 14px 34px rgba(0,0,0,.22); animation: enter .4s var(--ease) both; }
 .dock .go { display: inline-flex; align-items: center; gap: 10px; height: 46px; padding: 0 24px 0 20px; border-radius: 999px; background: #fff; color: var(--ink); font-weight: 500; transition: transform .15s; }
 .dock .go:hover { transform: translateY(-1px); }
 .dock .go:disabled { opacity: .5; cursor: default; transform: none; }
 .dock .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--over); }
 .dock .sq { width: 10px; height: 10px; border-radius: 2px; background: var(--over); }
+.dock .left { padding: 0 16px 0 10px; color: rgba(255,255,255,.7); font-size: 13px; }
+
+/* narrow screens: the rail moves to the bottom (app.css:563-583) */
+@media (max-width: 860px) {
+  :root { --rail-w: 0px; }
+  .rail { flex-direction: row; top: auto; bottom: 14px; left: 14px; }
+  .rail a { width: 64px; }
+  .section { padding-left: 0; }
+  .page { padding: 28px 18px 130px; }
+  .board, .stats { grid-template-columns: minmax(0, 1fr); }
+  .headline { font-size: 26px; }
+  .dock { bottom: 84px; }
+}
