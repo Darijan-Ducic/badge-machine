@@ -1,5 +1,8 @@
 # badge-machine
 
+## Infrastructure
+- NEVER use Docker or run local infrastructure (no local MongoDB, no containers) — everything is hosted APIs: Meta Model API (Muse Spark, SAM, Muse Voice Transcribe), Gemini, MongoDB Atlas (`MONGODB_URI` in `.env`). Test external stores with in-process fakes plus a live check against the hosted service.
+
 ## Pipeline diagram
 - `docs/pipeline.md` is the single source of truth for the pipeline diagrams; the app's Pipeline page renders it live (served at `/pipeline.md`), so editing the file and reloading is the whole update.
 - ALWAYS update `docs/pipeline.md` (stage + build-status `class` line) in the same commit that adds, removes, or changes a pipeline stage — the diagrams change often and the team reads them as the current state.
