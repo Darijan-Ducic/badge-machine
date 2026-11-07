@@ -60,24 +60,24 @@ def tracker_box(mouths: list[list[float]]) -> list[float] | None:
 
 
 def crop(source: Path, target: Path, faces: list[list[float]] | None = None,
-         mouths: list[list[float]] | None = None) -> str:
+         mouths: list[list[float]] | None = None, width: int = WIDTH) -> str:
     """Write the muted crop of `source` to `target` (mp4); returns the crop id recorded with the clip.
 
     Box source, first available: the browser tracker's padded crop boxes `mouths` [[t_ms, x, y, w, h], ...]
     (TRACKER_MEDIAN, so training and lip mode see identical crops), SAM face boxes `faces` [[x, y, w, h], ...]
-    (STATIC_MEDIAN), else the full frame (FULL_FRAME)."""
+    (STATIC_MEDIAN), else the full frame (FULL_FRAME). `width`: the crop's output width in px (experiments only)."""
     box, crop_id = tracker_box(mouths or []), TRACKER_MEDIAN
     if box is None:
         box, crop_id = median_box(faces or []), STATIC_MEDIAN
     if box is None:
         crop_id, video_filter = FULL_FRAME, "scale=trunc(iw/2)*2:trunc(ih/2)*2"  # H.264 4:2:0 needs even sides
     else:
-        width, height = _size(source)
+        frame_w, frame_h = _size(source)
         x0, y0 = max(0, round(box[0])), max(0, round(box[1]))
-        x1, y1 = min(width, round(box[0] + box[2])), min(height, round(box[1] + box[3]))
+        x1, y1 = min(frame_w, round(box[0] + box[2])), min(frame_h, round(box[1] + box[3]))
         if x1 - x0 < 2 or y1 - y0 < 2:
-            raise ValueError(f"crop box {box} is outside the {width}x{height} frame")
-        video_filter = f"crop={x1 - x0}:{y1 - y0}:{x0}:{y0},scale={WIDTH}:-2,setsar=1"
+            raise ValueError(f"crop box {box} is outside the {frame_w}x{frame_h} frame")
+        video_filter = f"crop={x1 - x0}:{y1 - y0}:{x0}:{y0},scale={width}:-2,setsar=1"
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", source, "-map", "0:v:0", "-an",
                     "-vf", video_filter, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-fps_mode", "passthrough",
                     "-movflags", "+faststart", target], check=True)
