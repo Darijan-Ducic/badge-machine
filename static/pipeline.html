@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Pipeline</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* page-specific; every value is pre-coach's (studio/static/app.css) unless noted */
+    #tabs { margin-bottom: 22px; }                                                     /* .board gap, app.css:502 */
+    .diagram { margin-top: 18px; display: grid; justify-items: center; overflow-x: auto; }   /* .spark margin, app.css:145 */
+    .diagram svg { max-width: 100%; height: auto; }
+    .diagram pre.msg { justify-self: stretch; max-width: none; margin: 0; white-space: pre-wrap; font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; }  /* .excerpt, app.css:413 */
+    /* legend keys drawn from the doc's own classDefs: fill, stroke and dash come from the source */
+    .legend .key { margin-right: 0; border: 1.5px solid; }                             /* .tag.designed::before ring, app.css:47 */
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }              /* .tag gap, app.css:44 */
+  </style>
+</head>
+<body>
+  <div class="haze" aria-hidden="true"></div>
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
+  <main class="section"><div class="page">
+    <header class="top">
+      <h1>Pipeline</h1>
+      <p class="meta" id="legend-line">Loading docs/pipeline.md…</p>
+    </header>
+    <div class="opts" id="tabs" role="group" aria-label="Diagram"></div>
+    <article class="card">
+      <p class="eyebrow"><b id="title"></b><span>live from docs/pipeline.md</span></p>
+      <p class="legend" id="legend"></p>
+      <div class="diagram" id="diagram" aria-live="polite"></div>
+    </article>
+  </div></main>
+  <script src="vendor/mermaid.min.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    const FONT = getComputedStyle(document.documentElement).getPropertyValue("--font").trim();
+    mermaid.initialize({ startOnLoad: false, fontFamily: FONT, themeVariables: { fontFamily: FONT }, securityLevel: "strict", suppressErrorRendering: true });
+    let blocks = [], seq = 0;
+
+    // Every ```mermaid block in the doc, with the ## heading above it.
+    function parse(md) {
+      const out = [], lines = md.split("\n");
+      let heading = null;
+      for (let k = 0; k < lines.length; k++) {
+        const h = lines[k].match(/^##\s+(.*\S)\s*$/);
+        if (h) { heading = h[1]; continue; }
+        if (!/^```mermaid\s*$/.test(lines[k])) continue;
+        const body = [];
+        for (k++; k < lines.length && !/^```\s*$/.test(lines[k]); k++) body.push(lines[k]);
+        out.push({ heading: heading ?? `Diagram ${out.length + 1}`, source: body.join("\n") });
+      }
+      return out;
+    }
+
+    // The doc's legend: the first sentence of its opening paragraph, links reduced to their text.
+    function legendLine(md) {
+      const para = md.split("\n").find((l) => l.trim() && !/^(#|```|\|)/.test(l)) || "";
+      const text = para.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").trim();
+      return text.match(/^.*?\.(\s|$)/)?.[0].trim() || text;
+    }
+
+    // One key per classDef across the doc, drawn with that classDef's own fill, stroke and dash.
+    function legendKeys(md) {
+      const seen = new Map();
+      for (const m of md.matchAll(/^\s*classDef\s+(\S+)\s+(.+)$/gm)) {
+        const style = Object.fromEntries(m[2].split(",").map((p) => p.split(":").map((s) => s.trim())));
+        if (!seen.has(m[1])) seen.set(m[1], style);
+      }
+      return [...seen].map(([name, s]) => {
+        const item = el("span"), key = el("i", "key");
+        key.style.background = s.fill || "";
+        key.style.borderColor = s.stroke || "transparent";
+        if (s["stroke-dasharray"]) key.style.borderStyle = "dashed";
+        item.append(key, name);
+        return item;
+      });
+    }
+
+    async function show(k) {
+      [...$("tabs").children].forEach((b, j) => b.setAttribute("aria-pressed", String(j === k)));
+      $("title").textContent = blocks[k].heading;
+      const id = `diagram-${++seq}`;
+      try {
+        const { svg } = await mermaid.render(id, blocks[k].source);
+        $("diagram").innerHTML = svg;
+      } catch (err) {
+        document.getElementById(`d${id}`)?.remove();
+        $("diagram").replaceChildren(el("pre", "msg error", `This diagram doesn't parse:\n${err.message || err}`));
+      }
+    }
+
+    async function load() {
+      try {
+        const res = await fetch("/pipeline.md", { cache: "no-store" });
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        const md = await res.text();
+        blocks = parse(md);
+        $("legend-line").textContent = legendLine(md);
+        $("legend").replaceChildren(...legendKeys(md));
+        if (!blocks.length) throw new Error("no ```mermaid blocks in the doc");
+        $("tabs").replaceChildren(...blocks.map((b, k) => {
+          const btn = el("button", "opt", b.heading.split(":")[0].trim());
+          btn.type = "button";
+          btn.title = b.heading;
+          btn.addEventListener("click", () => show(k));
+          return btn;
+        }));
+        await document.fonts.load(`16px ${FONT}`);   // mermaid measures labels with the font, so it must be loaded first
+        await show(0);
+      } catch (err) {
+        $("diagram").replaceChildren(el("p", "msg error", `Couldn't load docs/pipeline.md: ${err.message}`));
+      }
+    }
+    load();
+  </script>
+</body>
+</html>
