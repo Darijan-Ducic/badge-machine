@@ -99,6 +99,17 @@ def test_reads_report_each_reader_against_the_label():
     assert row["gemini_top1"] == 0.0 and row["gemini_top3"] == 1.0
 
 
+def test_closed_pool_keeps_only_phrase_list_entries_and_relabels():
+    record = _record("u", "no", "hello there", {"yes": 0.2, "no": 0.9, "maybe": 0.1, "stop": 0.0},
+                     {"yes": 0.1, "no": 0.2, "maybe": 0.6, "stop": 0.1}, PHRASES)
+    [row] = bench.reads([record])
+    clip = row["closed_clip"]
+    assert sorted(clip.pool[:-1]) == sorted(PHRASES) and clip.pool[-1] == "∅"
+    assert clip.pool[clip.label] == "no"
+    assert len(clip.features) == len(clip.pool)
+    assert "hello there" in row["clip"].pool, "the app's pool keeps the open guesses"
+
+
 def test_streams_train_only_on_earlier_clips_and_tag_the_stage():
     records = [_record("u", p, p, {q: float(q == p) for q in PHRASES}, {q: 0.25 for q in PHRASES}, PHRASES)
                for p in PHRASES * 9]
