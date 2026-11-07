@@ -1,8 +1,14 @@
-"""The self-improvement loop: held-out gate, rollback, no held-out leakage, tried-ideas memory, resume, budget.
+"""The evaluation loop: evidence recorded unjudged, no pointer moves, no held-out leakage, tried-ideas memory,
+resume, budget, the test split once.
 
-Most tests use StubEvaluator, whose metrics are a pure function of (config, split), so each gate decision is known
+The loop never adopts, rejects, rolls back or promotes: the session judges through tools/versions.py. Where a test
+needs a judgment (memory of a rejected idea, resuming from an adopted current), the test plays the session and calls
+the registry itself.
+
+Most tests use StubEvaluator, whose metrics are a pure function of (config, split), so every recorded delta is known
 exactly. The leak test uses SimEvaluator (simulator + candidates.featurize + scorer) end to end."""
 
+import hashlib
 import importlib.util
 import json
 import math
@@ -13,7 +19,8 @@ import pytest
 from jsonschema import Draft202012Validator
 
 import iterate
-from iterate import FakeProposer, MuseProposer, final, gate, run
+import versions
+from iterate import FakeProposer, MuseProposer, final, heldout_delta, run
 from tests.sim_world import DEMO_SCRIPT, SimEvaluator, world
 from versions import Registry, config_hash, default_config
 
@@ -78,66 +85,102 @@ def ids(registry):
     return [v["id"] for v in registry.versions()]
 
 
-# ---------------------------------------------------------------- the gate
+# ---------------------------------------------------------------- held-out deltas, in points
 
 
-def test_gate_adopts_exactly_min_gain_and_rejects_just_below():
-    assert gate(M(0.50), M(0.51))[0] is True
-    assert gate(M(0.50), M(0.5099))[0] is False
+def test_heldout_delta_is_in_points_without_float_noise():
+    assert heldout_delta(M(0.50), M(0.51))["word_acc"] == 1.0  # 0.51 - 0.50 is 0.010000000000000009 in floats
+    assert heldout_delta(M(0.50), M(0.5099))["word_acc"] == 0.99
 
 
-def test_gate_allows_a_half_point_viseme_drop_but_no_more():
-    assert gate(M(0.50, 0.60), M(0.55, 0.595))[0] is True
-    assert gate(M(0.50, 0.60), M(0.55, 0.594))[0] is False
+def test_heldout_delta_reports_a_viseme_drop_exactly():
+    assert heldout_delta(M(0.50, 0.60), M(0.55, 0.595))["viseme_acc"] == -0.5
+    assert heldout_delta(M(0.50, 0.60), M(0.55, 0.594))["viseme_acc"] == -0.6
 
 
-def test_gate_min_gain_is_configurable():
-    assert gate(M(0.50), M(0.515), min_gain=2.0)[0] is False
-    assert gate(M(0.50), M(0.52), min_gain=2.0)[0] is True
+# ---------------------------------------------------------------- evaluated, unjudged: no pointer moves
 
 
-# ---------------------------------------------------------------- adopt / roll back
+def evidence_of(registry, vid):
+    return registry.get(vid)["evidence"]
 
 
-def test_helpful_change_is_adopted_and_moves_current_not_live(registry):
+def test_helpful_change_is_recorded_as_evaluated_and_moves_no_pointer(registry):
     stub = StubEvaluator([(lambda c: c["k"] == 5, {"train": 0.05, "heldout": 0.05})])
     steps = run(RECORDS, registry, FakeProposer([proposal({"op": "set_k", "k": 5})]), stub, iterations=1)
     base, cand = ids(registry)
-    assert steps[0]["decision"] == "adopted"
-    assert registry.pointers() == {"live": base, "current": cand}
+    assert steps[0]["decision"] == "evaluated"
+    assert registry.get(cand)["status"] == "evaluated" and registry.get(cand)["reason"] is None
+    assert registry.pointers() == {"live": base, "current": base}
     assert registry.config(cand)["k"] == 5
+    assert evidence_of(registry, cand)["heldout_delta_pts"]["word_acc"] == pytest.approx(5.0)
 
 
-def test_harmful_change_is_rejected_and_the_loop_continues_from_the_unchanged_current(registry):
+def test_harmful_change_is_recorded_unjudged_and_the_loop_continues_from_the_unchanged_current(registry):
     stub = StubEvaluator([(lambda c: c["pool_cap"] == 3, {"train": -0.05, "heldout": -0.05})])
     proposer = FakeProposer([proposal({"op": "set_pool_cap", "pool_cap": 3}), proposal({"op": "set_k", "k": 4})])
     steps = run(RECORDS, registry, proposer, stub, iterations=2)
-    base, rejected, _ = ids(registry)
-    assert steps[0]["decision"] == "rejected"
-    assert registry.get(rejected)["status"] == "rejected" and registry.get(rejected)["reason"]
+    base, harmful, _ = ids(registry)
+    assert steps[0]["decision"] == "evaluated"
+    assert registry.get(harmful)["status"] == "evaluated" and registry.get(harmful)["reason"] is None
+    assert evidence_of(registry, harmful)["heldout_delta_pts"]["word_acc"] == pytest.approx(-5.0)
     assert registry.pointers()["current"] == base
     assert proposer.calls[1]["config"]["pool_cap"] == default_config()["pool_cap"]
 
 
-def test_change_that_helps_train_but_hurts_heldout_is_rejected(registry):
+def test_change_that_helps_train_but_hurts_heldout_is_recorded_with_both_deltas(registry):
     stub = StubEvaluator([(lambda c: c["pool_cap"] == 12, {"train": 0.10, "heldout": -0.02})])
     steps = run(RECORDS, registry, FakeProposer([proposal({"op": "set_pool_cap", "pool_cap": 12})]), stub,
                 iterations=1)
-    assert steps[0]["decision"] == "rejected"
+    cand = ids(registry)[1]
+    assert steps[0]["decision"] == "evaluated"
+    assert evidence_of(registry, cand)["train_delta_pts"]["word_acc"] == pytest.approx(10.0)
+    assert evidence_of(registry, cand)["heldout_delta_pts"]["word_acc"] == pytest.approx(-2.0)
     assert registry.pointers()["current"] == ids(registry)[0]
 
 
-def test_change_that_hurts_train_but_helps_heldout_is_adopted(registry):
+def test_change_that_hurts_train_but_helps_heldout_is_recorded_with_both_deltas(registry):
     stub = StubEvaluator([(lambda c: c["pool_cap"] == 12, {"train": -0.10, "heldout": 0.03})])
     steps = run(RECORDS, registry, FakeProposer([proposal({"op": "set_pool_cap", "pool_cap": 12})]), stub,
                 iterations=1)
-    assert steps[0]["decision"] == "adopted"
+    cand = ids(registry)[1]
+    assert steps[0]["decision"] == "evaluated"
+    assert evidence_of(registry, cand)["train_delta_pts"]["word_acc"] == pytest.approx(-10.0)
+    assert evidence_of(registry, cand)["heldout_delta_pts"]["word_acc"] == pytest.approx(3.0)
+    assert registry.pointers()["current"] == ids(registry)[0]
 
 
-def test_viseme_regression_blocks_adoption_in_the_loop(registry):
+def test_viseme_regression_is_in_the_evidence_and_nothing_is_decided(registry):
     stub = StubEvaluator([(lambda c: c["k"] == 5, {"train": 0.05, "heldout": 0.05, "viseme": -0.02})])
     steps = run(RECORDS, registry, FakeProposer([proposal({"op": "set_k", "k": 5})]), stub, iterations=1)
-    assert steps[0]["decision"] == "rejected"
+    cand = ids(registry)[1]
+    assert steps[0]["decision"] == "evaluated"
+    assert evidence_of(registry, cand)["heldout_delta_pts"]["viseme_acc"] == pytest.approx(-2.0)
+    assert registry.pointers()["current"] == ids(registry)[0]
+
+
+def test_the_loop_never_moves_current_or_live(registry, monkeypatch):
+    moves = []
+    for name in ("adopt", "reject", "rollback", "promote"):
+        monkeypatch.setattr(registry, name, lambda *a, _name=name, **k: moves.append(_name))
+    stub = StubEvaluator(effects4())
+    run(RECORDS, registry, FakeProposer(script4()), stub, iterations=4)
+    assert moves == []
+    base = ids(registry)[0]
+    assert registry.pointers() == {"live": base, "current": base}
+    assert {e["action"] for e in registry.audit()} == {"baseline"}
+    assert {v["status"] for v in registry.versions()[1:]} == {"evaluated"}
+
+
+def test_evidence_names_the_parent_and_the_records_it_was_measured_on(registry):
+    stub = StubEvaluator([(lambda c: c["k"] == 5, {"heldout": 0.05})])
+    run(RECORDS, registry, FakeProposer([proposal({"op": "set_k", "k": 5})]), stub, iterations=1)
+    evidence = evidence_of(registry, ids(registry)[1])
+    assert evidence["parent"] == ids(registry)[0]
+    digest = hashlib.sha256(json.dumps(RECORDS, default=str).encode()).hexdigest()
+    assert evidence["records"] == {"count": len(RECORDS), "sha256": digest}
+    assert evidence["heldout"]["word_acc"] == pytest.approx(0.55)
+    assert evidence["parent_heldout"]["word_acc"] == pytest.approx(0.50)
 
 
 # ---------------------------------------------------------------- no held-out leakage
@@ -168,9 +211,12 @@ def test_identical_rejected_change_is_refused_without_a_second_evaluation(regist
     harmful = proposal({"op": "set_pool_cap", "pool_cap": 3})
     stub = StubEvaluator([(lambda c: c["pool_cap"] == 3, {"heldout": -0.05})])
     proposer = FakeProposer([harmful, harmful, proposal({"op": "set_k", "k": 4})], respect_memory=False)
-    steps = run(RECORDS, registry, proposer, stub, iterations=3)
+    first = run(RECORDS, registry, proposer, stub, iterations=1)
+    registry.reject(ids(registry)[1], "held-out word -5 pts", who="session")  # the session judges
+    steps = first + run(RECORDS, registry, proposer, stub, iterations=2)
 
-    assert [s["decision"] for s in steps[:2]] == ["rejected", "refused"]
+    assert [s["decision"] for s in steps[:2]] == ["evaluated", "refused"]
+    assert "rejected" in steps[1]["reason"]
     assert stub.splits_for(with_knobs(pool_cap=3)).count(("heldout", None)) == 1
     assert len(ids(registry)) == 3  # baseline, the rejected cap, k=4 — no second cap version
     memory = proposer.calls[1]["memory"]
@@ -184,9 +230,14 @@ def test_reaching_an_already_evaluated_config_by_another_route_is_refused(regist
     script = [proposal({"op": "set_k", "k": 5}), proposal({"op": "set_k", "k": 3}),
               proposal({"op": "set_k", "k": 5})]
     stub.effects = [(lambda c: c["k"] == 5, {"heldout": 0.05})]
-    steps = run(RECORDS, registry, FakeProposer(script, respect_memory=False), stub, iterations=3)
-    # k=5 adopted; k=3 back to baseline's config -> refused as already evaluated; k=5 again -> no-op, refused
-    assert [s["decision"] for s in steps] == ["adopted", "refused", "refused"]
+    proposer = FakeProposer(script, respect_memory=False)
+    first = run(RECORDS, registry, proposer, stub, iterations=1)
+    registry.adopt(ids(registry)[1], "k=5 helps", who="session")  # the session judges
+    steps = first + run(RECORDS, registry, proposer, stub, iterations=2)
+    # k=5 evaluated (then adopted by the session); k=3 back to baseline's config -> refused as already evaluated;
+    # k=5 again -> no-op, refused
+    assert [s["decision"] for s in steps] == ["evaluated", "refused", "refused"]
+    assert "already evaluated" in steps[1]["reason"]
     hashes = [v["config_hash"] for v in registry.versions()]
     assert len(hashes) == len(set(hashes))
 
@@ -207,6 +258,7 @@ def effects4():
 def test_restart_continues_from_the_registry_without_duplicates(tmp_path):
     stub = StubEvaluator(effects4())
     run(RECORDS, Registry(tmp_path / "v"), FakeProposer(script4()), stub, iterations=2)
+    Registry(tmp_path / "v").adopt("sys-v2", "k=5 helps", who="session")  # the session judges between runs
     again = Registry(tmp_path / "v")
     proposer = FakeProposer(script4())
     run(RECORDS, again, proposer, stub, iterations=2)
@@ -234,7 +286,7 @@ def test_a_candidate_interrupted_mid_evaluation_is_finished_on_restart_not_dupli
     assert "candidate" not in [v["status"] for v in versions]
     assert len(versions) == 4  # baseline, k=5, the finished cap=3, one new
     assert len({v["config_hash"] for v in versions}) == 4
-    assert versions[2]["status"] == "rejected"
+    assert versions[2]["status"] == "evaluated"
 
 
 # ---------------------------------------------------------------- refusals before evaluation
@@ -245,7 +297,7 @@ def test_invalid_change_is_refused_before_evaluation(registry):
     proposer = FakeProposer([proposal({"op": "set_k", "k": 9}), proposal({"op": "teleport"}),
                              proposal({"op": "set_k", "k": 4})], respect_memory=False)
     steps = run(RECORDS, registry, proposer, stub, iterations=3)
-    assert [s["decision"] for s in steps] == ["refused", "refused", "rejected"]
+    assert [s["decision"] for s in steps] == ["refused", "refused", "evaluated"]
     assert len(ids(registry)) == 2
     assert len(stub.calls) == 4  # baseline train + heldout, k=4 train + heldout
 
@@ -259,11 +311,12 @@ def test_evaluator_that_cannot_run_a_knob_refuses_it_before_evaluation(registry)
     assert len(ids(registry)) == 1
 
 
-def test_stops_after_n_consecutive_rejections(registry):
+def test_runs_at_most_the_given_number_of_proposals(registry):
     script = [proposal({"op": "set_k", "k": k}) for k in (1, 2, 4, 5)] + [proposal({"op": "set_pool_cap",
                                                                                    "pool_cap": 9})]
-    steps = run(RECORDS, registry, FakeProposer(script), StubEvaluator(), iterations=10, patience=3)
-    assert len(steps) == 3 and all(s["decision"] == "rejected" for s in steps)
+    steps = run(RECORDS, registry, FakeProposer(script), StubEvaluator(), iterations=3)
+    assert len(steps) == 3 and all(s["decision"] == "evaluated" for s in steps)
+    assert registry.pointers()["current"] == ids(registry)[0]
 
 
 # ---------------------------------------------------------------- test split only via --final
@@ -280,6 +333,16 @@ def test_the_loop_never_evaluates_test_and_final_does_once(registry):
     assert registry.get(current)["metrics"]["test"] == m
 
 
+def test_final_refuses_a_second_test_evaluation_of_the_same_version(registry):
+    stub = StubEvaluator()
+    run(RECORDS, registry, FakeProposer([]), stub, iterations=1)
+    first = final(RECORDS, registry, stub)
+    with pytest.raises(RuntimeError, match="once"):
+        final(RECORDS, registry, stub)
+    assert [c[0] for c in stub.calls].count("test") == 1
+    assert registry.get(ids(registry)[0])["metrics"]["test"] == first
+
+
 def _cli():
     spec = importlib.util.spec_from_file_location("iterate_cli", Path(__file__).parent.parent / "tools" / "iterate.py")
     module = importlib.util.module_from_spec(spec)
@@ -287,16 +350,66 @@ def _cli():
     return module
 
 
-def test_cli_evaluates_test_only_with_final(tmp_path):
+@pytest.fixture
+def records_file(tmp_path):
     path = tmp_path / "records.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in RECORDS))
+    return path
+
+
+def test_cli_evaluates_test_only_with_final(tmp_path, records_file):
     cli = _cli()
     stub = StubEvaluator([(lambda c: c["k"] == 5, {"heldout": 0.05})])
-    common = ["--records", str(path), "--registry", str(tmp_path / "v")]
-    cli.main(common + ["--iterations", "2"], evaluator=stub, proposer=FakeProposer(script4()))
+    common = ["--records", str(records_file), "--registry", str(tmp_path / "v")]
+    cli.main(common + ["--proposer", "muse", "--iterations", "2"], evaluator=stub, proposer=FakeProposer(script4()))
     assert "test" not in [c[0] for c in stub.calls]
     cli.main(common + ["--final"], evaluator=stub)
     assert [c[0] for c in stub.calls].count("test") == 1
+
+
+def test_cli_by_default_evaluates_only_the_one_change_the_session_gives(tmp_path, records_file, monkeypatch):
+    cli = _cli()
+    monkeypatch.setattr(cli, "MuseProposer", None)  # proposer none must never build a model proposer
+    stub = StubEvaluator([(lambda c: c["k"] == 5, {"heldout": 0.05})])
+    cli.main(["--records", str(records_file), "--registry", str(tmp_path / "v"), "--change",
+              '{"op": "set_k", "k": 5}', "--hypothesis", "five samples vote steadier"], evaluator=stub)
+    registry = Registry(tmp_path / "v")
+    assert ids(registry) == ["sys-v1", "sys-v2"]
+    v = registry.get("sys-v2")
+    assert (v["change"], v["hypothesis"], v["status"]) == ({"op": "set_k", "k": 5}, "five samples vote steadier",
+                                                           "evaluated")
+    assert v["evidence"]["heldout_delta_pts"]["word_acc"] == pytest.approx(5.0)
+    assert registry.pointers() == {"live": "sys-v1", "current": "sys-v1"}
+
+
+def test_cli_proposer_none_needs_a_change(tmp_path, records_file):
+    with pytest.raises(SystemExit):
+        _cli().main(["--records", str(records_file), "--registry", str(tmp_path / "v")], evaluator=StubEvaluator())
+    assert not (tmp_path / "v").exists()
+
+
+@pytest.fixture
+def real(tmp_path, monkeypatch):
+    """The default store (`--registry real`) redirected to a temp dir, with no MongoDB."""
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    monkeypatch.setattr(versions, "DATA", tmp_path / "real")
+    return tmp_path / "real"
+
+
+@pytest.mark.parametrize("mode", [["--change", '{"op": "set_k", "k": 5}', "--hypothesis", "h"], ["--final"],
+                                  ["--proposer", "muse", "--iterations", "1"]])
+def test_cli_without_an_explicit_registry_writes_nothing(real, records_file, mode, capsys):
+    with pytest.raises(SystemExit):
+        _cli().main(["--records", str(records_file), *mode], evaluator=StubEvaluator(),
+                    proposer=FakeProposer(script4()))
+    assert "explicit --registry" in capsys.readouterr().err
+    assert not real.exists()
+
+
+def test_cli_registry_real_writes_the_store_the_app_serves(real, records_file):
+    _cli().main(["--records", str(records_file), "--registry", "real", "--change", '{"op": "set_k", "k": 5}',
+                 "--hypothesis", "h"], evaluator=StubEvaluator())
+    assert ids(Registry(real)) == ["sys-v1", "sys-v2"]
 
 
 # ---------------------------------------------------------------- paid (skills) changes: pilot + budget
@@ -319,7 +432,7 @@ def test_paid_change_runs_a_20_clip_pilot_then_the_full_evaluation(registry):
     steps = run(RECORDS, registry, FakeProposer([HINT]), stub, iterations=1, budget=50.0)
     config = with_knobs(prompt_hint=HINT["change"]["hint"])
     assert stub.splits_for(config) == [("heldout", iterate.PILOT_CLIPS), ("train", None), ("heldout", None)]
-    assert steps[0]["decision"] == "adopted"
+    assert steps[0]["decision"] == "evaluated"
     assert registry.get(ids(registry)[1])["cost_usd"] == pytest.approx((20 + 60 + 20) * 0.1)
 
 
@@ -328,7 +441,8 @@ def test_paid_change_whose_pilot_does_not_improve_skips_the_full_evaluation(regi
     steps = run(RECORDS, registry, FakeProposer([HINT]), stub, iterations=1, budget=50.0)
     config = with_knobs(prompt_hint=HINT["change"]["hint"])
     assert stub.splits_for(config) == [("heldout", iterate.PILOT_CLIPS)]
-    assert steps[0]["decision"] == "rejected" and "pilot" in steps[0]["reason"]
+    assert steps[0]["decision"] == "evaluated" and "pilot" in steps[0]["reason"]
+    assert registry.get(ids(registry)[1])["status"] == "evaluated" and registry.pointers()["current"] == "sys-v1"
     assert registry.get(ids(registry)[1])["cost_usd"] == pytest.approx(20 * 0.1)
 
 

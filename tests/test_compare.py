@@ -23,11 +23,13 @@ from pathlib import Path
 import pytest
 
 import experiment
+import runs
 import visemes
 from candidates import FEATURES, featurize, match
 from clips import V1, vocab_id
 from scorer import predict, train
 from tests.sim_world import world
+from versions import Registry
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = ROOT / "tools" / "compare.py"
@@ -216,6 +218,46 @@ def test_both_sides_read_the_same_records_in_the_same_order(two_versions, record
     digest = hashlib.sha256(snapshot.read_bytes()).hexdigest()
     assert report["base"]["records_sha256"] == report["cand"]["records_sha256"] == digest
     assert [c["id"] for c in report["clips"]] == [r["id"] for r in records[120:160]]
+
+
+def _tool(name: str):
+    """tools/<name>.py, loaded by path: tools/experiment.py and tools/iterate.py share names with root modules."""
+    spec = importlib.util.spec_from_file_location(f"{name}_cli", ROOT / "tools" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class RecordingEvaluator:
+    """The loop's evaluator interface; remembers the records it was given."""
+
+    def __init__(self):
+        self.seen = []
+
+    def evaluate(self, records, config, split, limit=None):
+        self.seen.append(records)
+        return {"clips": 1, "word_acc": 0.5, "sentence_acc": 0.5, "viseme_acc": 0.5, "top3_acc": 0.5,
+                "autosend_precision": None, "autosend_coverage": None, "cost_per_clip": None}
+
+    def failures(self, train_records, config):
+        return []
+
+
+def test_the_export_is_the_records_input_of_experiment_and_iterate(two_versions, records, tmp_path):
+    snapshot, report = two_versions["snapshot"], two_versions["report"]
+    assert experiment.load_records(snapshot) == records
+
+    _tool("experiment").main(["--records", str(snapshot), "--store", str(tmp_path / "runs")])
+    (replayed,) = runs.list_runs(tmp_path / "runs")
+    assert replayed["metrics"]["clips"] == len(records)
+    assert replayed["splits"]["heldout"]["word_acc"] == experiment.evaluate(records, None, "heldout")["word_acc"]
+
+    recorder = RecordingEvaluator()
+    _tool("iterate").main(["--records", str(snapshot), "--registry", str(tmp_path / "v"), "--change",
+                           '{"op": "set_pool_cap", "pool_cap": 12}', "--hypothesis", "h"], evaluator=recorder)
+    assert recorder.seen and all(seen == records for seen in recorder.seen)
+    evidence = Registry(tmp_path / "v").get("sys-v2")["evidence"]
+    assert evidence["records"] == {"count": len(records), "sha256": report["records"]["sha256"]}  # same data
 
 
 def test_test_split_is_refused_without_final(records_file, capsys):

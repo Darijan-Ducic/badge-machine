@@ -3,12 +3,13 @@
 Every registry test runs on both backends: JSON files under a temp dir, and MongoDB (mongomock)."""
 
 import copy
+import time
 
 import pytest
 
 from tests.conftest import in_memory_mongo
 from versions import (OPS, InvalidChange, Registry, apply, config_hash, default_config, kind_of, resolve,
-                      validate_change)
+                      validate_change, version_hash)
 
 CONTRACT_KEYS = {"id", "parent", "t", "status", "kind", "change", "hypothesis", "author", "config_hash", "code_commit",
                  "failures_cited", "metrics", "delta", "cost_usd"}
@@ -271,3 +272,190 @@ def test_create_candidate_refuses_an_invalid_change(registry):
     with pytest.raises(InvalidChange):
         registry.create_candidate(base["id"], {"op": "set_k", "k": 9}, hypothesis="too many")
     assert [v["id"] for v in registry.versions()] == [base["id"]]
+
+
+# ---------------------------------------------------------------- judgments by hand: audit log, rollback, evidence
+
+WHO = "claude-code-session"
+
+
+def adopted_line(registry):
+    """base -> a (adopted) -> b (adopted): current is b, live is still base."""
+    base = baseline(registry)
+    a = registry.create_candidate(base["id"], {"op": "set_k", "k": 5}, hypothesis="a")
+    registry.adopt(a["id"], "a helps", who=WHO)
+    b = registry.create_candidate(a["id"], {"op": "set_pool_cap", "pool_cap": 12}, hypothesis="b")
+    registry.adopt(b["id"], "b helps", who=WHO)
+    return base, a, b
+
+
+def test_adopt_appends_who_when_and_why_to_the_audit_log(registry):
+    base = baseline(registry)
+    cand = registry.create_candidate(base["id"], {"op": "set_k", "k": 5}, hypothesis="more votes")
+    before = time.time()
+    registry.adopt(cand["id"], "held-out word +3 pts, 4 fixed / 0 lost", who=WHO)
+    entry = registry.audit()[-1]
+    assert {k: entry[k] for k in ("action", "version", "pointer", "from", "to", "who", "reason")} == {
+        "action": "adopt", "version": cand["id"], "pointer": "current", "from": base["id"], "to": cand["id"],
+        "who": WHO, "reason": "held-out word +3 pts, 4 fixed / 0 lost"}
+    assert before <= entry["t"] <= time.time()
+
+
+def test_baseline_records_both_pointers_it_sets_in_the_audit_log(registry):
+    base = baseline(registry)
+    moves = [(e["action"], e["pointer"], e["from"], e["to"]) for e in registry.audit()]
+    assert sorted(moves) == [("baseline", "current", None, base["id"]), ("baseline", "live", None, base["id"])]
+
+
+def test_reject_is_audited_and_moves_no_pointer(registry):
+    base = baseline(registry)
+    cand = registry.create_candidate(base["id"], {"op": "set_pool_cap", "pool_cap": 3}, hypothesis="smaller pool")
+    registry.reject(cand["id"], "lost 3 clips, fixed 0", who=WHO)
+    entry = registry.audit()[-1]
+    assert (entry["action"], entry["version"], entry["pointer"], entry["who"], entry["reason"]) == (
+        "reject", cand["id"], None, WHO, "lost 3 clips, fixed 0")
+    assert registry.pointers() == {"live": base["id"], "current": base["id"]}
+
+
+def test_promote_moves_live_only_and_is_audited(registry):
+    base, a, b = adopted_line(registry)
+    registry.promote(a["id"], "the user approved a on the Training page", who="user")
+    assert registry.pointers() == {"live": a["id"], "current": b["id"]}
+    entry = registry.audit()[-1]
+    assert (entry["action"], entry["pointer"], entry["from"], entry["to"], entry["who"]) == (
+        "promote", "live", base["id"], a["id"], "user")
+
+
+def test_rollback_moves_current_back_and_keeps_every_version(registry):
+    base, a, b = adopted_line(registry)
+    registry.rollback(a["id"], "b regressed short commands on new clips", who=WHO)
+    assert registry.pointers() == {"live": base["id"], "current": a["id"]}
+    assert [v["id"] for v in registry.versions()] == [base["id"], a["id"], b["id"]]
+    assert registry.get(b["id"])["status"] == "rolled_back"
+    assert registry.get(b["id"])["reason"] == "b helps"  # its adoption reason stays; the rollback's is in the log
+    assert registry.get(a["id"])["status"] == "adopted"
+    entry = registry.audit()[-1]
+    assert (entry["action"], entry["pointer"], entry["from"], entry["to"], entry["who"], entry["reason"]) == (
+        "rollback", "current", b["id"], a["id"], WHO, "b regressed short commands on new clips")
+
+
+def test_rollback_past_several_versions_marks_each_one_rolled_back(registry):
+    base, a, b = adopted_line(registry)
+    registry.rollback(base["id"], "start over", who=WHO)
+    assert registry.pointers()["current"] == base["id"]
+    assert [registry.get(v["id"])["status"] for v in (a, b)] == ["rolled_back", "rolled_back"]
+
+
+def test_after_a_rollback_the_next_version_builds_on_the_earlier_one(registry):
+    base, a, b = adopted_line(registry)
+    registry.rollback(a["id"], "b was wrong", who=WHO)
+    c = registry.create_candidate(a["id"], {"op": "set_pool_cap", "pool_cap": 8}, hypothesis="c")
+    registry.adopt(c["id"], "c helps", who=WHO)
+    assert registry.pointers()["current"] == c["id"] and registry.config(c["id"])["pool_cap"] == 8
+
+
+@pytest.mark.parametrize("target", ["current", "sibling", "unknown"])
+def test_rollback_only_goes_to_an_earlier_version_of_current(registry, target):
+    base, a, b = adopted_line(registry)
+    sibling = registry.create_candidate(a["id"], {"op": "set_pool_cap", "pool_cap": 3}, hypothesis="s")
+    registry.reject(sibling["id"], "worse", who=WHO)
+    to = {"current": b["id"], "sibling": sibling["id"], "unknown": "sys-v99"}[target]
+    with pytest.raises((ValueError, KeyError)):
+        registry.rollback(to, "nope", who=WHO)
+    assert registry.pointers()["current"] == b["id"]
+    assert registry.get(b["id"])["status"] == "adopted"
+
+
+def test_audit_log_survives_a_restart_and_is_served_in_the_payload(make_registry):
+    first = make_registry()
+    base, a, b = adopted_line(first)
+    first.rollback(a["id"], "b was wrong", who=WHO)
+    again = make_registry()
+    actions = [(e["action"], e["to"]) for e in again.audit()]
+    assert actions[-3:] == [("adopt", a["id"]), ("adopt", b["id"]), ("rollback", a["id"])]
+    payload = again.payload()
+    assert payload["audit"] == again.audit()
+    assert {"live", "current", "versions"} <= set(payload)  # the old fields stay
+    assert {v["id"]: v["status"] for v in payload["versions"]}[b["id"]] == "rolled_back"
+
+
+def test_a_version_created_with_evidence_is_evaluated_and_can_be_adopted(registry):
+    base = baseline(registry)
+    evidence = {"paired": {"base_right_cand_wrong": 0, "base_wrong_cand_right": 4}}
+    cand = registry.create_candidate(base["id"], {"op": "set_k", "k": 5}, hypothesis="more votes",
+                                     author=WHO, evidence=evidence)
+    stored = registry.get(cand["id"])
+    assert (stored["status"], stored["evidence"], stored["author"]) == ("evaluated", evidence, WHO)
+    registry.adopt(cand["id"], "4 fixed, 0 lost", who=WHO)
+    assert registry.pointers()["current"] == cand["id"]
+
+
+def test_rejected_or_adopted_versions_cannot_be_judged_again(registry):
+    base, a, b = adopted_line(registry)
+    with pytest.raises(ValueError):
+        registry.reject(b["id"], "changed my mind", who=WHO)  # undoing an adoption is a rollback
+    assert registry.get(b["id"])["status"] == "adopted"
+
+
+# ---------------------------------------------------------------- code-change versions
+
+COMMIT_A, COMMIT_B = "a" * 40, "b" * 40
+
+
+def test_code_version_keeps_the_config_and_its_hash_covers_the_commit(registry):
+    base = baseline(registry)
+    a = registry.create_code(base["id"], COMMIT_A, hypothesis="∅ wins less on short phrases",
+                             evidence={"paired": {}}, author=WHO)
+    b = registry.create_code(base["id"], COMMIT_B, hypothesis="other edit", evidence={"paired": {}}, author=WHO)
+    stored = registry.get(a["id"])
+    assert (stored["kind"], stored["code_commit"], stored["status"]) == ("code", COMMIT_A, "evaluated")
+    assert registry.config(a["id"]) == registry.config(base["id"])
+    hashes = {registry.get(v)["config_hash"] for v in (base["id"], a["id"], b["id"])}
+    assert len(hashes) == 3
+    assert stored["config_hash"] == version_hash(default_config(), COMMIT_A)
+    assert registry.code(a["id"]) == COMMIT_A and registry.code(base["id"]) is None
+
+
+def test_walking_parents_rebuilds_a_line_that_mixes_code_and_config_versions(registry):
+    base = baseline(registry)
+    k5 = registry.create_candidate(base["id"], {"op": "set_k", "k": 5}, hypothesis="a")
+    registry.adopt(k5["id"], "a", who=WHO)
+    code = registry.create_code(k5["id"], COMMIT_A, hypothesis="b", evidence={}, author=WHO)
+    registry.adopt(code["id"], "b", who=WHO)
+    cap = registry.create_candidate(code["id"], {"op": "set_pool_cap", "pool_cap": 3}, hypothesis="c")
+    code2 = registry.create_code(cap["id"], COMMIT_B, hypothesis="d", evidence={}, author=WHO)
+
+    expected = default_config()
+    expected["k"], expected["pool_cap"] = 5, 3
+    assert registry.config(cap["id"]) == resolve(expected)
+    assert registry.code(cap["id"]) == COMMIT_A  # inherited from the nearest code version above it
+    assert registry.get(cap["id"])["config_hash"] == version_hash(expected, COMMIT_A)
+    assert registry.config(code2["id"]) == resolve(expected) and registry.code(code2["id"]) == COMMIT_B
+
+
+def test_a_tampered_code_commit_fails_the_hash_check_of_the_version_and_its_children(make_registry):
+    registry = make_registry()
+    base = baseline(registry)
+    code = registry.create_code(base["id"], COMMIT_A, hypothesis="b", evidence={}, author=WHO)
+    registry.adopt(code["id"], "b", who=WHO)
+    child = registry.create_candidate(code["id"], {"op": "set_k", "k": 5}, hypothesis="c")
+    registry._store.put({**registry.get(code["id"]), "code_commit": COMMIT_B})
+    again = make_registry()
+    for vid in (code["id"], child["id"]):
+        with pytest.raises(ValueError):
+            again.config(vid)
+
+
+@pytest.mark.parametrize("commit", ["abc123", "A" * 40, "g" * 40, None])
+def test_code_version_needs_a_full_commit_sha(registry, commit):
+    base = baseline(registry)
+    with pytest.raises(InvalidChange):
+        registry.create_code(base["id"], commit, hypothesis="x", evidence={}, author=WHO)
+    assert len(registry.versions()) == 1
+
+
+def test_code_version_with_the_parents_own_commit_is_refused(registry):
+    base = baseline(registry)
+    code = registry.create_code(base["id"], COMMIT_A, hypothesis="b", evidence={}, author=WHO)
+    with pytest.raises(InvalidChange):
+        registry.create_code(code["id"], COMMIT_A, hypothesis="same code again", evidence={}, author=WHO)
