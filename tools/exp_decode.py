@@ -34,6 +34,7 @@ import experiment  # noqa: E402
 import visemes  # noqa: E402
 from compare import sign_test  # noqa: E402
 from muse_sampler import CONFIG as OPEN_CONFIG, labeled_grids  # noqa: E402
+from preheat import _normalize  # noqa: E402
 from reread import muse_pick  # noqa: E402
 
 ARMS = ("refine", "decode")
@@ -79,10 +80,11 @@ def oracle(samples: list[dict], stt: str, metric) -> str:
 
 
 def _turns(user: str, skip: int, first: int | None):
+    """`user` may be several ids, comma-separated: their turns one user after another, then sliced."""
     import clips
     store = clips.backend(None)
-    picked = [r for r in store.load(user) if r.get("record") == "v1" and (r.get("label") or {}).get("stt_text")
-              and decode.readers(r["samples"])]
+    picked = [r for u in user.split(",") for r in store.load(u) if r.get("record") == "v1"
+              and (r.get("label") or {}).get("stt_text") and decode.readers(r["samples"])]
     picked = picked[skip:None if first is None else skip + first]
     return [(r, store.video(r["id"])) for r in picked]
 
@@ -94,12 +96,22 @@ def paired(control: list[str], arm: list[str], stts: list[str], metric) -> dict:
             "up_idx": up, "down_idx": down}
 
 
-def lifts(texts: list[str], stts: list[str], metric) -> list[float]:
-    """Per turn: score vs its own STT minus the mean score vs the other turns' STTs (lab-metrics' LIFT). A generic
-    sentence scores the same against every STT, so its lift is ~0 however high its raw accuracy."""
-    score = lambda t, s: metric([t], [s]) or 0.0  # noqa: E731
-    return [score(t, stts[i]) - sum(score(t, s) for j, s in enumerate(stts) if j != i) / (len(stts) - 1)
-            for i, t in enumerate(texts)]
+def _units(kind: str, text: str) -> list:
+    return _normalize(text).split() if kind == "word" else visemes.to_visemes(text)
+
+
+def lifts(texts: list[str], stts: list[str], kind: str) -> tuple[list[float], float]:
+    """LIFT (lab-metrics; pooled like tools/exp_crop.py): accuracy vs the turn's own STT minus accuracy vs the OTHER
+    turns' STTs, each 1 - summed edits / summed STT length. Per turn, and for the set. A generic sentence scores
+    about the same against every STT, so its lift is ~0 however high its raw accuracy."""
+    reads, said = [_units(kind, t) for t in texts], [_units(kind, s) for s in stts]
+    e = [[experiment._edits(r, s) for s in said] for r in reads]
+    n, lens = len(said), [len(s) for s in said]
+    per = [(1 - e[i][i] / max(lens[i], 1)) - (1 - sum(e[i][j] for j in range(n) if j != i)
+                                              / max(sum(lens) - lens[i], 1)) for i in range(n)]
+    own = 1 - sum(e[i][i] for i in range(n)) / max(sum(lens), 1)
+    cross = 1 - sum(e[i][j] for i in range(n) for j in range(n) if j != i) / max((n - 1) * sum(lens), 1)
+    return per, own - cross
 
 
 def paired_lift(control: list[float], arm: list[float]) -> dict:
@@ -117,14 +129,13 @@ def summarize(rows: list[dict], arm: str) -> dict:
     lat = [i["latency_ms"] / 1000 for i in items if i.get("latency_ms")] if arm == paid else [0.0]
     w, v = paired(control, texts, stts, lambda a, b: experiment.word_acc(a, b)), \
         paired(control, texts, stts, lambda a, b: experiment.viseme_acc(a, b))
-    lw = [lifts(x, stts, experiment.word_acc) for x in (control, texts)]
-    lv = [lifts(x, stts, experiment.viseme_acc) for x in (control, texts)]
+    (lwc, lift_wc), (lwa, lift_wa) = (lifts(x, stts, "word") for x in (control, texts))
+    (lvc, lift_vc), (lva, lift_va) = (lifts(x, stts, "viseme") for x in (control, texts))
     exact = lambda xs: sum(experiment._matches(s, x or None) for x, s in zip(xs, stts)) / len(stts)  # noqa: E731
     return {
         "clips": len(rows), "arm": arm,
-        "lift_word": sum(lw[1]) / len(rows), "lift_word_control": sum(lw[0]) / len(rows),
-        "lift_viseme": sum(lv[1]) / len(rows), "lift_viseme_control": sum(lv[0]) / len(rows),
-        "lift_w": paired_lift(*lw), "lift_v": paired_lift(*lv),
+        "lift_word": lift_wa, "lift_word_control": lift_wc, "lift_viseme": lift_va, "lift_viseme_control": lift_vc,
+        "lift_w": paired_lift(lwc, lwa), "lift_v": paired_lift(lvc, lva),
         "words_per_stt": sum(len(t.split()) for t in texts) / max(1, sum(len(t.split()) for t in stts)),
         "word_acc": experiment.word_acc(texts, stts), "word_acc_control": experiment.word_acc(control, stts),
         "viseme_acc": experiment.viseme_acc(texts, stts), "viseme_acc_control": experiment.viseme_acc(control, stts),
