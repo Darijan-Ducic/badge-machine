@@ -119,7 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 v = registry.create_candidate(args.parent, json.loads(args.change), hypothesis=args.hypothesis,
                                               author=args.author, evidence=evidence)
-            print(f"{v['id']} {v['status']}: {v['kind']} {_change_text(v)} on {v['parent']}, hash {v['config_hash']}")
+            what = _change_text(v) if v["kind"] == "code" else f"{v['kind']} {_change_text(v)}"
+            print(f"{v['id']} {v['status']}: {what} on {v['parent']}, hash {v['config_hash']}")
         else:
             judge = {"adopt": registry.adopt, "reject": registry.reject, "rollback": registry.rollback,
                      "promote": registry.promote}[args.command]
