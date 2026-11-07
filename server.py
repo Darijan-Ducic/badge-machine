@@ -4,6 +4,8 @@ the clip explorer and training (runs, readiness, system versions)."""
 import json
 import os
 import re
+import subprocess
+import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -28,7 +30,7 @@ VERSIONS = None  # system versions: None = MongoDB when MONGODB_URI is set, else
 TURNS = ThreadPoolExecutor(4)  # dictation turns are read here, after /dictation has answered
 CLIP_ROUTE = re.compile(r"^/clips/([^/]+)(/video)?$")
 INPUT_ROUTE = re.compile(r"^/clips/([^/]+)/(inputs|gemini\.mp4|grids/(\d+)\.jpg)$")  # what each lip reader was sent
-SESSION_ROUTE = re.compile(r"^/sessions/([^/]+)(/video)?$")
+SESSION_ROUTE = re.compile(r"^/sessions/([^/]+)(/video|/frame\.jpg)?$")
 LABEL_ROUTE = re.compile(r"^/vtt/([^/]+)/label$")
 STATIC = Path(__file__).parent / "static"
 
@@ -55,6 +57,19 @@ def turn_cut(session: str, i: int) -> dict:
             "video": f"/sessions/{session}/video",
             "boxes": None if boxes is None else len(slice_boxes(boxes, turn["start_ms"], turn["end_ms"])),
             "flags": {"frames": len(flags), "counts": dict(Counter(map(str, flags)))}}
+
+
+def session_frame(session_id: str, t: float) -> bytes | None:
+    """The session video's frame at `t` s as a JPEG in the recording's own pixels (where crop rectangles live)."""
+    video = session_video(session_id, store=SESSIONS)
+    if not video:
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp, "session")
+        source.write_bytes(video[0])
+        # -ss after -i decodes from the start: frame-accurate, and MediaRecorder webm has no cues to seek by
+        return subprocess.run(["ffmpeg", "-loglevel", "error", "-i", source, "-ss", f"{t:.3f}", "-frames:v", "1",
+                               "-f", "image2", "-c:v", "mjpeg", "pipe:1"], capture_output=True, check=True).stdout
 
 
 def practice_dataset(user_id: str) -> str | None:
@@ -120,6 +135,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(200, phrase_readiness(STORE, load_phrases(), user))
             elif url.path == "/versions":
                 self.send_json(200, Registry(VERSIONS).payload())
+            elif session and session.group(2) == "/frame.jpg":
+                frame = session_frame(session.group(1), float(parse_qs(url.query).get("t", ["0"])[0]))
+                self.send_bytes("image/jpeg", frame) if frame else self.send_json(404, {"error": "no session"})
             elif session and session.group(2):
                 video = session_video(session.group(1), store=SESSIONS)  # (bytes, content type)
                 self.send_bytes(video[1], video[0]) if video else self.send_json(404, {"error": "no session"})
