@@ -1,7 +1,9 @@
 """HTTP contract of /stats, /clips, /clips/<id>, /clips/<id>/video and /preheat/clip, served from a real
 ThreadingHTTPServer over each store backend — model calls are fakes, no network."""
 
+import json
 import math
+import subprocess
 import threading
 from http.server import ThreadingHTTPServer
 
@@ -208,6 +210,52 @@ def test_preheat_route_keeps_its_response_keys_and_reads_with_k5(api, store, rec
     assert (body["label"], body["label_phrase"], body["stats"]["user"]) == (0, "yes", "ann")
     assert fakes["sample_open"].calls[0][1] == 5
     assert [r["user_id"] for r in load(store)] == ["ann"]
+
+
+@pytest.fixture
+def fake_calls(monkeypatch):
+    fakes = readers("yes", gemini="yes")
+    monkeypatch.setattr(muse_sampler, "sample_open", fakes["sample_open"])
+    monkeypatch.setattr(muse_sampler, "score_closed", fakes["score_closed"])
+    monkeypatch.setattr(scorers, "gemini_scores", fakes["gemini"])
+    monkeypatch.setattr(server, "transcribe", lambda data: "yes")
+    return fakes
+
+
+def width(data: bytes, tmp_path) -> int:
+    path = tmp_path / "w.mp4"
+    path.write_bytes(data)
+    return int(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width",
+                               "-of", "csv=p=0", path], capture_output=True, text=True, check=True).stdout)
+
+
+def test_tracker_headers_parse_boxes_and_flags():
+    headers = {"X-Tracker-Boxes": "[[0, 8, 24, 32, 16], [33, 10, 24, 30, 16]]", "X-Tracker-Flags": '["occluded?"]'}
+
+    assert server.tracker_headers(headers) == ([[0, 8, 24, 32, 16], [33, 10, 24, 30, 16]], ["occluded?"])
+    assert server.tracker_headers({"X-Tracker-Flags": "occluded?, lost"}) == (None, ["occluded?", "lost"])
+    assert server.tracker_headers({}) == (None, [])
+
+
+def test_preheat_crops_with_the_tracker_boxes_from_the_header(api, store, recording, fake_calls, tmp_path):
+    # 64x48 recording; boxes' median [10, 24, 30, 16] (x {8, 10, 40}, y {24, 24, 0}, w {32, 30, 10}, h {16, 16, 10})
+    boxes = [[0, 8, 24, 32, 16], [33, 10, 24, 30, 16], [66, 40, 0, 10, 10]]
+
+    response = api.post("/preheat/clip?fps=30&prompted=0", content=recording,
+                        headers={"X-Tracker-Boxes": json.dumps(boxes), "X-Tracker-Flags": '["occluded?"]'})
+
+    assert response.status_code == 200, response.text
+    (stored,) = load(store)
+    assert (stored["config"]["crop"], stored["tracker_flags"]) == ("v1-tracker-median", ["occluded?"])
+    assert width(backend(store).video(stored["id"]), tmp_path) == 256
+
+
+def test_preheat_without_tracker_boxes_reads_the_full_frame(api, store, recording, fake_calls, tmp_path):
+    assert api.post("/preheat/clip?fps=30&prompted=0", content=recording).status_code == 200
+
+    (stored,) = load(store)
+    assert (stored["config"]["crop"], stored["tracker_flags"]) == ("full-frame-v0", [])
+    assert width(backend(store).video(stored["id"]), tmp_path) == 64
 
 
 def test_preheat_without_a_user_records_the_default_user(api, store, recording, monkeypatch):

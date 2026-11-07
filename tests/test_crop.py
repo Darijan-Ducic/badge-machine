@@ -103,6 +103,35 @@ def test_crop_shows_the_median_mouth_box(mouth_video, tmp_path):
     assert right[2] > 200 and right[0] < 60, f"right of the crop should be blue, got {right}"
 
 
+# Browser-tracker crop boxes [t_ms, x, y, w, h], already padded. Medians: x {122, 118, 300} -> 122,
+# y {140, 138, 150} -> 140, w {80, 76, 10} -> 76, h {36, 36, 10} -> 36: [122, 140, 76, 36], which is no single
+# frame's box, and is the mouth_video's red/blue box.
+TRACKER = [[0, 122, 140, 80, 36], [33, 118, 138, 76, 36], [66, 300, 150, 10, 10]]
+
+
+def test_tracker_box_is_the_per_coordinate_median_of_the_padded_boxes():
+    assert crop.tracker_box(TRACKER) == pytest.approx([122, 140, 76, 36])
+
+
+def test_no_tracker_boxes_means_no_box():
+    assert crop.tracker_box([]) is None
+
+
+def test_tracker_boxes_crop_to_their_median_as_v1_tracker_median(mouth_video, tmp_path):
+    out = tmp_path / "tracker.mp4"
+
+    crop_id = crop.crop(mouth_video, out, mouths=TRACKER)
+
+    assert crop_id == "v1-tracker-median"
+    streams = probe(out)
+    assert [s["codec_type"] for s in streams] == ["video"], "muted: no audio stream"
+    assert (streams[0]["codec_name"], streams[0]["width"]) == ("h264", 256)
+    frame = first_frame(out)
+    left, right = frame[frame.shape[0] // 2, 64], frame[frame.shape[0] // 2, 192]
+    assert left[0] > 200 and left[2] < 60, f"left of the crop should be red, got {left}"
+    assert right[2] > 200 and right[0] < 60, f"right of the crop should be blue, got {right}"
+
+
 def test_without_boxes_the_clip_passes_through_muted_at_full_frame(mouth_video, tmp_path):
     out = tmp_path / "full.mp4"
 
