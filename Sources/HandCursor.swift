@@ -158,6 +158,8 @@ private final class HandFrameTracker: NSObject, AVCaptureVideoDataOutputSampleBu
 }
 
 struct HandPointer {
+    private static let movementSensitivity: CGFloat = 1.5
+
     enum Event {
         case move(CGPoint)
         case click(CGPoint)
@@ -226,8 +228,8 @@ struct HandPointer {
 
     private mutating func position(for tip: CGPoint, after interval: TimeInterval, in bounds: CGRect) -> CGPoint? {
         // Mirror camera x for selfie-style motion and convert Vision's upward y to screen y.
-        let x = min(1, max(0, (0.82 - tip.x) / 0.64))
-        let y = min(1, max(0, (0.82 - tip.y) / 0.64))
+        let x = min(1, max(0, 0.5 + (0.5 - tip.x) / 0.64 * Self.movementSensitivity))
+        let y = min(1, max(0, 0.5 + (0.5 - tip.y) / 0.64 * Self.movementSensitivity))
         let target = CGPoint(x: bounds.minX + x * max(0, bounds.width - 1),
                              y: bounds.minY + y * max(0, bounds.height - 1))
         let previous = filtered ?? target
