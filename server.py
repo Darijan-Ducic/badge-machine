@@ -40,6 +40,12 @@ def resume_turns() -> int:
     return resume_pending(read_turn, TURNS, SESSIONS)
 
 
+def practice_dataset(user_id: str) -> str | None:
+    """`practice:<dataset>:<speaker>` -> the dataset (its sessions skip the daily cap); any other user has none."""
+    parts = user_id.split(":", 2)
+    return parts[1] if len(parts) == 3 and parts[0] == "practice" and parts[1] else None
+
+
 def tracker_headers(headers) -> tuple[list | None, list[str]]:
     """The browser tracker's crop boxes and flags sent with a recording: `X-Tracker-Boxes` a JSON list of
     [t_ms, x, y, w, h] (already padded; absent = crop the full frame), `X-Tracker-Flags` a JSON list of strings or
@@ -151,8 +157,9 @@ class Handler(SimpleHTTPRequestHandler):
             elif url.path == "/dictation":
                 # A dictation session -> its STT now; its turns are cut at the pauses and read as clips on TURNS.
                 boxes, flags = tracker_headers(self.headers)
-                body = start_session(data, user_id=query.get("user", [""])[0] or DEFAULT_USER, boxes=boxes,
-                                     flags=flags, process_turn=read_turn, executor=TURNS, transcribe=transcribe_turns,
+                user = query.get("user", [""])[0] or DEFAULT_USER
+                body = start_session(data, user_id=user, boxes=boxes, flags=flags, dataset=practice_dataset(user),
+                                     process_turn=read_turn, executor=TURNS, transcribe=transcribe_turns,
                                      store=SESSIONS)
             else:
                 # One JPEG/PNG frame -> SAM boxes [x, y, w, h] in that frame's pixels; ids are per-request ordinals.
