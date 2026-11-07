@@ -39,7 +39,7 @@ final class HandCursor: @unchecked Sendable {
     }
 
     func stop(onStop: @escaping () -> Void) {
-        queue.async {
+        queue.async { [self] in
             self.releaseCamera()
             onStop()
         }
@@ -108,7 +108,6 @@ private final class HandFrameTracker: NSObject, AVCaptureVideoDataOutputSampleBu
             onPoint(nil, timestamp)
         }
     }
-
 }
 
 struct HandPointer {
