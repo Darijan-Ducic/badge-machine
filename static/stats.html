@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Stats</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* page-specific; every value is pre-coach's (studio/static/app.css) unless noted */
+    .top { display: flex; align-items: flex-end; justify-content: space-between; gap: 22px; flex-wrap: wrap; }
+    #content { display: flex; flex-direction: column; gap: 22px; transition: opacity .2s; }   /* .col gap, app.css:503 */
+    #content.loading { opacity: .5; }                                                             /* .dock .go:disabled, app.css:510 */
+    a.opt { color: var(--ink); text-decoration: none; }
+    /* series identity: a short line key beside the label (stroke 2 like cards.js:219; 14px like .line5 marks, app.css:154) */
+    .lk { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+    .stat div.word { font-size: 21px; letter-spacing: -0.02em; }                                 /* .headline.sm, app.css:120 */
+    .stat .chip { margin-top: 8px; }
+    /* the chart */
+    .chart-wrap { position: relative; margin-top: 18px; }                                        /* .spark margin, app.css:145 */
+    .chart { display: block; width: 100%; overflow: visible; }
+    .chart text { font-size: 11.5px; fill: var(--ink-3); }                                       /* .bars/.ends labels, app.css:126,133 */
+    .chart text.stage { font-size: 11px; }                                                       /* .track .cue em, app.css:132 */
+    .chart text.end { font-size: 12px; fill: var(--ink-2); }                                     /* .legend, app.css:48 */
+    .chart text.end tspan.v { fill: var(--ink); font-weight: 500; }
+    .chart:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
+    .tip { position: absolute; top: 0; pointer-events: none; flex-direction: column; align-items: stretch; gap: 2px; box-shadow: var(--lift); white-space: nowrap; z-index: 2; }
+    .tip b { font-weight: 500; color: var(--ink); }
+    .tip span { display: flex; align-items: center; gap: 6px; }
+    .tip .lk { margin-right: 0; }
+    .tableview { margin-top: 14px; font-size: 13px; color: var(--ink-3); }                        /* .meta size, app.css:33 */
+    .tableview summary { cursor: pointer; }
+    .tableview table { border-collapse: collapse; margin-top: 8px; width: 100%; }
+    .tableview th { text-align: left; font-weight: 500; }
+    .tableview th, .tableview td { padding: 4px 10px 4px 4px; border-bottom: 1px solid var(--hair); }   /* .beatlist li, app.css:440 */
+    .tableview td { color: var(--ink-2); }
+    /* training stage */
+    .stagecard .headline { margin-top: 14px; }                                                    /* .c-next .eyebrow gap, app.css:117 */
+    .stagecard .progress { margin-top: 22px; }
+    .steps4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-top: 6px; font-size: 12px; color: var(--ink-3); }  /* .progress gap, app.css:369 */
+    .steps4 .on { color: var(--ink); font-weight: 500; }
+    .meter { margin-top: 22px; }
+    .meter .track { background: var(--well-2); border-radius: 4px; }                               /* .track.plan, app.css:129 */
+    .meter .track span { left: 0; background: var(--ink); }
+    .meter .meta { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="haze" aria-hidden="true"></div>
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
+  <main class="section"><div class="page">
+    <header class="top">
+      <div>
+        <h1>Stats</h1>
+        <p class="meta" id="summary">Loading…</p>
+      </div>
+      <button class="opt" id="refresh" type="button">Refresh</button>
+    </header>
+    <p class="msg error" id="error" hidden></p>
+    <div id="content">
+      <article class="card" id="empty" hidden>
+        <p class="eyebrow"><b>No labeled clips yet</b></p>
+        <h2 class="headline" style="margin-top: 14px">Accuracy shows up after the first labeled clip.</h2>
+        <p class="support">Record on Preheat with STT on. Each clip whose transcript matches a phrase becomes a label, and the video-only read is scored against it.</p>
+        <p class="meta" style="margin-top: 20px"><a class="opt" href="preheat.html">Open Preheat</a></p>
+      </article>
+      <section class="stats" id="tiles"></section>
+      <article class="card" id="curve">
+        <p class="eyebrow"><b>Learning curve</b><span id="curve-sub"></span></p>
+        <p class="legend" id="legend"></p>
+        <div class="chart-wrap" id="chart"></div>
+        <details class="tableview"><summary>Table view</summary><table id="table"></table></details>
+      </article>
+      <div class="board">
+        <article class="card stagecard">
+          <p class="eyebrow"><b>Training stage</b></p>
+          <h2 class="headline" id="stage"></h2>
+          <div class="progress" id="stage-bar"></div>
+          <div class="steps4" id="stage-names"></div>
+          <div class="meter"><div class="track"><span id="meter-fill"></span></div><p class="meta" id="meter-text"></p></div>
+        </article>
+        <section class="col">
+          <div class="stat"><small>Auto-send threshold</small><div class="word" id="threshold"></div></div>
+          <div class="stat"><small>Last camera fps</small><div id="fps"></div><span class="chip near" id="fps-warn" hidden></span></div>
+        </section>
+      </div>
+    </div>
+  </div></main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const STAGES = ["defaults", "temperature", "per-model", "with-prior"];   // the contract's stage order
+    const SERIES = [
+      { key: "fused", name: "Video only", color: "var(--coach)" },
+      { key: "gemini", name: "Gemini", color: "var(--ink-2)" },
+      { key: "muse", name: "Muse", color: "var(--ink-3)" },
+    ];
+    const FEED_FPS = 24, NS = "http://www.w3.org/2000/svg";
+    const pct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
+    const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    const svg = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; return e; };
+    const key = (color) => { const k = el("i", "lk"); k.style.background = color; return k; };
+    let stats = null, points = [];
+
+    async function load() {
+      $("content").classList.add("loading");
+      $("refresh").disabled = true;
+      try {
+        const r = await fetch("/stats", { cache: "no-store" });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        $("error").hidden = true;
+        render(d);
+      } catch (err) {
+        $("error").textContent = `Couldn't load stats: ${err.message}`;
+        $("error").hidden = false;
+      } finally {
+        $("content").classList.remove("loading");
+        $("refresh").disabled = false;
+      }
+    }
+
+    function render(s) {
+      stats = s;
+      const empty = s.labeled === 0;
+      const sum = $("summary");
+      sum.replaceChildren(el("span", null, "STT transcripts are the reference"), el("i"), el("b", null, String(s.labeled)), " labeled of ", el("b", null, String(s.clips)), " clips", el("i"), "window ", el("b", null, String(s.window)));
+      $("empty").hidden = !empty;
+      $("tiles").hidden = $("curve").hidden = empty;
+      if (!empty) {
+        $("tiles").replaceChildren(...SERIES.map((x) => {
+          const t = el("div", "stat"), label = el("small");
+          label.append(key(x.color), `${x.name} · last ${s.window}`);
+          const v = el("div", null, pct(s.accuracy.recent[x.key]));
+          v.append(" ", el("span", null, `all-time ${pct(s.accuracy.all[x.key])}`));
+          t.append(label, v);
+          return t;
+        }));
+        $("curve-sub").textContent = `· accuracy vs STT over the last ${s.window} clips, by clip`;
+        $("legend").replaceChildren(...SERIES.map((x) => { const s = el("span"); s.append(key(x.color), x.name); return s; }));
+        points = rolling(s.history, s.window);
+        drawChart();
+        table();
+      }
+      // training stage
+      $("stage").textContent = s.stage;
+      const at = STAGES.indexOf(s.stage);
+      $("stage-bar").replaceChildren(...STAGES.map((_, i) => el("span", i < at ? "done" : i === at ? "on" : "")));
+      $("stage-names").replaceChildren(...STAGES.map((n, i) => el("span", i === at ? "on" : "", n)));
+      if (s.next_stage) {
+        $("meter-fill").style.width = `${Math.min(100, (100 * s.labeled) / s.next_stage.at)}%`;
+        $("meter-text").replaceChildren(el("b", null, String(s.labeled)), " labeled", el("i"), "next: ", el("b", null, s.next_stage.name), " at ", el("b", null, String(s.next_stage.at)), ` · ${Math.max(0, s.next_stage.at - s.labeled)} to go`);
+      } else {
+        $("meter-fill").style.width = "100%";
+        $("meter-text").replaceChildren(el("b", null, String(s.labeled)), " labeled", el("i"), "final stage reached");
+      }
+      $("threshold").textContent = s.threshold == null ? "always asks to confirm" : `auto-sends at P ≥ ${s.threshold.toFixed(2)}`;
+      $("fps").textContent = s.camera_fps == null ? "—" : String(+s.camera_fps.toFixed(1));
+      if (s.camera_fps != null) $("fps").append(" ", el("span", null, "fps"));
+      $("fps-warn").textContent = `Below ${FEED_FPS} fps: the lip readers are fed ${FEED_FPS}`;
+      $("fps-warn").hidden = !(s.camera_fps != null && s.camera_fps < FEED_FPS);
+    }
+
+    // rolling accuracy: at each clip, the share correct over the last `window` labeled clips (fewer at the start)
+    function rolling(history, window) {
+      return history.map((h, k) => {
+        const slice = history.slice(Math.max(0, k - window + 1), k + 1), p = { i: h.i, stage: h.stage, n: slice.length };
+        for (const x of SERIES) p[x.key] = slice.filter((c) => c[x.key]).length / slice.length;
+        return p;
+      });
+    }
+
+    function ticks(lo, hi, max = 6) {
+      const span = Math.max(1, hi - lo), raw = span / max, mag = 10 ** Math.floor(Math.log10(raw));
+      const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw && Number.isInteger(s)) || Math.ceil(raw);
+      const out = [];
+      for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) out.push(t);
+      return out;
+    }
+
+    let hover = -1;
+    function drawChart() {
+      const box = $("chart"), W = box.clientWidth, H = 290;
+      const M = { l: 40, r: 132, t: 26, b: 30 }, iw = W - M.l - M.r, ih = H - M.t - M.b;
+      if (iw < 40) return;   // no room yet (mid-layout); keep the previous render
+      const x0 = points[0].i, x1 = points[points.length - 1].i;
+      const X = (i) => M.l + (x1 === x0 ? iw / 2 : ((i - x0) / (x1 - x0)) * iw), Y = (v) => M.t + (1 - v) * ih;
+      const root = svg("svg", { class: "chart", width: W, height: H, viewBox: `0 0 ${W} ${H}`, tabindex: 0, role: "img",
+        "aria-label": `Learning curve: rolling accuracy over ${points.length} clips. Last values: ${SERIES.map((x) => `${x.name} ${pct(points[points.length - 1][x.key])}`).join(", ")}.` });
+      for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+        root.append(svg("line", { x1: M.l, x2: M.l + iw, y1: Y(v), y2: Y(v), stroke: v === 0 ? "var(--hair-2)" : "var(--hair)" }));
+        root.append(svg("text", { x: M.l - 8, y: Y(v) + 4, "text-anchor": "end" }, `${v * 100}%`));
+      }
+      for (const t of ticks(x0, x1)) root.append(svg("text", { x: X(t), y: H - 8, "text-anchor": "middle" }, String(t)));
+      root.append(svg("text", { x: M.l + iw, y: H - 8, "text-anchor": "start", dx: 10 }, "clip"));
+      points.forEach((p, k) => {   // stage boundaries, labeled at the top
+        if (k > 0 && p.stage === points[k - 1].stage) return;
+        if (k > 0) root.append(svg("line", { x1: X(p.i), x2: X(p.i), y1: M.t - 4, y2: M.t + ih, stroke: "var(--hair-2)" }));
+        root.append(svg("text", { class: "stage", x: X(p.i) + (k > 0 ? 4 : 0), y: M.t - 10 }, p.stage));
+      });
+      for (const x of [...SERIES].reverse()) {
+        root.append(svg("polyline", { points: points.map((p) => `${X(p.i)},${Y(p[x.key])}`).join(" "), fill: "none", stroke: x.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      }
+      // end markers and direct labels; labels kept 16px apart, with a short leader when moved off their line end
+      const last = points[points.length - 1], ends = SERIES.map((x) => ({ x, y: Y(last[x.key]) })).sort((a, b) => a.y - b.y);
+      for (let k = 1; k < ends.length; k++) ends[k].ly = Math.max(ends[k].y, (ends[k - 1].ly ?? ends[k - 1].y) + 16);
+      ends[0].ly = ends[0].y;
+      const over = ends[ends.length - 1].ly - (M.t + ih);
+      if (over > 0) ends.forEach((e) => { e.ly -= over; });
+      for (const e of ends) {
+        if (Math.abs(e.ly - e.y) > 1) root.append(svg("polyline", { points: `${M.l + iw + 6},${e.y} ${M.l + iw + 12},${e.ly}`, fill: "none", stroke: "var(--ink-4)" }));
+        root.append(svg("circle", { cx: M.l + iw, cy: e.y, r: 4, fill: e.x.color, stroke: "var(--card)", "stroke-width": 2 }));
+        const t = svg("text", { class: "end", x: M.l + iw + 14, y: e.ly + 4 });
+        t.append(svg("tspan", { class: "v" }, pct(last[e.x.key])), svg("tspan", {}, ` ${e.x.name}`));
+        root.append(t);
+      }
+      // hover layer: crosshair snaps to the nearest clip; one tooltip lists every series
+      const cross = svg("line", { y1: M.t, y2: M.t + ih, stroke: "var(--ink-4)", visibility: "hidden" });
+      const dots = SERIES.map((x) => svg("circle", { r: 4, fill: x.color, stroke: "var(--card)", "stroke-width": 2, visibility: "hidden" }));
+      const hit = svg("rect", { x: M.l, y: M.t, width: iw, height: ih, fill: "transparent" });
+      root.append(cross, ...dots, hit);
+      const tip = el("div", "event tip");
+      tip.hidden = true;
+      const show = (k) => {
+        hover = k;
+        if (k < 0) { tip.hidden = true; cross.setAttribute("visibility", "hidden"); dots.forEach((d) => d.setAttribute("visibility", "hidden")); return; }
+        const p = points[k], cx = X(p.i);
+        cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+        dots.forEach((d, j) => { d.setAttribute("cx", cx); d.setAttribute("cy", Y(p[SERIES[j].key])); d.setAttribute("visibility", "visible"); });
+        tip.replaceChildren(el("span", null, `clip ${p.i} · ${p.stage} · last ${p.n}`), ...SERIES.map((x) => { const r = el("span"); r.append(key(x.color), el("b", null, pct(p[x.key])), x.name); return r; }));
+        tip.hidden = false;
+        tip.style.display = "flex";
+        const tw = tip.offsetWidth;
+        tip.style.left = `${cx + 14 + tw > W ? cx - 14 - tw : cx + 14}px`;
+        tip.style.top = `${M.t}px`;
+      };
+      hit.addEventListener("pointermove", (e) => {
+        const bx = root.getBoundingClientRect().left, i = x0 + ((e.clientX - bx - M.l) / iw) * (x1 - x0);
+        let k = 0;
+        points.forEach((p, j) => { if (Math.abs(p.i - i) < Math.abs(points[k].i - i)) k = j; });
+        show(k);
+      });
+      hit.addEventListener("pointerleave", () => show(-1));
+      root.addEventListener("focus", () => show(hover >= 0 ? hover : points.length - 1));
+      root.addEventListener("blur", () => show(-1));
+      root.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowLeft") show(Math.max(0, hover - 1));
+        else if (e.key === "ArrowRight") show(Math.min(points.length - 1, hover + 1));
+        else return;
+        e.preventDefault();
+      });
+      box.replaceChildren(root, tip);
+    }
+
+    function table() {
+      const head = el("tr");
+      for (const h of ["clip", "stage", ...SERIES.map((x) => `${x.name} (last ${stats.window})`)]) head.append(el("th", null, h));
+      $("table").replaceChildren(head, ...points.map((p) => {
+        const tr = el("tr");
+        for (const v of [p.i, p.stage, ...SERIES.map((x) => pct(p[x.key]))]) tr.append(el("td", null, String(v)));
+        return tr;
+      }));
+    }
+
+    let resizing = 0;
+    addEventListener("resize", () => { cancelAnimationFrame(resizing); resizing = requestAnimationFrame(() => { if (stats && stats.labeled) drawChart(); }); });
+    $("refresh").addEventListener("click", load);
+    load();
+  </script>
+</body>
+</html>
