@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Clips</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* page-specific; every value is pre-coach's (studio/static/app.css) unless noted */
+    .top { display: flex; align-items: flex-end; justify-content: space-between; gap: 22px; flex-wrap: wrap; }
+    .picker { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-3); }
+    select { font: 14px/1.4 var(--font); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 14px; padding: 8px 12px; outline: none; }  /* .other-in, app.css:247 */
+    select:focus-visible { border-color: rgba(0,0,0,.22); }
+    .explorer { display: grid; grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.6fr); gap: 22px; align-items: start; }   /* .tut-body, app.css:373 */
+    /* the clip list (.recent rows, app.css:81-91) */
+    .list { padding: 18px 16px 14px; position: sticky; top: 24px; max-height: calc(100vh - 48px); overflow: auto; }
+    .list > .eyebrow { padding: 0 6px; margin-bottom: 8px; }
+    .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+    .row { width: 100%; display: grid; gap: 3px; padding: 10px 12px; border-radius: 16px; text-align: left; transition: background .15s; }
+    .row:hover { background: var(--well); }
+    .row[aria-pressed="true"] { background: var(--well); box-shadow: 0 0 0 1.5px rgba(17, 17, 17, .14); }   /* .preset.on, app.css:327 */
+    .row b { font-weight: 500; font-size: 14px; overflow-wrap: anywhere; }
+    .row b.none { color: var(--ink-3); font-weight: 400; }
+    .row small { font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+    .row .foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; font-size: 11.5px; color: var(--ink-3); }
+    .marks { display: inline-flex; gap: 8px; }
+    .mark.yes { color: var(--onplan-ink); } .mark.no { color: var(--near-ink); }   /* green = said, yellow = never said, app.css:174-178 */
+    /* detail */
+    .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }   /* app.css:416 */
+    .player { aspect-ratio: auto; min-height: 160px; }
+    .player video { transform: none; object-fit: contain; background: var(--well); display: block; }
+    .label-text { margin: 4px 0 0; font-size: 18px; line-height: 1.45; letter-spacing: -0.01em; }   /* .tip-text, app.css:125 */
+    .label-text.none { color: var(--ink-3); }
+    .sub { margin: 18px 0 0; font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }   /* .stat small, app.css:475 */
+    .pick { margin: 4px 0 0; font-size: 21px; letter-spacing: -0.02em; line-height: 1.25; }   /* .headline.sm, app.css:120 */
+    .decision .meta { margin-top: 10px; }
+    .cfg { margin-top: 14px; }
+    .cfg code, .feat code { font: 500 12px/1 var(--font); background: var(--well); padding: 2px 7px; border-radius: 999px; color: var(--ink-2); }   /* code, app.css:26 */
+    /* bars: one series per chart, value printed beside it; 0–1 scale, 4px rounded data end, square at the baseline */
+    .bar { position: relative; height: 10px; border-radius: 0 4px 4px 0; background: var(--coach-wash); }   /* .track, app.css:127-128 */
+    .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; background: var(--coach); }
+    .bar.gemini { background: var(--well); } .bar.gemini i { background: var(--ink-2); }   /* Gemini = ink-2, Muse = ink-3, as on Stats */
+    .bar.muse { background: var(--well); } .bar.muse i { background: var(--ink-3); }
+    /* the candidate pool */
+    .pool { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 2px; }   /* .log, app.css:207 */
+    .cand > button { width: 100%; display: grid; grid-template-columns: 24px minmax(0, 1.4fr) minmax(0, 1fr) 44px 16px; gap: 10px; align-items: center; padding: 6px 10px; border-radius: 12px; text-align: left; font-size: 14px; }   /* .log li, app.css:208; .beatlist cols, 440 */
+    .cand > button:hover { background: var(--well); }
+    .cand.label > button { background: var(--onplan-wash); }
+    .cand .rank { font-size: 12px; color: var(--ink-3); }
+    .cand .txt { overflow-wrap: anywhere; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .cand.none .txt { color: var(--ink-2); }
+    .num { text-align: right; font-size: 13px; color: var(--ink-2); }
+    .cand .chev { width: 16px; height: 16px; color: var(--ink-3); transition: transform .2s var(--ease); }
+    .cand > button[aria-expanded="true"] .chev { transform: rotate(90deg); }
+    .feats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 22px; margin: 4px 0 8px 34px; padding: 12px 14px; border-radius: 16px; background: var(--well); font-size: 12.5px; }   /* .saidlist li radius, app.css:174 */
+    .feat { display: grid; grid-template-columns: minmax(0, 1fr) 52px 44px; gap: 8px; align-items: center; }
+    .feat .v { text-align: right; color: var(--ink); }
+    .fb { position: relative; height: 6px; border-radius: 0 3px 3px 0; background: var(--well-2); }   /* .progress span, app.css:370 */
+    .fb i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 3px 3px 0; background: var(--ink-3); }
+    .fb.log { background: none; font-size: 11px; color: var(--ink-3); height: auto; }
+    /* score lists (hypotheses, closed call, Gemini) */
+    .scores { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 2px; }
+    .scores li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr) 44px; gap: 10px; align-items: center; padding: 5px 10px; border-radius: 12px; font-size: 13.5px; }
+    .scores li.label { background: var(--onplan-wash); }
+    .scores li.lead { font-weight: 500; }
+    .scores li.none span:first-child { color: var(--ink-2); }
+    /* samples */
+    .sample { padding: 18px 0 4px; border-top: 1px solid var(--hair); }   /* .c-moments .m, app.css:139 */
+    .sample:first-of-type { border-top: 0; padding-top: 8px; }
+    .sample-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--ink-3); }
+    .sample-head b { color: var(--ink); font-weight: 500; }
+    .sample .msg { margin-top: 10px; }
+    .sample h4 { margin: 14px 0 0; font-size: 12px; font-weight: 500; color: var(--ink-3); }
+    /* the timeline: every lane shares one frame axis, so a code's box spans exactly its [start, end] frames */
+    .tl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 4px 10px; align-items: center; margin-top: 14px; font-size: 11.5px; color: var(--ink-3); }   /* .timeline col, app.css:448 */
+    .lane { position: relative; height: 22px; }
+    .lane.thin { height: 6px; }
+    .seg { position: absolute; top: 0; bottom: 0; border-radius: 4px; display: grid; place-items: center; font-size: 11px; color: var(--ink-2); white-space: nowrap; }
+    .seg.tight > span { visibility: hidden; }
+    .vis .seg { background: var(--well-2); }
+    .vis .seg.rest { background: var(--well); color: var(--ink-3); }
+    .words .seg { background: var(--card); border: 1px solid var(--hair-2); color: var(--ink); font-size: 12px; }
+    .thin .seg { border-radius: 3px; background: var(--ink-4); }
+    .thin .seg.occl { background: var(--near); }
+    .axis { position: relative; height: 14px; }
+    .axis span { position: absolute; top: 0; transform: translateX(-50%); }
+    .slots { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 2px; font-size: 13px; }
+    .slots li { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; color: var(--ink-2); }
+    .slots li > span:first-child { color: var(--ink-3); font-size: 12px; padding-top: 1px; }
+    .slots b { font-weight: 500; color: var(--ink); }
+    .empty-detail { color: var(--ink-3); }
+    @media (max-width: 1100px) { .explorer, .two { grid-template-columns: minmax(0, 1fr); } .list { position: static; max-height: none; } }   /* app.css:558-559 */
+  </style>
+</head>
+<body>
+  <div class="haze" aria-hidden="true"></div>
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
+  <main class="section"><div class="page">
+    <header class="top">
+      <div>
+        <h1>Clips</h1>
+        <p class="meta">Each clip with what every model read, the candidate pool and the call the scorer made.</p>
+      </div>
+      <label class="picker">User <select id="user" aria-label="User"></select></label>
+    </header>
+    <p class="msg error" id="error" hidden></p>
+    <div class="explorer">
+      <aside class="card list"><p class="eyebrow" id="list-head">Loading…</p><ul class="rows" id="rows"></ul></aside>
+      <section class="col" id="detail"><article class="card empty-detail">Pick a clip on the left.</article></section>
+    </div>
+  </div></main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const NONE = "∅", RAW_FEATURES = new Set(["prior"]);   // prior is a log value; every other feature is a share or score in [0, 1]
+    const ICON = { yes: '<path d="m5 12.5 4.5 4.5L19 7.5"/>', no: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>', chev: '<path d="m9 6 6 6-6 6"/>' };
+    let users = [], clips = [], user = null, current = null, ticket = 0;
+
+    // DOM builder: strings become text nodes (data is untrusted), so nothing from the API is parsed as HTML.
+    function h(tag, props, ...kids) {
+      const e = document.createElement(tag);
+      for (const [k, v] of Object.entries(props || {})) {
+        if (v == null || v === false) continue;
+        if (k === "class") e.className = v;
+        else if (k === "style") Object.assign(e.style, v);
+        else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+        else e.setAttribute(k, v === true ? "" : v);
+      }
+      for (const kid of kids.flat()) if (kid != null && kid !== false) e.append(kid instanceof Node ? kid : String(kid));
+      return e;
+    }
+    const icon = (name, label) => { const s = h("span", { class: "ic", role: label ? "img" : null, "aria-label": label, "aria-hidden": label ? null : "true" }); s.innerHTML = `<svg viewBox="0 0 24 24">${ICON[name]}</svg>`; return s; };
+    const fmt = (x, d = 2) => (x == null ? "—" : Number(x).toFixed(d));
+    const secs = (ms) => `${(ms / 1000).toFixed(1)} s`;
+    const when = (t) => new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9' ]/g, " ").split(/\s+/).filter((w, i, a) => w && w !== a[i - 1]).join(" ");
+    const candText = (t) => (t === NONE ? "∅ none of these" : t);
+    const bar = (p, cls = "") => h("span", { class: `bar ${cls}`, title: fmt(p, 3) }, h("i", { style: { width: `${Math.max(0, Math.min(1, p)) * 100}%` } }));
+    const ACTION = { auto: ["auto-send", "chip onplan"], confirm: ["confirm", "chip near"], none: ["none", "chip"] };
+    const action = (a) => h("span", { class: (ACTION[a] || [a, "chip"])[1] }, (ACTION[a] || [a])[0]);
+    const range = (f) => (f ? `${f[0]}–${f[1]}` : "—");
+
+    function marks(correct) {
+      if (!correct) return h("span", null, "unlabeled");
+      return h("span", { class: "marks" }, ...[["fused", "fused"], ["gemini", "Gemini"], ["muse", "Muse"]].map(([k, name]) =>
+        h("span", { class: `mark ${correct[k] ? "yes" : "no"}`, title: `${name} ${correct[k] ? "matches" : "differs from"} STT` }, `${name} ${correct[k] ? "✓" : "✗"}`)));
+    }
+
+    async function getJSON(url) {
+      const r = await fetch(url, { cache: "no-store" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      return d;
+    }
+    const fail = (err) => { $("error").textContent = err.message; $("error").hidden = false; };
+
+    // ---- the list ----
+    async function loadList(wanted, pick) {
+      try {
+        const d = await getJSON(wanted ? `/clips?user=${encodeURIComponent(wanted)}` : "/clips");
+        $("error").hidden = true;
+        users = d.users;
+        clips = [...d.clips].sort((a, b) => b.t - a.t);
+        user = wanted || clips[0]?.user_id || users[0]?.id || null;
+        $("user").replaceChildren(...users.map((u) => h("option", { value: u.id, selected: u.id === user }, `${u.id} · ${u.clips} clip${u.clips === 1 ? "" : "s"}`)));
+        $("list-head").replaceChildren(h("b", null, `${clips.length} clip${clips.length === 1 ? "" : "s"}`), "· newest first");
+        $("rows").replaceChildren(...clips.map(row));
+        if (!clips.length) $("rows").append(h("li", { class: "eyebrow", style: { padding: "0 6px" } }, "No clips for this user yet."));
+        const target = clips.find((c) => c.id === pick) || clips[0];
+        if (target) select(target.id); else $("detail").replaceChildren(h("article", { class: "card empty-detail" }, "No clip to show."));
+      } catch (err) { fail(err); }
+    }
+
+    function row(c) {
+      return h("li", null, h("button", { class: "row", type: "button", "data-id": c.id, "aria-pressed": "false", onclick: () => select(c.id) },
+        c.stt == null ? h("b", { class: "none" }, `no STT · ${c.mode}`) : h("b", null, `“${c.stt}”`),
+        h("small", null, c.top ? `top: ${candText(c.top.text)} · p ${fmt(c.top.p)}` : "no pick"),
+        h("span", { class: "foot" }, action(c.action), marks(c.correct), h("span", null, `· ${c.stage}`), h("time", null, `· ${when(c.t)}`))));
+    }
+
+    async function select(id) {
+      for (const b of $("rows").querySelectorAll(".row")) b.setAttribute("aria-pressed", String(b.dataset.id === id));
+      history.replaceState(null, "", `?user=${encodeURIComponent(user)}#${encodeURIComponent(id)}`);
+      const mine = ++ticket;
+      $("detail").style.opacity = ".5";   // keep the previous render while the next loads (.dock .go:disabled, app.css:510)
+      try {
+        const d = await getJSON(`/clips/${encodeURIComponent(id)}`);
+        if (mine !== ticket) return;
+        current = d;
+        $("detail").replaceChildren(...detail(d));
+        fitLabels();
+      } catch (err) { fail(err); } finally { if (mine === ticket) $("detail").style.opacity = ""; }
+    }
+
+    // ---- the detail ----
+    function detail(d) {
+      const top = d.pool[0], label = d.pool.find((c) => c.is_label);
+      const head = h("article", { class: "card" },
+        h("p", { class: "eyebrow" }, h("b", null, `Clip ${d.id}`), `· ${d.mode} · ${d.user_id} · ${when(d.t)}`),
+        h("div", { class: "two", style: { marginTop: "14px" } },
+          h("div", { class: "cam player" }, h("video", { controls: true, playsinline: true, preload: "metadata", src: d.video })),
+          h("div", { class: "decision" },
+            h("p", { class: "sub", style: { marginTop: "0" } }, "STT label"),
+            d.stt == null ? h("p", { class: "label-text none" }, "No STT for this clip") : h("p", { class: "label-text" }, `“${d.stt}”`),
+            h("p", { class: "sub" }, "Decision"),
+            top ? h("p", { class: "pick" }, candText(top.text)) : h("p", { class: "pick" }, "no candidates"),
+            h("p", { class: "meta" }, h("span", null, "P ", h("b", null, fmt(top?.p, 3))), action(d.action),
+              h("span", null, d.threshold == null ? "no threshold yet: always asks" : h("span", null, "auto-sends at ", h("b", null, `≥ ${fmt(d.threshold)}`)))),
+            h("p", { class: "meta" }, h("span", null, "stage ", h("b", null, d.stage)), h("i"), h("span", null, h("b", null, String(d.frames)), " frames"))),
+        ),
+        h("p", { class: "meta cfg" }, ...Object.entries(d.config || {}).map(([k, v]) => h("span", null, `${k} `, h("code", null, String(v))))));
+
+      const pool = h("article", { class: "card" },
+        h("p", { class: "eyebrow" }, h("b", null, "Candidate pool"), `· ${d.pool.length} candidates by P`,
+          label ? (label.text === NONE ? h("span", { class: "chip near" }, "pool miss: ∅ is the label") : h("span", { class: "chip onplan" }, "STT label in pool")) : h("span", { class: "chip" }, "unlabeled")),
+        h("ol", { class: "pool" }, ...d.pool.map((c, i) => candidate(c, i))));
+
+      const closedRows = d.closed?.output ? [
+        ...Object.entries(d.closed.output.scores).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([p, s], i) => scoreRow(p, s, "muse", { lead: i === 0, label: d.stt && norm(p) === norm(d.stt) })),
+        scoreRow(candText(NONE), d.closed.output.none, "muse", { none: true }),
+      ] : [];
+      const sources = h("div", { class: "two" },
+        h("article", { class: "card" },
+          h("p", { class: "eyebrow" }, h("b", null, "Muse closed call"), `· top 5 + none · ${secs(d.closed.latency_ms)}`),
+          d.closed.error ? h("p", { class: "msg error", style: { marginTop: "12px" } }, d.closed.error) : h("ol", { class: "scores" }, closedRows)),
+        h("article", { class: "card" },
+          h("p", { class: "eyebrow" }, h("b", null, "Gemini"), "· top 3"),
+          h("ol", { class: "scores" }, (d.gemini?.top || []).map((g, i) => scoreRow(g.phrase, g.p, "gemini", { lead: i === 0, label: d.stt && norm(g.phrase) === norm(d.stt) })))));
+
+      const okSamples = d.samples.filter((s) => !s.error), failed = d.samples.length - okSamples.length;
+      const lat = d.samples.map((s) => s.latency_ms).sort((a, b) => a - b);
+      const samples = h("article", { class: "card" },
+        h("p", { class: "eyebrow" }, h("b", null, `Open samples · K=${d.samples.length}`),
+          `· median ${lat.length ? secs(lat[Math.floor(lat.length / 2)]) : "—"}`, failed ? h("span", { class: "chip over" }, `${failed} failed`) : null),
+        ...d.samples.map((s) => sample(s, d.frames)));
+      return [head, pool, sources, samples];
+    }
+
+    function candidate(c, i) {
+      const feats = h("div", { class: "feats", hidden: true }, ...Object.entries(c.features).map(([name, v]) => h("div", { class: "feat" },
+        h("span", null, h("code", null, name)), h("span", { class: "v" }, fmt(v, 3)),
+        RAW_FEATURES.has(name) ? h("span", { class: "fb log" }, "log") : h("span", { class: "fb", title: `${name} ${fmt(v, 3)}` }, h("i", { style: { width: `${Math.max(0, Math.min(1, v)) * 100}%` } })))));
+      const btn = h("button", { type: "button", "aria-expanded": "false", onclick: () => { const open = btn.getAttribute("aria-expanded") !== "true"; btn.setAttribute("aria-expanded", String(open)); feats.hidden = !open; } },
+        h("span", { class: "rank" }, String(i + 1)),
+        h("span", { class: "txt" }, candText(c.text), c.is_label ? h("span", { class: "chip onplan" }, "STT label") : null),
+        bar(c.p), h("span", { class: "num" }, fmt(c.p, 3)), icon("chev"));
+      return h("li", { class: `cand${c.is_label ? " label" : ""}${c.text === NONE ? " none" : ""}`, "data-text": c.text }, btn, feats);
+    }
+
+    function scoreRow(text, s, cls, { lead = false, label = false, none = false } = {}) {
+      return h("li", { class: [lead && "lead", label && "label", none && "none"].filter(Boolean).join(" ") || null },
+        h("span", null, text), bar(s, cls), h("span", { class: "num" }, fmt(s)));
+    }
+
+    const QUALITY = { full: "chip onplan", partial: "chip near", none: "chip over", low: "chip onplan", medium: "chip near", high: "chip over" };
+    function sample(s, frames) {
+      const o = s.output;
+      const head = h("div", { class: "sample-head" }, h("b", null, `Sample ${s.sample_idx + 1}`), `· ${secs(s.latency_ms)}`);
+      if (s.error || !o) return h("div", { class: "sample", "data-sample": s.sample_idx }, head, h("p", { class: "msg error" }, s.error || "no output"));
+      const q = o.quality || {};
+      head.append(
+        o.speech?.present ? h("span", { class: "chip" }, `speech ${range(o.speech.frames)}`) : h("span", { class: "chip near" }, "no speech"),
+        h("span", { class: QUALITY[q.mouth_visible] || "chip" }, `mouth ${q.mouth_visible ?? "?"}`),
+        h("span", { class: QUALITY[q.blur] || "chip" }, `blur ${q.blur ?? "?"}`),
+        ...(q.occluded_frames || []).map((f) => h("span", { class: "chip near" }, `occluded ${range(f)}`)));
+      const hyps = [...(o.hypotheses || [])].sort((a, b) => b.s - a.s);
+      return h("div", { class: "sample", "data-sample": s.sample_idx }, head,
+        timeline(o, frames),
+        h("h4", null, "Word slots and alternatives"),
+        (o.slots || []).length ? h("ol", { class: "slots" }, o.slots.map((sl) => h("li", null, h("span", null, `f ${range(sl.f)}`),
+          h("span", null, ...[...sl.alts].sort((a, b) => b.s - a.s).flatMap((a, i) => [i ? " · " : "", i ? `${a.w} ${fmt(a.s)}` : h("b", null, `${a.w} ${fmt(a.s)}`)]))))) : h("p", { class: "sub", style: { marginTop: "6px" } }, "none"),
+        h("h4", null, "Hypotheses (raw scores)"),
+        hyps.length ? h("ol", { class: "scores" }, hyps.map((x, i) => scoreRow(x.text, x.s, "muse", { lead: i === 0 }))) : h("p", { class: "sub", style: { marginTop: "6px" } }, "none"));
+    }
+
+    // One frame axis for every lane: a box for [a, b] starts at a/frames and is (b - a + 1)/frames wide, less a 2px surface gap.
+    function timeline(o, frames) {
+      const clamp = (f) => Math.max(0, Math.min(frames - 1, f));
+      const seg = (f, text, cls, title) => {
+        const a = clamp(Math.min(f[0], f[1])), b = clamp(Math.max(f[0], f[1]));
+        return h("span", { class: `seg ${cls || ""}`, title, "data-f0": a, "data-f1": b,
+          style: { left: `${(a / frames) * 100}%`, width: `calc(${((b - a + 1) / frames) * 100}% - 2px)` } }, text ? h("span", null, text) : null);
+      };
+      const speech = o.speech?.present && o.speech.frames ? [seg(o.speech.frames, null, "", `speech ${range(o.speech.frames)}`)] : [];
+      const occl = (o.quality?.occluded_frames || []).map((f) => seg(f, null, "occl", `occluded ${range(f)}`));
+      const ticks = [];
+      for (let f = 0; f < frames; f += 12) ticks.push(h("span", { style: { left: `${(f / frames) * 100}%` } }, String(f)));
+      return h("div", { class: "tl", role: "img", "aria-label": `Timeline over ${frames} frames: visemes ${(o.visemes || []).map((v) => `${v.v} ${range(v.f)}`).join(", ") || "none"}` },
+        h("span", null, "speech"), h("div", { class: "lane thin" }, ...speech, ...occl),
+        h("span", null, "visemes"), h("div", { class: "lane vis" }, ...(o.visemes || []).map((v) => seg(v.f, v.v, v.v === "REST" ? "rest" : "", `${v.v} · frames ${range(v.f)}`))),
+        h("span", null, "words"), h("div", { class: "lane words" }, ...(o.slots || []).map((sl) => { const best = [...sl.alts].sort((a, b) => b.s - a.s)[0]; return seg(sl.f, best?.w, "", `${best?.w ?? ""} · frames ${range(sl.f)}`); })),
+        h("span", null, "frame"), h("div", { class: "axis" }, ...ticks));
+    }
+
+    // A label that doesn't fit its box is hidden (its title and the lists below still carry it), never clipped.
+    function fitLabels() {
+      for (const s of document.querySelectorAll(".seg")) {
+        const t = s.firstElementChild;
+        s.classList.toggle("tight", !!t && t.offsetWidth + 4 > s.clientWidth);
+      }
+    }
+    let raf = 0;
+    addEventListener("resize", () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(fitLabels); });
+
+    $("user").addEventListener("change", () => loadList($("user").value));
+    const params = new URLSearchParams(location.search);
+    loadList(params.get("user"), decodeURIComponent(location.hash.slice(1)) || null);
+  </script>
+</body>
+</html>

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Training</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* page-specific; every value is pre-coach's (studio/static/app.css) unless noted */
+    .top .meta { margin-top: 2px; }
+    .prose > :first-child { margin-top: 0; }
+    .prose h2 { margin: 44px 0 8px; font-size: 24px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.2; }   /* .sec, app.css:549; gap = .page top pad, 111 */
+    .prose h3 { margin: 28px 0 6px; font-size: 18px; font-weight: 500; letter-spacing: -0.01em; }                      /* .tip-text size, app.css:125 */
+    .prose p, .prose li { color: var(--ink-2); max-width: 72ch; }                                                      /* .sec-note, app.css:550 */
+    .prose p { margin: 12px 0 0; }
+    .prose strong { color: var(--ink); font-weight: 600; }
+    .prose a { color: var(--coach-ink); }
+    .prose code { font: 500 13px/1 var(--font); background: var(--well); padding: 2px 7px; border-radius: 999px; color: var(--ink); }  /* code, app.css:26 */
+    .prose pre { margin: 14px 0 0; padding: 18px 20px; background: var(--well); border-radius: var(--r-inner); overflow-x: auto; }  /* .excerpt pad, app.css:413 */
+    .prose pre code { font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; background: none; padding: 0; border-radius: 0; color: var(--ink-2); white-space: pre; }  /* .excerpt, app.css:413 */
+    .prose table { width: 100%; border-collapse: collapse; margin: 14px 0 0; font-size: 14px; }                     /* .drill dl, app.css:554 */
+    .prose th { text-align: left; font-size: 12px; font-weight: 500; color: var(--ink-3); }                            /* .stat small, app.css:475 */
+    .prose th, .prose td { padding: 9px 14px 9px 0; border-bottom: 1px solid var(--hair); vertical-align: top; }      /* .steps button pad, app.css:269; .beatlist rule, 440 */
+    .prose td { color: var(--ink-2); }
+    .prose td:first-child { color: var(--ink); }
+    .prose ul { margin: 12px 0 0; padding-left: 18px; }                                                               /* .msg ul, app.css:223 */
+    .prose li + li { margin-top: 6px; }                                                                                /* .steps gap, app.css:268 */
+    /* task lists: done = filled green (on plan), open = hollow ring (designed, not yet) — pre-coach's .tag legend, app.css:44-47 */
+    .prose li:has(> input[type="checkbox"]) { list-style: none; margin-left: -18px; display: flex; gap: 10px; align-items: baseline; }
+    .prose input[type="checkbox"] { appearance: none; -webkit-appearance: none; flex: none; width: 16px; height: 16px; margin: 0; border-radius: 5px; border: 1.5px solid var(--ink-4); background: var(--card); transform: translateY(3px); }
+    .prose input[type="checkbox"]:checked { border-color: var(--onplan); background: var(--onplan) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12.5 4.5 4.5L19 7.5'/%3E%3C/svg%3E") center / 12px no-repeat; }  /* pre-coach check icon, cards.js:126 */
+    .prose li:has(> input:checked) { color: var(--ink); }
+    .diagram { margin: 18px 0 0; display: grid; justify-items: safe center; overflow-x: auto; }
+    .diagram svg { height: auto; flex: none; }
+    .diagram pre.msg { justify-self: stretch; max-width: none; white-space: pre-wrap; font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; }
+  </style>
+</head>
+<body>
+  <div class="haze" aria-hidden="true"></div>
+  <nav class="rail" aria-label="Pages"></nav><script src="rail.js"></script>
+  <main class="section"><div class="page">
+    <header class="top">
+      <h1 id="title">Training</h1>
+      <p class="meta"><span>Live from <b>docs/training-v1.md</b></span><i></i><span>edit the file and reload</span></p>
+    </header>
+    <article class="card prose" id="sheet"><p class="eyebrow">Loading the sheet…</p></article>
+  </div></main>
+  <script src="vendor/marked.umd.js"></script>
+  <script src="vendor/mermaid.min.js"></script>
+  <script>
+    const DOC = "/docs/training-v1.md";
+    const $ = (id) => document.getElementById(id);
+    const FONT = getComputedStyle(document.documentElement).getPropertyValue("--font").trim();
+    mermaid.initialize({ startOnLoad: false, fontFamily: FONT, themeVariables: { fontFamily: FONT }, securityLevel: "strict", suppressErrorRendering: true });
+
+    // ```mermaid blocks become placeholders; everything else is plain GFM (tables, code, task lists).
+    const diagrams = [];
+    marked.use({ gfm: true, renderer: {
+      code(token) {
+        if (token.lang !== "mermaid") return false;
+        diagrams.push(token.text);
+        return `<div class="diagram" data-diagram="${diagrams.length - 1}"></div>`;
+      },
+    } });
+
+    async function load() {
+      try {
+        const res = await fetch(DOC, { cache: "no-store" });
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        diagrams.length = 0;
+        $("sheet").innerHTML = marked.parse(await res.text());   // the doc is our own repo file
+        const h1 = $("sheet").querySelector("h1");
+        if (h1) { $("title").textContent = h1.textContent; document.title = h1.textContent; h1.remove(); }
+        await document.fonts.load(`16px ${FONT}`);   // mermaid measures labels with the font, so load it first
+        let seq = 0;
+        for (const slot of $("sheet").querySelectorAll("[data-diagram]")) {
+          const id = `sheet-diagram-${++seq}`;
+          try {
+            slot.innerHTML = (await mermaid.render(id, diagrams[+slot.dataset.diagram])).svg;
+            const svg = slot.querySelector("svg");   // natural size (mermaid's max-width), scrolling sideways, so wide LR labels stay legible
+            svg.style.width = svg.style.maxWidth;
+            svg.style.maxWidth = "none";
+          } catch (err) {
+            document.getElementById(`d${id}`)?.remove();
+            const pre = document.createElement("pre");
+            pre.className = "msg error";
+            pre.textContent = `This diagram doesn't parse:\n${err.message || err}`;
+            slot.replaceChildren(pre);
+          }
+        }
+      } catch (err) {
+        const p = document.createElement("p");
+        p.className = "msg error";
+        p.textContent = `Couldn't load ${DOC.slice(1)}: ${err.message}`;
+        $("sheet").replaceChildren(p);
+      }
+    }
+    load();
+  </script>
+</body>
+</html>
