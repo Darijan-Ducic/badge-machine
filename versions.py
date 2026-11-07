@@ -1,15 +1,23 @@
 """Version registry: every point on the accuracy chart is a system version (docs/self-improvement.md).
 
-A version is a config over immutable raw outputs. The baseline stores its full config; every other version stores
-only its parent and its ONE typed change, so `Registry.config` rebuilds a config by walking parents and re-applying
-the changes, then checks the rebuilt config against the stored hash. Config hash = sha256 over the canonical JSON of
-the full resolved config (`resolve`: defaults normalized, lists ordered, numbers as floats), first 16 hex chars.
+A version is a config over immutable raw outputs, run by some code. The baseline stores its full config; every other
+version stores only its parent and ONE change: a typed config change (below), or a code change (kind "code": a git
+commit in `code_commit`, config unchanged). `Registry.config` rebuilds a config by walking parents and re-applying
+the config changes, then checks the rebuilt system against the stored hash. The hash (`version_hash`, stored as
+`config_hash`) = sha256 over the canonical JSON of the full resolved config (`resolve`: defaults normalized, lists
+ordered, numbers as floats), first 16 hex chars; when a code version is on the line, the nearest one's commit is
+hashed with the config. On a config version `code_commit` is only provenance (the commit of the creating process).
 
-Pointers: `current` = the loop's best version, moved only by `adopt` (after the held-out gate passed); `live` = what
-users run, moved only by an explicit `promote`. A rejected version keeps its reason and evidence; nothing is deleted.
+Statuses: `candidate` (created, not yet evaluated), `evaluated` (evidence attached, unjudged), then the session's
+judgment: `adopted`, `rejected`, or `rolled_back` (adopted once, then current moved back past it). Nothing is deleted.
+Pointers: `current` = the best version so far, moved only by `adopt` and `rollback`; `live` = what users run, moved
+only by `promote`, which the user approves. Every pointer move and every judgment is appended to the audit log
+(who, when, why), served with the versions by `payload()`. Scripts never call these; the session does, through
+tools/versions.py.
 
-Storage: MongoDB (collection `versions`, one document per version with `_id` = id, plus `version_pointers`) when
-MONGODB_URI is set; JSON files under data/versions/ otherwise (<id>.json + pointers.json).
+Storage: MongoDB (collection `versions`, one document per version with `_id` = id, plus `version_pointers` and the
+append-only `version_audit`) when MONGODB_URI is set; JSON files under data/versions/ otherwise (<id>.json +
+pointers.json + audit.jsonl). `open_registry("real")` is that default store; any other value is a directory.
 
 Change space — the only changes the loop may make; anything else raises InvalidChange before it is applied:
   kind     op                  fields                                        config key
@@ -32,6 +40,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -67,6 +76,9 @@ OPS = {  # op -> (kind, fields)
 }
 PAYLOAD_KEYS = ("id", "parent", "t", "status", "kind", "change", "hypothesis", "author", "config_hash", "code_commit",
                 "failures_cited", "metrics", "delta", "cost_usd", "reason", "pilot")
+UNJUDGED = ("candidate", "evaluated")
+COMMIT = re.compile(r"[0-9a-f]{40}")
+REAL = "real"
 
 
 class InvalidChange(ValueError):
@@ -179,6 +191,14 @@ def default_config() -> dict:
 
 def config_hash(config: dict) -> str:
     text = json.dumps(resolve(config), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def version_hash(config: dict, code: str | None = None) -> str:
+    """The hash of a system: `config_hash` alone while no code version is on its line, else config + commit."""
+    if code is None:
+        return config_hash(config)
+    text = json.dumps({"code": code, "config": resolve(config)}, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
@@ -312,11 +332,21 @@ class _Files:
     def set_pointers(self, pointers: dict) -> None:
         self._write("pointers.json", pointers)
 
+    def audit(self) -> list[dict]:
+        path = self.root / "audit.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines() if line] if path.exists() else []
+
+    def log(self, entry: dict) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        with open(self.root / "audit.jsonl", "a") as f:  # append-only: one line per move, never rewritten
+            f.write(json.dumps(entry) + "\n")
+
 
 class _Mongo:
     def __init__(self, db):
         self.versions = db["versions"]
         self.pointer_docs = db["version_pointers"]
+        self.audit_docs = db["version_audit"]
 
     def all(self) -> list[dict]:
         return list(self.versions.find({}, {"_id": False}).sort("seq", pymongo.ASCENDING))
@@ -332,6 +362,12 @@ class _Mongo:
 
     def set_pointers(self, pointers: dict) -> None:
         self.pointer_docs.replace_one({"_id": "pointers"}, {"_id": "pointers", **pointers}, upsert=True)
+
+    def audit(self) -> list[dict]:
+        return list(self.audit_docs.find({}, {"_id": False}).sort("seq", pymongo.ASCENDING))
+
+    def log(self, entry: dict) -> None:
+        self.audit_docs.insert_one(dict(entry))  # insert_one writes _id into the dict it gets
 
 
 @functools.cache
@@ -377,18 +413,35 @@ class Registry:
         found = self._store.pointers() or {}
         return {"live": found.get("live"), "current": found.get("current")}
 
+    def code(self, vid: str) -> str | None:
+        """The commit `vid` runs: its nearest code version's (itself included), or None if its line has none."""
+        record = self.get(vid)
+        while record["kind"] != "code":
+            if record["parent"] is None:
+                return None
+            record = self.get(record["parent"])
+        return record["code_commit"]
+
     def config(self, vid: str) -> dict:
-        """The full config of `vid`: the baseline's config with every ancestor's change applied, hash-checked."""
-        chain, record = [], self.get(vid)
+        """The full config of `vid`: the baseline's config with every ancestor's config change applied (code
+        versions change no config), checked against the stored hash of config + the nearest code commit."""
+        chain, record, code = [], self.get(vid), None
         while record["parent"] is not None:
-            chain.append(record["change"])
+            if record["kind"] == "code":
+                code = record["code_commit"] if code is None else code
+            else:
+                chain.append(record["change"])
             record = self.get(record["parent"])
         config = resolve(record["config"])
         for change in reversed(chain):
             config = apply(config, change)
-        if config_hash(config) != self.get(vid)["config_hash"]:
-            raise ValueError(f"{vid}: rebuilt config does not match its stored hash")
+        if version_hash(config, code) != self.get(vid)["config_hash"]:
+            raise ValueError(f"{vid}: rebuilt config and code do not match its stored hash")
         return config
+
+    def audit(self) -> list[dict]:
+        """Every pointer move and judgment, oldest first: {seq, t, action, version, pointer, from, to, who, reason}."""
+        return self._store.audit()
 
     def payload(self) -> dict:
         """The `GET /versions` body."""
@@ -400,19 +453,30 @@ class Registry:
             return "current" if record["id"] == pointers["current"] else record["status"]
 
         rows = [{**{k: record.get(k) for k in PAYLOAD_KEYS}, "status": status(record)} for record in self.versions()]
-        return {"live": pointers["live"], "current": pointers["current"], "versions": rows}
+        return {"live": pointers["live"], "current": pointers["current"], "versions": rows, "audit": self.audit()}
 
     # -------- writing
 
-    def _new(self, *, parent, kind, change, hypothesis, author, config, failures_cited, cost_usd, status) -> dict:
-        if author not in ("agent", "human"):
-            raise ValueError(f"author {author!r} must be 'agent' or 'human'")
+    def _new(self, *, parent, kind, change, hypothesis, author, system_hash, failures_cited, cost_usd, status,
+             evidence=None) -> dict:
+        if not isinstance(author, str) or not author.strip():
+            raise ValueError(f"author {author!r} must name who made the change")
         seq = len(self.versions()) + 1
         return {"id": f"sys-v{seq}", "seq": seq, "parent": parent, "t": time.time(), "status": status, "kind": kind,
-                "change": change, "hypothesis": hypothesis, "author": author, "config_hash": config_hash(config),
+                "change": change, "hypothesis": hypothesis, "author": author, "config_hash": system_hash,
                 "code_commit": _code_commit(), "failures_cited": list(failures_cited),
                 "metrics": {split: None for split in SPLITS}, "delta": {}, "cost_usd": float(cost_usd),
-                "reason": None, "pilot": None}
+                "reason": None, "pilot": None, "evidence": evidence}
+
+    def _log(self, action: str, vid: str, *, who: str, reason: str | None, pointer: str | None = None,
+             to: str | None = None) -> None:
+        entry = {"seq": len(self.audit()) + 1, "t": time.time(), "action": action, "version": vid,
+                 "pointer": pointer, "from": None, "to": to, "who": who, "reason": reason}
+        if pointer is not None:
+            pointers = self.pointers()
+            entry["from"] = pointers[pointer]
+            self._store.set_pointers({**pointers, pointer: to})
+        self._store.log(entry)
 
     def create_baseline(self, config: dict, *, hypothesis: str = "starting configuration",
                         author: str = "human") -> dict:
@@ -420,21 +484,43 @@ class Registry:
             raise ValueError("the registry already has a baseline")
         config = resolve(config)
         record = self._new(parent=None, kind="baseline", change={}, hypothesis=hypothesis, author=author,
-                           config=config, failures_cited=(), cost_usd=0.0, status="adopted")
+                           system_hash=config_hash(config), failures_cited=(), cost_usd=0.0, status="adopted")
         record["config"] = config
         self._store.put(record)
-        self._store.set_pointers({"live": record["id"], "current": record["id"]})
+        for pointer in ("live", "current"):
+            self._log("baseline", record["id"], who=author, reason=hypothesis, pointer=pointer, to=record["id"])
         return record
 
     def create_candidate(self, parent: str, change: dict, *, hypothesis: str, author: str = "agent",
-                         failures_cited=(), cost_usd: float = 0.0) -> dict:
+                         failures_cited=(), cost_usd: float = 0.0, evidence=None) -> dict:
+        """A config change on `parent`: `candidate` until evaluated, or `evaluated` when created with evidence."""
         parent_config = self.config(parent)
         typed = validate_change(change, parent_config)
-        record = self._new(parent=parent, kind=kind_of(typed), change=typed, hypothesis=hypothesis,
-                           author=author, config=apply(parent_config, typed), failures_cited=failures_cited,
-                           cost_usd=cost_usd, status="candidate")
+        record = self._new(parent=parent, kind=kind_of(typed), change=typed, hypothesis=hypothesis, author=author,
+                           system_hash=version_hash(apply(parent_config, typed), self.code(parent)),
+                           failures_cited=failures_cited, cost_usd=cost_usd, evidence=evidence,
+                           status="candidate" if evidence is None else "evaluated")
         self._store.put(record)
         return record
+
+    def create_code(self, parent: str, commit: str, *, hypothesis: str, evidence, author: str) -> dict:
+        """A code change on `parent`: the system now runs `commit` (a full 40-hex sha), config unchanged."""
+        if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
+            raise InvalidChange(f"code commit {commit!r} must be a full 40-character lowercase git sha")
+        if commit == self.code(parent):
+            raise InvalidChange(f"{parent} already runs {commit[:12]}; a code version must change the code")
+        record = self._new(parent=parent, kind="code", change={}, hypothesis=hypothesis, author=author,
+                           system_hash=version_hash(self.config(parent), commit), failures_cited=(), cost_usd=0.0,
+                           evidence=evidence, status="evaluated")
+        record["code_commit"] = commit
+        self._store.put(record)
+        return record
+
+    def evaluated(self, vid: str, evidence) -> dict:
+        """Attach the evaluation's evidence to a candidate and leave it unjudged (no pointer moves)."""
+        if self.get(vid)["status"] != "candidate":
+            raise ValueError(f"{vid} is not a candidate")
+        return self._update(vid, status="evaluated", evidence=evidence)
 
     def _update(self, vid: str, **fields) -> dict:
         record = {**self.get(vid), **fields}
@@ -459,26 +545,51 @@ class Registry:
     def set_pilot(self, vid: str, pilot: dict) -> dict:
         return self._update(vid, pilot=pilot)
 
-    def adopt(self, vid: str, reason: str | None = None) -> dict:
+    def adopt(self, vid: str, reason: str | None = None, *, who: str = "unknown") -> dict:
+        """current := `vid`, which must be unjudged and built on the current version."""
         record = self.get(vid)
         current = self.pointers()["current"]
-        if record["status"] != "candidate":
-            raise ValueError(f"{vid} is {record['status']}; only a candidate can be adopted")
+        if record["status"] not in UNJUDGED:
+            raise ValueError(f"{vid} is {record['status']}; only an unjudged version can be adopted")
         if record["parent"] != current:
-            raise ValueError(f"{vid} was gated against {record['parent']}, but current is now {current}")
+            raise ValueError(f"{vid} was measured against {record['parent']}, but current is now {current}")
         record = self._update(vid, status="adopted", reason=reason)
-        self._store.set_pointers({**self.pointers(), "current": vid})
+        self._log("adopt", vid, who=who, reason=reason, pointer="current", to=vid)
         return record
 
-    def reject(self, vid: str, reason: str) -> dict:
-        if self.get(vid)["status"] != "candidate":
-            raise ValueError(f"{vid} is not a candidate")
-        return self._update(vid, status="rejected", reason=reason)
+    def reject(self, vid: str, reason: str, *, who: str = "unknown") -> dict:
+        """Judge `vid` not better; it keeps its evidence and moves no pointer. Undo an adoption with `rollback`."""
+        if self.get(vid)["status"] not in UNJUDGED:
+            raise ValueError(f"{vid} is {self.get(vid)['status']}; only an unjudged version can be rejected")
+        record = self._update(vid, status="rejected", reason=reason)
+        self._log("reject", vid, who=who, reason=reason)
+        return record
 
-    def promote(self, vid: str) -> dict:
-        """Make `vid` live: the explicit human step. Only adopted versions (the baseline included) can go live."""
+    def rollback(self, to: str, reason: str, *, who: str = "unknown") -> dict:
+        """current := `to`, an earlier version on current's line; every version between is marked rolled_back."""
+        current = self.pointers()["current"]
+        between, record = [], self.get(current)
+        while record["id"] != to:
+            if record["parent"] is None:
+                raise ValueError(f"{to} is not an earlier version of current {current}")
+            between.append(record["id"])
+            record = self.get(record["parent"])
+        if not between:
+            raise ValueError(f"{to} is already current")
+        for vid in between:
+            self._update(vid, status="rolled_back")
+        self._log("rollback", to, who=who, reason=reason, pointer="current", to=to)
+        return record
+
+    def promote(self, vid: str, reason: str | None = None, *, who: str = "unknown") -> dict:
+        """Make `vid` live: the user's step. Only adopted versions (the baseline included) can go live."""
         record = self.get(vid)
         if record["status"] != "adopted":
             raise ValueError(f"{vid} is {record['status']}; only adopted versions can go live")
-        self._store.set_pointers({**self.pointers(), "live": vid})
+        self._log("promote", vid, who=who, reason=reason, pointer="live", to=vid)
         return record
+
+
+def open_registry(where: str) -> Registry:
+    """`real`: the registry the app serves (MongoDB when MONGODB_URI is set, else data/versions); else a directory."""
+    return Registry(None if where == REAL else Path(where))
