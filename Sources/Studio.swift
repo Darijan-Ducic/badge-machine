@@ -11,6 +11,7 @@ final class Studio: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var shortcut: Shortcut?
     @Published private(set) var choosing = false
+    @Published private(set) var pendingShortcut: Shortcut?
     private let camera = Capture()
     private let hotkey = GlobalShortcut()
     private let gemini: Gemini?
@@ -46,14 +47,25 @@ final class Studio: ObservableObject {
         status = ""
     }
 
-    func cancelChoosing() { choosing = false }
+    func cancelChoosing() {
+        choosing = false
+        pendingShortcut = nil
+        status = ""
+    }
 
     func recordShortcut(_ event: NSEvent) {
-        if event.keyCode == 53 { choosing = false; status = ""; return }
+        if event.keyCode == 53 { cancelChoosing(); return }
+        guard !event.isARepeat else { return }
         guard let choice = Shortcut(event: event) else {
             status = "Use a function key or a combination such as ⌥Space."
             return
         }
+        pendingShortcut = choice
+        status = ""
+    }
+
+    func confirmShortcut() {
+        guard let choice = pendingShortcut else { return }
         guard (choice.keyCode == shortcut?.keyCode && choice.modifiers == shortcut?.modifiers)
               || hotkey.register(choice) else {
             status = "That shortcut is already in use. Try another."
@@ -61,7 +73,7 @@ final class Studio: ObservableObject {
         }
         shortcut = choice
         UserDefaults.standard.set(try? JSONEncoder().encode(choice), forKey: "recordingShortcut")
-        choosing = false
+        cancelChoosing()
         requestInsertionAccess()
     }
 

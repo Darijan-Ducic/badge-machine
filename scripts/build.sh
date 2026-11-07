@@ -12,6 +12,8 @@ swiftc -target "$(uname -m)-apple-macosx14.0" -O -parse-as-library Sources/*.swi
     -o "$app/Contents/MacOS/Baijiu Machine"
 
 sips -s format png Assets/Mark.svg --out "$resources/Mark.png" >/dev/null
+sed -e '/<rect /d' -e 's/0 0 1024 1024/160 160 704 704/' Assets/Mark.svg > build/MenuMark.svg
+sips -s format png -z 68 68 build/MenuMark.svg --out "$resources/MenuMark.png" >/dev/null
 for size in 16 32 128 256 512; do
     sips -z "$size" "$size" "$resources/Mark.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
     retina=$((size * 2))

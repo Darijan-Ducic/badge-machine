@@ -9,16 +9,19 @@ struct APIKeys {
         bundleURL: URL = Bundle.main.bundleURL
     ) {
         let buildDirectory = bundleURL.deletingLastPathComponent()
-        let local = buildDirectory.lastPathComponent == "build"
-            ? Self.readLocalKeys(in: buildDirectory.deletingLastPathComponent())
-            : [:]
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Baijiu Machine", isDirectory: true)
+        let local = support.flatMap(Self.readLocalKeys(in:))
+            ?? (buildDirectory.lastPathComponent == "build"
+                ? Self.readLocalKeys(in: buildDirectory.deletingLastPathComponent()) : nil)
+            ?? [:]
         gemini = Self.key(from: environment["GEMINI_API_KEY"]) ?? local["GEMINI_API_KEY"]
         meta = Self.key(from: environment["MODEL_API_KEY"]) ?? local["MODEL_API_KEY"]
     }
 
-    private static func readLocalKeys(in directory: URL) -> [String: String] {
+    private static func readLocalKeys(in directory: URL) -> [String: String]? {
         let file = directory.appendingPathComponent(".env.local")
-        guard let contents = try? String(contentsOf: file, encoding: .utf8) else { return [:] }
+        guard let contents = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         var keys: [String: String] = [:]
         for line in contents.split(whereSeparator: \.isNewline) {
             let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
