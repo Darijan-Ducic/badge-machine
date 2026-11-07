@@ -12,6 +12,7 @@ tree's code is an independent oracle for the changed tree. In the two-version re
 whose candidates.py raises on import and whose data/viseme_costs.json is not JSON: a side that reads either one fails.
 """
 
+import argparse
 import hashlib
 import importlib.util
 import json
@@ -258,6 +259,17 @@ def test_the_export_is_the_records_input_of_experiment_and_iterate(two_versions,
     assert recorder.seen and all(seen == records for seen in recorder.seen)
     evidence = Registry(tmp_path / "v").get("sys-v2")["evidence"]
     assert evidence["records"] == {"count": len(records), "sha256": report["records"]["sha256"]}  # same data
+
+
+@pytest.mark.parametrize("shape", ["json array", "json lines"])
+def test_all_three_tools_read_records_as_a_json_array_or_json_lines(records, tmp_path, shape):
+    some = records[:5]
+    path = tmp_path / "records.json"
+    path.write_text(json.dumps(some) if shape == "json array" else "".join(json.dumps(r) + "\n" for r in some))
+    args = argparse.Namespace(simulate=None, records=str(path), dataset=None)
+    assert _load_tool().file_records(path)[0] == some  # compare.py
+    assert _tool("experiment")._records(args)[0] == some  # tools/experiment.py
+    assert _tool("iterate").load_records(str(path)) == some  # tools/iterate.py
 
 
 def test_test_split_is_refused_without_final(records_file, capsys):
