@@ -6,6 +6,7 @@ import base64
 import copy
 import io
 import json
+import re
 import subprocess
 import threading
 import time
@@ -20,7 +21,8 @@ from openai.types.chat import ChatCompletion
 from PIL import Image
 
 import muse_sampler
-from muse_sampler import CONFIG, SCHEMA_V1, labeled_grids, sample_open, score_closed, stamp, validate_open
+from muse_sampler import (CONFIG, SCHEMA_V1, WIRE_SCHEMA, from_wire, labeled_grids, sample_open, score_closed, stamp,
+                          validate_open)
 
 DOC = Path(__file__).resolve().parent.parent / "docs" / "uncertainty-design.md"
 PHRASES = Path(__file__).resolve().parent.parent / "data" / "phrases.txt"
@@ -198,6 +200,99 @@ def test_schema_v1_uses_the_documented_enums():
     assert viseme["enum"] == documented_visemes()
 
 
+# ---------------------------------------------------------------- wire format
+# Meta generates JSON keys in alphabetical order whatever the schema says, so the wire schema prefixes every key with
+# its reasoning position; outputs are translated back to the v1 names right after parsing.
+
+
+def unprefix(name: str) -> str:
+    return re.sub(r"^\d+_", "", name)
+
+
+def strip_prefixes(schema):
+    """Test-local inverse of the wire renaming, applied to a schema (independent of muse_sampler.from_wire)."""
+    if isinstance(schema, list):
+        return [strip_prefixes(s) for s in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {}
+    for key, value in schema.items():
+        if key == "properties":
+            out[key] = {unprefix(name): strip_prefixes(sub) for name, sub in value.items()}
+        elif key == "required":
+            out[key] = [unprefix(name) for name in value]
+        else:
+            out[key] = strip_prefixes(value)
+    return out
+
+
+def to_wire(value, schema=WIRE_SCHEMA):
+    """Test-local v1 -> wire translation, keyed by the wire schema's own property names."""
+    if isinstance(value, dict):
+        props = non_null(schema)["properties"]
+        names = {unprefix(name): name for name in props}
+        return {names[k]: to_wire(v, props[names[k]]) for k, v in value.items()}
+    if isinstance(value, list):
+        return [to_wire(v, non_null(schema)["items"]) for v in value]
+    return value
+
+
+def test_wire_schema_prefixes_every_key_with_its_reasoning_position():
+    p = WIRE_SCHEMA["properties"]
+    assert list(p) == ["0_schema_version", "1_speech", "2_quality", "3_visemes", "4_slots", "5_hypotheses"]
+    assert list(p["1_speech"]["properties"]) == ["1_present", "2_frames"]
+    assert list(p["2_quality"]["properties"]) == ["1_mouth_visible", "2_blur", "3_occluded_frames"]
+    assert list(p["3_visemes"]["items"]["properties"]) == ["1_v", "2_f"]
+    assert list(p["4_slots"]["items"]["properties"]) == ["1_f", "2_alts"]
+    assert list(p["4_slots"]["items"]["properties"]["2_alts"]["items"]["properties"]) == ["1_w", "2_s"]
+    assert list(p["5_hypotheses"]["items"]["properties"]) == ["1_text", "2_s"]
+
+
+def test_wire_keys_sort_alphabetically_into_reasoning_order():
+    for obj in objects(WIRE_SCHEMA):
+        assert list(obj["properties"]) == sorted(obj["properties"])
+
+
+def test_wire_schema_meets_the_strict_subset():
+    for obj in objects(WIRE_SCHEMA):
+        assert obj["additionalProperties"] is False
+        assert obj["required"] == list(obj["properties"])
+
+
+def test_wire_schema_is_schema_v1_with_only_the_keys_renamed():
+    # Every enum, bound and nullable survives the renaming.
+    assert strip_prefixes(WIRE_SCHEMA) == SCHEMA_V1
+
+
+WIRE_EXAMPLE = {  # the documented v1 example, written by hand in the wire format
+    "0_schema_version": "v1",
+    "1_speech": {"1_present": True, "2_frames": [4, 71]},
+    "2_quality": {"1_mouth_visible": "full", "2_blur": "low", "3_occluded_frames": [[60, 66]]},
+    "3_visemes": [{"1_v": "O", "2_f": [4, 9]}, {"1_v": "P", "2_f": [10, 13]}, {"1_v": "E", "2_f": [14, 18]}],
+    "4_slots": [
+        {"1_f": [4, 22], "2_alts": [{"1_w": "open", "2_s": 0.7}, {"1_w": "oven", "2_s": 0.2}]},
+        {"1_f": [23, 30], "2_alts": [{"1_w": "the", "2_s": 0.9}]},
+        {"1_f": [31, 71], "2_alts": [{"1_w": "terminal", "2_s": 0.5}, {"1_w": "turbine", "2_s": 0.3}]},
+    ],
+    "5_hypotheses": [{"1_text": "open the terminal", "2_s": 0.55}, {"1_text": "open the turbine", "2_s": 0.25}],
+}
+
+
+def test_wire_output_translates_to_the_documented_v1_example():
+    translated = from_wire(copy.deepcopy(WIRE_EXAMPLE))
+
+    assert json.dumps(translated) == json.dumps(documented_example())  # same names, values and key order
+
+
+def test_v1_outputs_survive_the_round_trip_through_the_wire_format():
+    no_speech = {"schema_version": "v1", "speech": {"present": False, "frames": None},
+                 "quality": {"mouth_visible": "none", "blur": "high", "occluded_frames": [[0, 22]]},
+                 "visemes": [], "slots": [], "hypotheses": []}
+    for v1 in (documented_example(), no_speech):
+        assert to_wire(v1) != v1
+        assert from_wire(to_wire(v1)) == v1
+
+
 # ---------------------------------------------------------------- local validator
 
 
@@ -308,7 +403,7 @@ def test_one_failed_call_does_not_sink_the_other_samples(short_clip, muse):
             first = next(calls) == 0
         if first:
             connection_error(request)
-        return in_range_sample(29)
+        return to_wire(in_range_sample(29))
 
     muse(reply)
 
@@ -320,7 +415,7 @@ def test_one_failed_call_does_not_sink_the_other_samples(short_clip, muse):
 
 def test_open_output_with_out_of_range_frames_is_kept_and_flagged(short_clip, muse):
     bad = in_range_sample(30)  # the clip's frames are 0..29
-    muse(lambda request: bad)
+    muse(lambda request: to_wire(bad))
 
     [item] = sample_open(short_clip, 1)
 
@@ -329,7 +424,7 @@ def test_open_output_with_out_of_range_frames_is_kept_and_flagged(short_clip, mu
 
 
 def test_valid_open_output_has_no_error(short_clip, muse):
-    muse(lambda request: in_range_sample(29))
+    muse(lambda request: to_wire(in_range_sample(29)))
 
     [item] = sample_open(short_clip, 1)
 
@@ -345,7 +440,7 @@ def test_open_calls_run_in_parallel(short_clip, muse):
         start = time.monotonic()
         time.sleep(0.3)
         spans.append((start, time.monotonic()))
-        return in_range_sample(29)
+        return to_wire(in_range_sample(29))
 
     muse(reply)
 
@@ -354,8 +449,8 @@ def test_open_calls_run_in_parallel(short_clip, muse):
     assert max(s for s, _ in spans) < min(e for _, e in spans), "all K calls must be in flight at once"
 
 
-def test_open_request_uses_the_logged_config_and_strict_schema_v1(short_clip, muse):
-    fake = muse(lambda request: in_range_sample(29))
+def test_open_request_uses_the_logged_config_and_the_strict_wire_schema(short_clip, muse):
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
 
     sample_open(short_clip, 1)
 
@@ -365,12 +460,12 @@ def test_open_request_uses_the_logged_config_and_strict_schema_v1(short_clip, mu
     assert request["reasoning_effort"] == CONFIG["effort"] == "low"
     assert request["response_format"]["type"] == "json_schema"
     assert request["response_format"]["json_schema"]["strict"] is True
-    assert request["response_format"]["json_schema"]["schema"] == SCHEMA_V1
+    assert request["response_format"]["json_schema"]["schema"] == WIRE_SCHEMA
     assert (CONFIG["schema"], CONFIG["visemes"], CONFIG["grid"], CONFIG["fps"]) == ("v1", "visemes-v1", "2x2", 24)
 
 
 def test_open_request_sends_every_grid_in_order(short_clip, muse):
-    fake = muse(lambda request: in_range_sample(29))
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
 
     sample_open(short_clip, 1)
 
@@ -381,7 +476,7 @@ def test_open_request_sends_every_grid_in_order(short_clip, muse):
 
 
 def test_open_prompt_contains_no_phrase_list(short_clip, muse):
-    fake = muse(lambda request: in_range_sample(29))
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
 
     sample_open(short_clip, 1)
 
