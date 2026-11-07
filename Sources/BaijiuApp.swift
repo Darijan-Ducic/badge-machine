@@ -65,9 +65,6 @@ struct StudioView: View {
                         Button("Confirm", action: studio.confirmShortcut)
                             .buttonStyle(.borderedProminent)
                             .tint(ink)
-                    } else {
-                        Button("Use Fn", action: studio.previewFn)
-                            .buttonStyle(.link)
                     }
                 }
             } else {
@@ -148,35 +145,32 @@ private struct ShortcutKeyCapture: NSViewRepresentable {
     final class KeyView: NSView {
         var onKeyDown: ((NSEvent) -> Void)?
         var onModifier: ((Shortcut) -> Void)?
-        private var modifierTap = ModifierTap()
+        private var monitor: Any?
         override var acceptsFirstResponder: Bool { true }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
             guard let window else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+                guard let self, self.window?.isKeyWindow == true else { return event }
+                if event.type == .flagsChanged {
+                    if let modifier = Shortcut.pressedModifier(event) {
+                        self.onModifier?(modifier)
+                    }
+                } else {
+                    self.onKeyDown?(event)
+                }
+                return nil
+            }
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             window.makeFirstResponder(self)
         }
 
-        override func keyDown(with event: NSEvent) {
-            _ = modifierTap.handle(event)
-            onKeyDown?(event)
-        }
-
-        override func flagsChanged(with event: NSEvent) {
-            if let shortcut = modifierTap.handle(event) {
-                onModifier?(shortcut)
-            } else if Shortcut.isFnPress(event) {
-                onModifier?(.fn)
-            }
-        }
-
-        override func performKeyEquivalent(with event: NSEvent) -> Bool {
-            guard window?.firstResponder === self else { return false }
-            _ = modifierTap.handle(event)
-            onKeyDown?(event)
-            return true
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
         }
     }
 }

@@ -182,7 +182,6 @@ final class Studio: ObservableObject {
     }
 
     func recordShortcut(_ event: NSEvent) {
-        if event.keyCode == 53 { cancelChoosing(); return }
         guard !event.isARepeat else { return }
         guard let choice = Shortcut(event: event) else {
             status = "Press a key or a keyboard shortcut."

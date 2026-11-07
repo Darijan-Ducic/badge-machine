@@ -17,9 +17,14 @@ struct Shortcut: Codable {
 
     var isFn: Bool { keyCode == Self.fnKeyCode && modifiers == 0 }
 
-    static func isFnPress(_ event: NSEvent) -> Bool {
-        event.type == .flagsChanged && UInt32(event.keyCode) == fnKeyCode
-            && event.modifierFlags.contains(.function)
+    static func pressedModifier(_ event: NSEvent) -> Self? {
+        guard event.type == .flagsChanged else { return nil }
+        let code = UInt32(event.keyCode)
+        if code == fnKeyCode, event.modifierFlags.contains(.function) { return .fn }
+        guard let key = ModifierKey.byCode[code], event.modifierFlags.contains(key.flag) else { return nil }
+        let deviceFlags = event.modifierFlags.rawValue & ModifierKey.deviceMasks
+        guard deviceFlags == 0 || deviceFlags & key.deviceMask != 0 else { return nil }
+        return Self(modifierKeyCode: code, label: key.label)
     }
 
     private init(keyCode: UInt32, modifiers: UInt32, label: String) {
@@ -29,6 +34,7 @@ struct Shortcut: Codable {
     }
 
     init?(event: NSEvent) {
+        guard event.type == .keyDown else { return nil }
         let flags = event.modifierFlags
         var modifiers: UInt32 = 0
         var label = ""
@@ -40,7 +46,9 @@ struct Shortcut: Codable {
             label += symbol
         }
         let namedKeys: [UInt16: String] = [
-            36: "Return", 48: "Tab", 49: "Space", 51: "Delete",
+            36: "Return", 48: "Tab", 49: "Space", 51: "Delete", 53: "Escape",
+            71: "Keypad Clear", 76: "Keypad Enter", 114: "Help",
+            115: "Home", 116: "Page Up", 117: "Forward Delete", 119: "End", 121: "Page Down",
             123: "←", 124: "→", 125: "↓", 126: "↑"
         ]
         let functionKeys: [UInt16: String] = [
@@ -55,12 +63,11 @@ struct Shortcut: Codable {
             self.label = label + key
             return
         }
-        let key = namedKeys[event.keyCode] ?? event.charactersIgnoringModifiers?.uppercased() ?? ""
-        guard !key.isEmpty,
-              namedKeys[event.keyCode] != nil || key.unicodeScalars.allSatisfy({
-                  CharacterSet.alphanumerics.union(.punctuationCharacters).union(.symbols).contains($0)
-                      && $0.value < 0xF700
-              }) else { return nil }
+        let character = event.charactersIgnoringModifiers?.uppercased() ?? ""
+        let printable = !character.isEmpty && character.unicodeScalars.allSatisfy {
+            !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value)
+        }
+        let key = namedKeys[event.keyCode] ?? (printable ? character : "Key \(event.keyCode)")
         self.keyCode = UInt32(event.keyCode)
         self.modifiers = modifiers
         self.label = label + key
