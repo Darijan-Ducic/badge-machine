@@ -105,9 +105,9 @@ their stored raw outputs (free for post-processing changes; call-level changes s
 ## 6. How v1 is measured
 
 - **Learning curve:** predict-then-train over the fixed order — every clip is scored before its label is learned.
-  Lines for the fused scorer, Gemini alone, and Muse alone.
+  Lines for VTT (the combined scorer), VTT · Gemini, and VTT · Muse, each scored against the STT label.
 - **Clips needed for preheat:** the clip count after which rolling accuracy gains less than 2 points over the next 20 clips.
-- **Final numbers (last 20% of clips):** top-1 accuracy, pool recall (how often the right answer is among the
+- **Final numbers (last 20% of clips):** VTT top-1 accuracy vs STT, pool recall (how often the right answer is among the
   candidates), auto-send precision and coverage, confidence vs. accuracy, cost and latency per clip.
 
 ## 7. v1 → v2: what costs what

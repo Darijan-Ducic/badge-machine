@@ -18,7 +18,7 @@ flowchart TD
   MUSEC["Muse Spark closed call<br/>score phrase bank + 'none of these'"]
   POOL["Candidate pool<br/>hypotheses, slot recombinations, closed + Gemini top,<br/>viseme neighbours from the bank, ∅"]
   FEAT["Features per candidate<br/>votes across K, self-scores, slot support, viseme distance,<br/>closed, Gemini, user prior, quality → ∅"]
-  FUSE["Trainable scorer<br/>staged conditional logit → P(candidate)"]
+  FUSE["Trainable scorer → VTT<br/>staged conditional logit → P(candidate)"]
   GATE{"P(top) ≥ learned threshold?"}
   SEND["Auto-send phrase"]
   CONFIRM["Ask user to confirm"]
@@ -50,8 +50,8 @@ flowchart TD
   MATCH["Transcript → phrase ID"]
   STORE[("Clip store<br/>MongoDB Atlas, local fallback")]
 
-  PREQ["Predict, then train<br/>honest accuracy: video-only vs STT"]
-  UI["Preheat UI<br/>accuracy, learning curve, stage, camera fps"]
+  PREQ["Predict, then train<br/>honest accuracy: VTT vs STT"]
+  UI["App: Dataset · Clips · Stats<br/>VTT vs STT per clip, learning curve"]
   STAGES["Staged training by label count<br/>0 defaults · 10 temperature · 30 core features · 60 all features"]
   FUSE["Fusion weights + auto-send threshold"]
 

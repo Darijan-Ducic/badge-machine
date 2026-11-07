@@ -3,6 +3,12 @@
 ## Infrastructure
 - NEVER use Docker or run local infrastructure (no local MongoDB, no containers) — everything is hosted APIs: Meta Model API (Muse Spark, SAM, Muse Voice Transcribe), Gemini, MongoDB Atlas (`MONGODB_URI` in `.env`). Test external stores with in-process fakes plus a live check against the hosted service.
 
+## Naming
+- VTT = video-to-text (lip-reading output): the combined scorer's pick is "VTT", per model "VTT · Gemini" / "VTT · Muse". STT = speech-to-text, the label. ALWAYS use these names in the UI, docs, and new API fields.
+
+## Frontend visibility
+- ALWAYS surface every curated dataset, session, turn, clip, and training run in the app (Dataset / Clips / Stats / Training pages) — the user watches training through the UI, never only via CLI output.
+
 ## Pipeline diagram
 - `docs/pipeline.md` is the single source of truth for the pipeline diagrams; the app's Pipeline page renders it live (served at `/docs/pipeline.md` via the `static/docs` symlink; the Training page renders `docs/training-v1.md` the same way), so editing the file and reloading is the whole update.
 - ALWAYS update `docs/pipeline.md` (stage + build-status `class` line) in the same commit that adds, removes, or changes a pipeline stage — the diagrams change often and the team reads them as the current state.

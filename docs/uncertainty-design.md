@@ -135,5 +135,5 @@ labeled clips whose STT text is in the pool — reported in stats.
 `full` (60+: fit all features). Auto-send threshold from out-of-fold predictions (5 folds); a ∅ top pick never
 auto-sends.
 
-**Accuracy vs STT** (per clip, predict-then-train): `fused` = top non-∅ candidate matches STT and ∅ didn't win;
+**VTT accuracy vs STT** (per clip, predict-then-train; VTT = video-to-text, the lip-reading output — API key `fused` is VTT): `fused` = top non-∅ candidate matches STT and ∅ didn't win;
 `gemini` = Gemini argmax phrase matches; `muse` = the most common top hypothesis across K matches.
