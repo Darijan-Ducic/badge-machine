@@ -353,14 +353,25 @@ def _process_turn(store, session_id, recording, container, turn, boxes, user_id,
 
 # ---- the /sessions contract -----------------------------------------------------------------------------------------
 
+def _seconds(turns) -> float:
+    return round(sum(t["end_ms"] - t["start_ms"] for t in turns) / 1000, 2)
+
+
 def _summary(record: dict) -> dict:
     turns, duration = record["turns"], record["duration_ms"] / 1000
+    lost = {}
+    for t in turns:
+        if t["status"] in ("skipped", "failed"):
+            lost.setdefault(t["reason"], []).append(t)
     return {"id": record["id"], "t": record["t"], "user_id": record["user_id"], "dataset": record["dataset"],
             "source": record["source"], "start": record["start"], "end": round(record["start"] + duration, 3),
             "duration_s": round(duration, 2), "status": record["status"], "turns": len(turns),
             "processed": sum(t["status"] == "processed" for t in turns),
             "skipped": sum(t["status"] == "skipped" for t in turns),
-            "vtt_correct": sum(bool(t["correct"] and t["correct"].get("vtt")) for t in turns)}
+            "vtt_correct": sum(bool(t["correct"] and t["correct"].get("vtt")) for t in turns),
+            # Coverage: the speech in the session's turns, that of processed turns, and that lost, by reason.
+            "speech_s": _seconds(turns), "covered_s": _seconds(t for t in turns if t["status"] == "processed"),
+            "lost_s": {reason: _seconds(lost_turns) for reason, lost_turns in lost.items()}}
 
 
 def list_sessions(user: str | None = None, store=None) -> dict:
@@ -380,7 +391,8 @@ def get_session(session_id: str, store=None) -> dict | None:
     if record is None:
         return None
     summary = _summary(record)
-    return {**{k: summary[k] for k in ("id", "t", "user_id", "dataset", "source", "start", "end", "status")},
+    return {**{k: summary[k] for k in ("id", "t", "user_id", "dataset", "source", "start", "end", "status", "speech_s",
+                                       "covered_s", "lost_s")},
             "video": f"/sessions/{session_id}/video", "stt_text": record["stt_text"],
             "turns": [{"i": t["i"], "start": t["start_ms"] / 1000, "end": t["end_ms"] / 1000, "stt": t["stt"],
                        "status": t["status"], "reason": t["reason"], **{k: t[k] for k in TURN_RESULT}}
