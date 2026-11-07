@@ -1,4 +1,4 @@
-"""Local server for the webcam page: serves static/ and turns a recorded clip into a Muse Spark transcript."""
+"""Local server: serves static/ plus the API for transcripts, SAM boxes, and preheat clips."""
 
 import json
 import os
@@ -11,8 +11,10 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from clips import load, process_clip, stats
 from muse_video import BASE_URL
 from sam import segment_image
+from scorers import load_phrases
 
 PORT = int(os.environ.get("PORT", 8765))
 STATIC = Path(__file__).parent / "static"
@@ -47,30 +49,49 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC, **kwargs)
 
-    def do_POST(self):
-        url = urlparse(self.path)
-        if url.path not in ("/transcribe", "/sam"):
-            self.send_error(404)
-            return
-        try:
-            data = self.rfile.read(int(self.headers["Content-Length"]))
-            if url.path == "/transcribe":
-                body = {"transcript": transcribe(data)}
-            else:
-                # One JPEG/PNG frame -> SAM boxes [x, y, w, h] in that frame's pixels; ids are per-request ordinals.
-                prompt = parse_qs(url.query).get("prompt", [""])[0].strip()
-                if not prompt:
-                    raise ValueError("missing ?prompt=<noun phrase>")
-                body = {"objects": segment_image(data, prompt)}
-            code = 200
-        except Exception as e:
-            body, code = {"error": str(e)}, 500
+    def send_json(self, code: int, body: dict):
         payload = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path not in ("/phrases", "/stats"):
+            super().do_GET()
+            return
+        try:
+            phrases = load_phrases()
+            self.send_json(200, {"phrases": phrases} if path == "/phrases" else stats(load(), phrases))
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    def do_POST(self):
+        url = urlparse(self.path)
+        if url.path not in ("/transcribe", "/sam", "/preheat/clip"):
+            self.send_error(404)
+            return
+        query = parse_qs(url.query)
+        try:
+            data = self.rfile.read(int(self.headers["Content-Length"]))
+            if url.path == "/transcribe":
+                body = {"transcript": transcribe(data)}
+            elif url.path == "/preheat/clip":
+                fps, prompted = query.get("fps"), query.get("prompted")
+                body = process_clip(data, float(fps[0]) if fps else None, int(prompted[0]) if prompted else None,
+                                    transcribe=transcribe, phrases=load_phrases())
+            else:
+                # One JPEG/PNG frame -> SAM boxes [x, y, w, h] in that frame's pixels; ids are per-request ordinals.
+                prompt = query.get("prompt", [""])[0].strip()
+                if not prompt:
+                    raise ValueError("missing ?prompt=<noun phrase>")
+                body = {"objects": segment_image(data, prompt)}
+            code = 200
+        except Exception as e:
+            body, code = {"error": str(e)}, 500
+        self.send_json(code, body)
 
 
 if __name__ == "__main__":

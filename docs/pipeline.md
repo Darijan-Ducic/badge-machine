@@ -32,8 +32,8 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class CAM,GEM,MUSE,FUSE,GATE built
-  class TRK,TRIG,SAM,CROP,QG,REPEAT building
+  class CAM,GEM,MUSE,FUSE,GATE,SAM built
+  class TRK,TRIG,CROP,QG,REPEAT building
   class SEND,CONFIRM planned
 ```
 
@@ -45,7 +45,7 @@ flowchart TD
   STT["STT on: Muse Voice Transcribe<br/>reference label"]
   CONF["Video only: the user's confirm<br/>answer is a label too"]
   MATCH["Transcript → phrase ID"]
-  STORE[("Clip store<br/>local now, MongoDB later")]
+  STORE[("Clip store<br/>MongoDB Atlas, local fallback")]
 
   PREQ["Predict, then train<br/>honest accuracy: video-only vs STT"]
   UI["Preheat UI<br/>accuracy, learning curve, stage, camera fps"]
@@ -70,9 +70,9 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STT,MATCH,PREQ,STAGES,FUSE built
-  class CLIP,STORE,GT,REPLAY,KNOBS building
-  class CONF,UI,AGENT,PROMPTS planned
+  class STT,MATCH,PREQ,STAGES,FUSE,CLIP,GT built
+  class STORE,REPLAY,KNOBS,UI building
+  class CONF,AGENT,PROMPTS planned
 ```
 
 ## Stages at a glance
