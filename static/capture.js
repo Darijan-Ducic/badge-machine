@@ -11,6 +11,11 @@
 import { createTracker, qualityGate } from "./tracker.js";
 
 export async function openCapture({ video, audio = false, maxWidth = 640, onFrame = () => {}, onError = () => {} }) {
+  // Experiment flag, off by default: ?audio=raw opens the mic without Chrome's echo cancellation, noise suppression
+  // and auto gain (the label-quality lab compares STT on both).
+  if (audio === true && new URLSearchParams(location.search).get("audio") === "raw") {
+    audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+  }
   const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", frameRate: { ideal: 30 } }, audio });
   video.srcObject = stream;
   if (video.readyState < 1) await new Promise((resolve) => video.addEventListener("loadedmetadata", resolve, { once: true }));
