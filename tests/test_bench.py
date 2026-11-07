@@ -66,7 +66,7 @@ def test_topk_credit_splits_ties_as_a_random_tie_break_would():
 
 
 def test_topk_credit_matches_text_normalized_and_a_failed_call_is_a_miss():
-    assert bench.topk_credit({"It's eleven o'clock": 0.9, "x": 0.1}, "its eleven oclock", 1) == 1.0
+    assert bench.topk_credit({"It's eleven o'clock": 0.9, "x": 0.1}, "IT'S ELEVEN, O'CLOCK!", 1) == 1.0
     assert bench.topk_credit(None, "a", 3) == 0.0
 
 
@@ -110,7 +110,7 @@ def test_streams_train_only_on_earlier_clips_and_tag_the_stage():
 
 def test_summary_pairs_each_stage_with_defaults_on_the_same_clips():
     rows = [{"n_before": i, "fused_defaults": i % 2 == 0, "fused_temperature": i >= 10, "fused_core": i >= 25,
-             "sent": i >= 20, "stage": "x", "open_exact": False, "open_words": (0, 6), "closed_top1": 0.0,
+             "sent": i >= 20, "stage": "x", "open_exact": False, "open_words": (6, 6), "closed_top1": 0.0,
              "closed_top3": 0.0, "gemini_top1": 0.0, "gemini_top3": 0.0, "slots": None} for i in range(40)]
     summary = bench.summarize(rows)
     assert summary["n"] == 40
