@@ -3,3 +3,4 @@
 __pycache__/
 .claude/worktrees/
 data/clips/
+data/versions/
