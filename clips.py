@@ -28,6 +28,7 @@ import muse_sampler
 import scorers
 import visemes
 from candidates import FEATURES, NONE, featurize, match
+from readiness import readiness
 from scorer import STAGES, auto_send, predict, prequential, stage_for, train
 
 DATA = Path("data/clips")
@@ -314,6 +315,16 @@ def stats(records: list[dict], phrases: list[str], window: int = 20, user: str |
         "pool_recall": float(np.mean([h["pool_hit"] for h in history])) if history else None,
         "stages": [{"name": name, "at": n} for n, name in sorted(STAGES)],
     }
+
+
+def phrase_readiness(store, phrases: list[str], user: str | None = None) -> dict:
+    """GET /readiness: per phrase one user labeled (by STT or their own label), its clip count, recent VTT accuracy
+    and whether lip mode is ready for it (readiness.readiness), from one predict-then-train pass over that user's
+    clips in store order (default user: the one of the latest clip)."""
+    records = load(store, user) if user else load(store)
+    user = user or _latest_user(records)
+    clips = _featurized(_replayed(records, user, vocab_id(phrases)))
+    return readiness(prequential(clips), [c.stt for c in clips])
 
 
 def clip_list(store, phrases: list[str], user: str | None = None) -> dict:
