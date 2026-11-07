@@ -2,7 +2,7 @@
 // warm skin, red lips, a dark mouth opening. Truth is where the lips were painted, never tracker output.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { learnLips, lipBlob, sharpness, createTracker } from '../static/tracker2.js';
+import { learnLips, lipBlob, sharpness, blurRatio, createTracker } from '../static/tracker2.js';
 import { rng, makeFace, makeBackground, render, faceBox, mouthBox } from './synth.mjs';
 
 const W = 640, H = 480, FPS = 30;
@@ -67,12 +67,12 @@ function blurH(f, len) {
   return { ...f, data: d };
 }
 
-test('sharpness of the mouth region halves under a 12 px motion blur but not under a 3 px one', () => {
+test('the mouth region loses half its sharpness under a 12 px motion blur but not under a 3 px one', () => {
   const f = scene(LIPS0), box = [LIPS0[0] - 20, LIPS0[1] - 20, LIPS0[2] + 40, LIPS0[3] + 40];
-  const s0 = sharpness(f, box), s3 = sharpness(blurH(f, 3), box), s12 = sharpness(blurH(f, 12), box);
-  assert.ok(s0 > 0, 'a textured mouth region has some sharpness');
-  assert.ok(s12 <= 0.5 * s0, `12 px blur keeps ${(s12 / s0).toFixed(2)} of the sharpness`);
-  assert.ok(s3 >= 0.7 * s0, `3 px blur keeps only ${(s3 / s0).toFixed(2)}`);
+  const s0 = sharpness(f, box), r3 = blurRatio(sharpness(blurH(f, 3), box), s0), r12 = blurRatio(sharpness(blurH(f, 12), box), s0);
+  assert.equal(blurRatio(s0, s0), 1, 'a frame is as sharp as itself');
+  assert.ok(r12 <= 0.5, `12 px blur keeps ${r12.toFixed(2)} of the sharpness`);
+  assert.ok(r3 >= 0.7, `3 px blur keeps only ${r3.toFixed(2)}`);
 });
 
 test('with colour on, the mouth follows lips that slide 18 px across a still face (a head turn); without, it stays behind', async () => {

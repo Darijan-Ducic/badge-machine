@@ -5,7 +5,7 @@
 // SAM through tools/sam_cache.py (--sam live; cache misses cost $0.0025 each, capped by --max-usd).
 //
 //   node tools/tracker_eval.mjs [--split heldout|dev|all] [--clips a,b] [--trackers v1,v2,"v2:KEY=V;KEY=V"]
-//                               [--sam gt|live] [--max-usd 2] [--json out.json] [--dump DIR] [--quiet]
+//                               [--sam gt|live] [--max-usd 2] [--json out.json] [--trace DIR]
 //
 // Per clip and tracker: centre error and size error of the mouth box (GT mouth widths; mean and p95), the centre error
 // on fast-head frames (GT head speed > FAST mouth widths/s) and the lag there, recovery time after jumps/occlusions,
@@ -163,7 +163,7 @@ async function runClip(clip, trackers, opts) {
       const t0 = performance.now();
       const r = await run.inst.step(frame);
       const ms = performance.now() - t0 - run.samMs;
-      run.rows.push({ crop: r.crop, mouth: run.inst.mouth(r), flagged: r.flags.length > 0, flags: r.flags, sam: !!r.sam, ms });
+      run.rows.push({ crop: r.crop, mouth: run.inst.mouth(r), flagged: r.flags.length > 0, flags: r.flags, sam: r.sam && r.sam.reasons, conf: Math.round(r.conf * 100) / 100, ms });
     }
     i++;
   }
@@ -175,6 +175,13 @@ async function runClip(clip, trackers, opts) {
   // an event in the clip's last second (e.g. the next camera shot starting on the final frame) cannot show a recovery
   const events = [...new Set([...jumpEvents(truth, 1), ...occEnds])].filter((e) => e + gt.fps <= n).sort((a, b) => a - b);
   const labelled = !!(clip.augment?.occlude || clip.augment?.blur);
+  if (opts.trace) {
+    mkdirSync(opts.trace, { recursive: true });
+    const r1 = (b) => b && b.map((v) => Math.round(v * 10) / 10);
+    writeFileSync(join(opts.trace, `${clip.name}.trace.json`), JSON.stringify({ clip: clip.name, video: clip.video, width: W, height: H, fps: gt.fps,
+      augment: clip.augment ?? null, trackers: runs.map((r) => r.t.label),
+      frames: frames.map((f, j) => ({ i: j, gt: r1(f.mouth), bad: f.bad, runs: runs.map((r) => ({ ...r.rows[j], mouth: r1(r.rows[j].mouth), ms: undefined })) })) }));
+  }
   return {
     clip: clip.name, split: clip.split, address: clip.address, frames: n, seconds: n / gt.fps, gtFrames: truth.filter(Boolean).length,
     fastFrames: fast.filter(Boolean).length, events: events.length,
@@ -286,6 +293,7 @@ function parseArgs(argv) {
     else if (a === '--json') o.json = v();
     else if (a === '--manifest') o.manifest = v();
     else if (a === '--cache') o.cacheDir = v();
+    else if (a === '--trace') o.trace = v();
     else throw new Error(`unknown argument ${a}`);
   }
   return o;
