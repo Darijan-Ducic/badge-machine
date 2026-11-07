@@ -232,7 +232,7 @@ def summarize(rows: list[dict]) -> dict:
         "fused_30_defaults": _mean(r["fused_defaults"] for r in after30),
         "autosend_coverage": _mean(r["sent"] for r in after10),
         "autosend_precision": _mean(r["fused_core"] for r in sent),
-        "pool_recall": _mean(r["clip"].label != len(r["clip"].pool) - 1 for r in rows),
+        "pool_recall": _mean(r["clip"].label != len(r["clip"].pool) - 1 for r in rows if "clip" in r),
         "errors": sum(r.get("errors", 0) for r in rows),
         "cost": sum(r.get("cost") or 0 for r in rows),
     }
@@ -328,7 +328,7 @@ def _run_record(dataset: str, scope: str, summary: dict, rows: list[dict], user:
         "hypothesis": f"closed-set benchmark {dataset} ({scope}): how well each reader picks the phrase from the list",
         "metrics": {"clips": summary["n"], "vtt_acc": summary["fused_defaults"], "vtt_acc_heldout": best,
                     "gemini_acc": summary["gemini_top1"], "muse_acc": summary["open_exact"],
-                    "pool_recall": _mean(r["clip"].label != len(r["clip"].pool) - 1 for r in rows),
+                    "pool_recall": _mean(r["clip"].label != len(r["clip"].pool) - 1 for r in rows if "clip" in r),
                     "autosend_precision": summary["autosend_precision"],
                     "autosend_coverage": summary["autosend_coverage"], **summary},
         "n": summary["n"], "cost": summary["cost"], "code_commit": _head(),
