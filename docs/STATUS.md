@@ -23,6 +23,10 @@ Obama Weekly Addresses.
 | Practice ingest (seeded, resumable) | `tools/ingest_practice.py` | live smoke |
 | Webcam emulation: Obama → fake 640×480 webcam + mic through the real page; Chrome-format parity proven field by field | `tools/webcam_emulate.py`, `tools/emulate_webcam_session.mjs` | 14 sessions (18.6–28.9 s) in `/tmp/badge-data/webcam-emu/sessions/` (4.4 GB, not committed); ~26 s wall-clock per 25 s session |
 | App: Record, Preheat, Dataset, Clips (VTT vs STT diff), Stats (curve + training strip), Training (v1 sheet, Self-improvement, Runs), Pipeline (live diagrams), Tracker | `static/` | headless Chrome, stubs for not-yet-wired endpoints |
+| Replay lab: 60/20/20 splits, held-out VTT/word/viseme/top-3 accuracy + cost per clip, run records, per-phrase readiness | `experiment.py`, `tools/experiment.py`, `runs.py`, `readiness.py` | 86 tests, 21/21 planted bugs caught; demo on 80 simulated clips |
+| Lip mode + Dictation pages on a shared capture module (640×480 full frame + per-frame tracker boxes) | `static/lipmode.html`, `static/dictation.html`, `static/capture.js` | headless e2e on the talking-head camera: 12/12 and 8/8 (endpoints stubbed) |
+| Dictation sessions: cut at our own pauses into 2–8 s turns, STT per turn, turns processed in the background | `sessions.py`, `asr.py` | 52 tests, 26/26 planted bugs; live 30 s cut → 5 turns of 2.9–7.8 s, all processed (the STT service's own split gave 0.22 s + 28.96 s) |
+| Version registry (`current` moves on evidence, `live` only with user approval) + optional Muse proposer over a typed change space | `versions.py`, `iterate.py`, `evaluator.py` | 121 tests, 18/18 planted bugs; simulated staircase; 1 live proposer call ($0.016) |
 
 ## Measured
 - **Cost ≈ $0.11/clip** at K=5 (Muse $0.082 — mostly reasoning output tokens; Gemini $0.012; SAM $0.018). STT $0.18/hour.
@@ -32,17 +36,19 @@ Obama Weekly Addresses.
 ## In progress (subagents, each in its own worktree)
 | Agent | Scope |
 |---|---|
-| `sessions` | `asr.py`, `sessions.py`: dictation session → **our own pause-based segments (2–8 s) → STT per segment** → clips, `/sessions` contract |
-| `lipmode` | `static/capture.js` (camera + tracker + full-frame recording + per-frame boxes), `lipmode.html`, then `dictation.html` |
-| `replay-lab` | `experiment.py`, `runs.py`, `readiness.py`: free replays, splits 60/20/20, word/sentence/viseme/top-3 accuracy, cost |
-| `iterator` | `versions.py`, `iterate.py`: version registry (`live` vs `current`), autonomous loop, held-out gate |
+| `wiring` | `server.py`, `clips.py`: `POST /vtt`, `POST /vtt/<id>/label`, `vtt_muse`; `POST /dictation`, `GET /sessions[/<id>[/video]]`, STT via `asr`; `GET /runs`, `/readiness`, `/versions`; `prequential` unlabeled-clip fix |
+| `sessions-2` | `sessions.py`: resume queued turns after a restart, retries, practice datasets exempt from the 50/day cap, coverage seconds |
+| `lipmode-cap` | Lip mode takes auto-stop at 8 s (Muse sees at most 8 s at 24 fps) |
+| `readme` | `README.md`: status, training-loop diagrams, evidence |
+| tools | the iterating agent's instruments: two-version replay compare, failures by cause, recipe + clip inspector |
 
 ## Path to run 1
-1. Merge the five agents above as they land (verify scope, removed assertions, tests, screenshots).
-2. Wire the server: `POST /dictation`, `GET /sessions[/<id>[/video]]`, `GET /versions`, `GET /runs`, `GET /readiness`, `POST /vtt`, `POST /vtt/<id>/label`.
-3. Pilot: one emulated session (~10 turns, ≈ $1.10) through `dictation.html`; check it in Dataset → Clips → Stats.
-4. User picks the full run size (150 utterances ≈ $17, 300 ≈ $33 at measured cost).
-5. Run 1 → autonomous iterations (free changes first) → Self-improvement staircase.
+1. Merge the agents above as they land (verify scope, removed assertions, tests, screenshots).
+2. Pilot: one emulated session (~10 turns, ≈ $1.10) through `dictation.html`; check it in Dataset → Clips → Stats.
+3. User picks the full run size (150 utterances ≈ $17, 300 ≈ $33 at measured cost).
+4. Run 1 → the skill book (written against the pilot's real VTT vs STT results).
+5. Iterations: a local Claude Code session follows the skill book, uses the scripts as instruments, records each
+   change as a version; `live` moves only with user approval. No programmatic iteration loop.
 
 ## Decisions (locked)
 - Natural preheat (no prompted phrases); phrase bank learned from STT history; lip-only readiness per phrase.

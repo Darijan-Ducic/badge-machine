@@ -15,3 +15,11 @@
 - A new `## heading` followed by a ```mermaid block becomes a new button on the Pipeline page; no page change needed.
 - ALWAYS validate before committing, because a broken block shows an error on the page:
   `awk '/^```mermaid/{n++;f=1;next}/^```/{f=0}f{print > ("/tmp/pipeline-" n ".mmd")}' docs/pipeline.md && for f in /tmp/pipeline-*.mmd; do mmdc -q -i "$f" -o /tmp/check.svg || echo "BROKEN: $f"; done`
+
+## Self-improvement
+- The iterating agent is a Claude Code session, not a hard-coded loop — it reads VTT vs STT results, decides what to
+  change (code, prompts, features, costs, thresholds), and records each change as a version in `versions.py`.
+- ALWAYS add iteration capability as an agent-usable script that reports evidence (paired per-clip wins/losses,
+  held-out delta, cost) plus a section in the skill book; NEVER as a new knob enum, fixed adopt threshold, or
+  in-code proposer. The agent never tunes on the test split.
+- Update the skill book in the same commit as any change to the iteration scripts.
