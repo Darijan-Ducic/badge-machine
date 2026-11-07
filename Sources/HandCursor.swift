@@ -84,12 +84,15 @@ final class HandCursor: @unchecked Sendable {
             guard let value = points[joint], value.confidence >= 0.55 else { return nil }
             return value.location
         }
-        guard let indexBase = point(.indexMCP), let indexJoint = point(.indexPIP), let indexTip = point(.indexTip),
-              let middleBase = point(.middleMCP), let middleJoint = point(.middlePIP), let middleTip = point(.middleTip),
-              let palmEdge = point(.littleMCP) else { return .lost }
+        guard let indexBase = point(.indexMCP), let palmEdge = point(.littleMCP) else { return .lost }
         let palm = Palm(center: CGPoint(x: (indexBase.x + palmEdge.x) / 2,
                                         y: (indexBase.y + palmEdge.y) / 2),
                         width: hypot(palmEdge.x - indexBase.x, palmEdge.y - indexBase.y))
+        guard palm.width >= 0.025 else { return .lost }
+        // Fingers can briefly hide one another while closing, even while the palm is visible.
+        guard let indexJoint = point(.indexPIP), let indexTip = point(.indexTip),
+              let middleBase = point(.middleMCP), let middleJoint = point(.middlePIP),
+              let middleTip = point(.middleTip) else { return .other }
         return HandGesture.classify(
             index: Finger(base: indexBase, joint: indexJoint, tip: indexTip),
             middle: Finger(base: middleBase, joint: middleJoint, tip: middleTip),
@@ -130,8 +133,8 @@ enum HandGesture {
     case lost
 
     static func classify(index: Finger, middle: Finger, palm: Palm) -> HandGesture {
-        guard palm.width >= 0.025, let indexAngle = index.straightness,
-              let middleAngle = middle.straightness else { return .lost }
+        guard palm.width >= 0.025 else { return .lost }
+        guard let indexAngle = index.straightness, let middleAngle = middle.straightness else { return .other }
         if indexAngle > 0.8, middleAngle > 0.8,
            index.reach > 0.55 * palm.width, middle.reach > 0.55 * palm.width,
            hypot(index.tip.x - middle.tip.x, index.tip.y - middle.tip.y) <= 0.5 * palm.width {
@@ -222,7 +225,7 @@ struct HandPointer {
                 return nil
             }
             if fistSince == nil { fistSince = time }
-            guard let fistSince, time - fistSince >= 0.07 else { return nil }
+            guard let fistSince, time - fistSince >= 0.045 else { return nil }
             self.armed = nil
             return .click(posted)
         case .other:
