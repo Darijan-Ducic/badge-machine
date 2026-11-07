@@ -1,4 +1,5 @@
-"""Local server: serves static/ plus the API for transcripts, SAM boxes, preheat clips and the clip explorer."""
+"""Local server: serves static/ plus the API for transcripts, SAM boxes, preheat clips, lip mode and the clip
+explorer."""
 
 import json
 import os
@@ -12,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from clips import DEFAULT_USER, backend, clip_detail, clip_list, load, process_clip, stats
+from clips import DEFAULT_USER, backend, clip_detail, clip_list, label_clip, load, process_clip, stats, vtt_clip
 from muse_video import BASE_URL
 from sam import segment_image
 from scorers import load_phrases
@@ -20,6 +21,7 @@ from scorers import load_phrases
 PORT = int(os.environ.get("PORT", 8765))
 STORE = None  # clip store: None = MongoDB when MONGODB_URI is set, else data/clips (clips.backend)
 CLIP_ROUTE = re.compile(r"^/clips/([^/]+)(/video)?$")
+LABEL_ROUTE = re.compile(r"^/vtt/([^/]+)/label$")
 STATIC = Path(__file__).parent / "static"
 # Dedicated ASR model: muse-spark-1.3 claimed "no audio attached" on ~half of identical input_audio requests.
 ASR_REQUEST = {"mode": "ENDPOINTING", "model": "muse-voice-transcribe-1.0", "audioEncoding": "WAV"}
@@ -104,14 +106,29 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
+    def post_label(self, clip_id: str, data: bytes):
+        """The user's label for a lip-mode clip, {"text", "source"}: 400 for a bad body, 404 for an unknown clip."""
+        try:
+            request = json.loads(data)
+            text, source = (request.get("text"), request.get("source")) if isinstance(request, dict) else (None, None)
+            found = label_clip(STORE, clip_id, text, source)
+        except ValueError as e:  # not JSON, no text, or a source outside clips.LABEL_SOURCES
+            self.send_json(400, {"error": str(e)})
+            return
+        self.send_json(200, {"clip": clip_id, "label": text}) if found else self.send_json(404, {"error": "no clip"})
+
     def do_POST(self):
         url = urlparse(self.path)
-        if url.path not in ("/transcribe", "/sam", "/preheat/clip"):
+        label = LABEL_ROUTE.match(url.path)
+        if url.path not in ("/transcribe", "/sam", "/preheat/clip", "/vtt") and not label:
             self.send_error(404)
             return
         query = parse_qs(url.query)
         try:
             data = self.rfile.read(int(self.headers["Content-Length"]))
+            if label:
+                self.post_label(label.group(1), data)
+                return
             if url.path == "/transcribe":
                 body = {"transcript": transcribe(data)}
             elif url.path == "/preheat/clip":
@@ -121,6 +138,11 @@ class Handler(SimpleHTTPRequestHandler):
                                     transcribe=transcribe, phrases=load_phrases(), store=STORE,
                                     user_id=query.get("user", [""])[0] or DEFAULT_USER, mouths=mouths,
                                     tracker_flags=flags)
+            elif url.path == "/vtt":
+                # Lip mode: one muted recording -> the VTT pick; read like /preheat/clip, but with K=3 and no STT.
+                mouths, flags = tracker_headers(self.headers)
+                body = vtt_clip(data, load_phrases(), STORE, user_id=query.get("user", [""])[0] or DEFAULT_USER,
+                                mouths=mouths, tracker_flags=flags)
             else:
                 # One JPEG/PNG frame -> SAM boxes [x, y, w, h] in that frame's pixels; ids are per-request ordinals.
                 prompt = query.get("prompt", [""])[0].strip()
