@@ -26,3 +26,10 @@ def mongo_client():
 @pytest.fixture(params=["file", "mongo"])
 def store(request, tmp_path):
     return tmp_path if request.param == "file" else MongoStore(in_memory_mongo()["badge_machine_test"])
+
+
+@pytest.fixture(scope="session")
+def recording(tmp_path_factory) -> bytes:
+    """A real browser-like webm (VP8 + Opus tone, 0.5 s at 30 fps), so the crop step runs real ffmpeg."""
+    from tests.fakes import make_recording
+    return make_recording(tmp_path_factory.mktemp("recording") / "clip.webm")
