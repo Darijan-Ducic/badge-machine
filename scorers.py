@@ -17,6 +17,9 @@ GEMINI_MODEL = "gemini-4-argon"  # gemini-3.8-flash rejects response_logprobs
 # Single-character IDs are single tokens, so the logprobs of Gemini's first output token cover every phrase.
 IDS = list(string.ascii_uppercase + string.digits)
 PROMPT = "This is a muted close-up of one person's mouth. Read their lips and decide which phrase they said."
+# Lip reading holds up down to ~21 fps and degrades below (Maan, TU Delft 2019, LipNet on LRW); Gemini caps video
+# sampling at 24 fps. Both models get the same rate so calibration and few-shot examples stay comparable.
+FPS = 24
 
 
 def load_phrases(path: Path = Path("data/phrases.txt")) -> list[str]:
@@ -36,16 +39,18 @@ def _mp4(clip: Path) -> bytes:
         return out.read_bytes()
 
 
-def _frames(clip: Path, max_frames: int = 48) -> list[str]:
-    # Muse Spark has no frame-rate control but takes ~50 ordered images, so send frames directly.
+def _grids(clip: Path, max_images: int = 48) -> list[str]:
+    # Muse Spark has no frame-rate control and takes ~50 images, so tile 4 consecutive frames per image to fit
+    # a clip at the full FPS (48 grids = 8 s).
     with tempfile.TemporaryDirectory() as tmp:
-        subprocess.run(["ffmpeg", "-loglevel", "error", "-i", clip, "-vf", "fps=15", f"{tmp}/%04d.jpg"], check=True)
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-i", clip, "-vf", f"fps={FPS},scale=320:-2,tile=2x2",
+                        f"{tmp}/%04d.jpg"], check=True)
         files = sorted(Path(tmp).glob("*.jpg"))
-        keep = np.linspace(0, len(files) - 1, min(max_frames, len(files))).round().astype(int)
+        keep = np.linspace(0, len(files) - 1, min(max_images, len(files))).round().astype(int)
         return ["data:image/jpeg;base64," + base64.b64encode(files[i].read_bytes()).decode() for i in keep]
 
 
-def gemini_scores(clip: Path, phrases: list[str], fps: int = 15) -> np.ndarray:
+def gemini_scores(clip: Path, phrases: list[str], fps: int = FPS) -> np.ndarray:
     ids = IDS[: len(phrases)]
     client = genai.Client()  # keep a reference: a garbage-collected Client closes its HTTP connection mid-request
     response = client.models.generate_content(
@@ -78,9 +83,10 @@ def muse_scores(clip: Path, phrases: list[str]) -> np.ndarray:
     response = make_client().chat.completions.create(
         model=MUSE_MODEL,
         messages=[{"role": "user", "content": [
-            {"type": "text", "text": f"{PROMPT} The images are consecutive frames in order. "
+            {"type": "text", "text": f"{PROMPT} Each image is a 2x2 grid of 4 consecutive frames at {FPS} fps, read left to right, "
+                                     f"top to bottom; the images are in order. "
                                      f"Give a probability for every ID; they must sum to 1.\n{_menu(phrases)}"},
-            *({"type": "image_url", "image_url": {"url": url}} for url in _frames(clip)),
+            *({"type": "image_url", "image_url": {"url": url}} for url in _grids(clip)),
         ]}],
         response_format={"type": "json_schema", "json_schema": {"name": "PhraseProbabilities", "schema": schema}},
     )
