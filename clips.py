@@ -27,13 +27,15 @@ import crop
 import muse_sampler
 import scorers
 import visemes
-from candidates import FEATURES, featurize, match
+from candidates import FEATURES, NONE, featurize, match
 from scorer import STAGES, auto_send, predict, prequential, stage_for, train
 
 DATA = Path("data/clips")
 COSTS = Path(__file__).parent / "data" / "viseme_costs.json"
 DEFAULT_USER = "local"  # who preheat clips belong to when the page sends no ?user=
 PREHEAT_K = 5
+RUNTIME_K = 3  # lip mode answers while the user waits; K=5 is for dictation and practice
+LABEL_SOURCES = ("undo", "confirm", "edit")  # how the user gave a lip-mode clip its label
 NONE_TEXT = "∅ none of these"
 V1 = "v1"  # record format marker; older records (fixed-vocabulary scores) are kept but not replayed
 _lock = threading.Lock()  # clips finish concurrently; store order is training order, so saves must not interleave
@@ -75,6 +77,16 @@ class FileStore:
             return None
         path = self.root / f"{clip_id}.mp4"
         return path.read_bytes() if path.exists() else None
+
+    def set_label(self, clip_id: str, text: str, source: str) -> bool:
+        with _lock:
+            records = self.load()
+            hit = next((r for r in records if r.get("record") == V1 and r.get("id") == clip_id), None)
+            if hit is None:
+                return False
+            hit["label"] = {**hit["label"], "user_edit": text, "source": source}
+            (self.root / "index.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+        return True
 
     def users(self) -> list[dict]:
         counts = Counter(r["user_id"] for r in self.load() if r.get("record") == V1)
@@ -118,6 +130,10 @@ class MongoStore:
             return self.clips.open_download_stream(clip_id).read()
         except NoFile:
             return None
+
+    def set_label(self, clip_id: str, text: str, source: str) -> bool:
+        update = {"$set": {"label.user_edit": text, "label.source": source}}
+        return self.records.update_one({"record": V1, "id": clip_id}, update).matched_count == 1
 
     def users(self) -> list[dict]:
         groups = self.records.aggregate([{"$match": {"record": V1}},
@@ -343,7 +359,7 @@ def clip_detail(store, clip_id: str) -> dict | None:
     probs = predict(model, [clip])[0]
     pool = [{"text": _shown(clip, j), "p": float(probs[j]), "is_label": j == clip.label,
              "features": dict(zip(FEATURES, map(float, clip.features[j])))} for j in range(len(clip.pool))]
-    gemini = record["gemini"]["output"] or {}
+    gemini, muse = record["gemini"]["output"] or {}, _muse_read(clip, record["samples"])
     return {
         "id": record["id"], "t": record["t"], "user_id": record["user_id"], "mode": record["mode"],
         "stt": record["label"]["stt_text"], "config": record["config"], "video": f"/clips/{clip_id}/video",
@@ -354,6 +370,7 @@ def clip_detail(store, clip_id: str) -> dict | None:
                     for s in record["samples"]],
         "closed": {key: record["closed"][key] for key in ("latency_ms", "error", "output")},
         "gemini": {"top": [{"phrase": p, "p": v} for p, v in sorted(gemini.items(), key=lambda kv: -kv[1])[:5]]},
+        "vtt_muse": {"text": muse["phrase"], "p": muse["p"]},
     }
 
 
@@ -369,6 +386,36 @@ def _muse_read(clip, samples: list[dict]) -> dict:
     return {"phrase": clip.muse_pick, "p": sum(match(t, [clip.muse_pick]) is not None for t in tops) / len(outputs)}
 
 
+def _read_back(record: dict, store) -> tuple[list[dict], dict, dict | None]:
+    """Read a just-stored clip back like the runtime would, with a model trained on this user's earlier clips only.
+
+    Returns (the user's records, each reader's pick {"fused" | "gemini" | "muse": {"phrase", "p"}}, whether each pick
+    matches the STT label, or None without one)."""
+    records = load(store, record["user_id"])
+    replay = _replayed(records, record["user_id"], record["vocab"])
+    i = [r["id"] for r in replay].index(record["id"])
+    clips = _featurized(replay[:i + 1])
+    clip = clips[i]
+    probs = predict(train([c for c in clips[:i] if c.label is not None], gate=False), [clip])[0]
+    top, heard = int(np.argmax(probs)), record["label"]["stt_text"]
+    gemini_output = record["gemini"]["output"] or {}
+
+    def said(text):
+        return heard is not None and text is not None and match(heard, [text]) is not None
+
+    read = {
+        "fused": {"phrase": _shown(clip, top), "p": float(probs[top])},
+        "gemini": {"phrase": clip.gemini_pick, "p": float(gemini_output.get(clip.gemini_pick, 0.0))},
+        "muse": _muse_read(clip, record["samples"]),
+    }
+    correct = None if heard is None else {
+        "fused": top != len(clip.pool) - 1 and said(clip.pool[top]),
+        "gemini": said(clip.gemini_pick),
+        "muse": said(clip.muse_pick),
+    }
+    return records, read, correct
+
+
 def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=None, *, user_id: str = DEFAULT_USER,
                  k: int = PREHEAT_K, mouths: list | None = None, tracker_flags=(), sample_open=None,
                  score_closed=None, gemini=None) -> dict:
@@ -378,33 +425,70 @@ def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=Non
     record = record_clip(recording, phrases=phrases, user_id=user_id, mode="stt_on", k=k, transcribe=transcribe,
                          mouths=mouths, tracker_flags=tracker_flags, fps=fps, prompted=prompted, store=store,
                          sample_open=sample_open, score_closed=score_closed, gemini=gemini)
-    records = load(store, user_id)
-    replay = _replayed(records, user_id, record["vocab"])
-    i = [r["id"] for r in replay].index(record["id"])
-    clips = _featurized(replay[:i + 1])
-    clip = clips[i]
-    probs = predict(train([c for c in clips[:i] if c.label is not None], gate=False), [clip])[0]
-    top, heard = int(np.argmax(probs)), record["label"]["stt_text"]
+    records, read, correct = _read_back(record, store)
+    heard = record["label"]["stt_text"]
     label = match(heard, phrases) if heard is not None else None
-    gemini_output = record["gemini"]["output"] or {}
-
-    def said(text):
-        return heard is not None and text is not None and match(heard, [text]) is not None
-
     return {
         "clip": record["id"],
         "stt": heard,
         "label": label,
         "label_phrase": None if label is None else phrases[label],
-        "read": {
-            "fused": {"phrase": _shown(clip, top), "p": float(probs[top])},
-            "gemini": {"phrase": clip.gemini_pick, "p": float(gemini_output.get(clip.gemini_pick, 0.0))},
-            "muse": _muse_read(clip, record["samples"]),
-        },
-        "correct": None if heard is None else {
-            "fused": top != len(clip.pool) - 1 and said(clip.pool[top]),
-            "gemini": said(clip.gemini_pick),
-            "muse": said(clip.muse_pick),
-        },
+        "read": read,
+        "correct": correct,
         "stats": stats(records, phrases, user=user_id),
     }
+
+
+def process_turn(segment: Path, *, transcript: str | None, boxes: list | None, user_id: str, session_id: str,
+                 turn: int, mode: str, phrases: list[str], store=None, sample_open=None, score_closed=None,
+                 gemini=None) -> dict:
+    """Dictation: one session turn (sessions.start_session's `process_turn`) as a clip labeled by the turn's own STT,
+    cropped with the turn's boxes and read back like process_clip; returns the fields sessions.TURN_RESULT keeps.
+    A ∅ VTT pick is "∅" (candidates.NONE), which static/vtt.js shows as none of these."""
+    record = record_clip(Path(segment).read_bytes(), phrases=phrases, user_id=user_id, mode=mode, k=PREHEAT_K,
+                         transcript=transcript, mouths=boxes, extra={"session_id": session_id, "turn": turn},
+                         store=store, sample_open=sample_open, score_closed=score_closed, gemini=gemini)
+    _, read, correct = _read_back(record, store)
+    vtt, gemini_read, muse = read["fused"], read["gemini"], read["muse"]
+    return {
+        "clip_id": record["id"],
+        "vtt": {"text": NONE if vtt["phrase"] == NONE_TEXT else vtt["phrase"], "p": vtt["p"]},
+        "vtt_gemini": {"text": gemini_read["phrase"], "p": gemini_read["p"]},
+        "vtt_muse": {"text": muse["phrase"], "p": muse["p"]},
+        "correct": None if correct is None else {"vtt": correct["fused"], "gemini": correct["gemini"],
+                                                 "muse": correct["muse"]},
+    }
+
+
+# ---------------------------------------------------------------- lip mode
+
+
+def vtt_clip(recording: bytes, phrases: list[str], store=None, *, user_id: str = DEFAULT_USER,
+             mouths: list | None = None, tracker_flags=(), sample_open=None, score_closed=None, gemini=None) -> dict:
+    """Lip mode: crop one muted recording with the browser tracker's boxes, read it with every model (K=3), store it
+    unlabeled (the user labels it later, `label_clip`) and score it with a model trained on this user's earlier
+    labeled clips only. `vtt` and `alternatives` are the most probable real candidates: ∅ is never offered, and a ∅
+    top pick makes the action "none"."""
+    start = time.perf_counter()
+    record = record_clip(recording, phrases=phrases, user_id=user_id, mode="lip", k=RUNTIME_K, mouths=mouths,
+                         tracker_flags=tracker_flags, store=store, sample_open=sample_open,
+                         score_closed=score_closed, gemini=gemini)
+    replay = _replayed(load(store, user_id), user_id, record["vocab"])
+    i = [r["id"] for r in replay].index(record["id"])
+    clips = _featurized(replay[:i + 1])  # clips stored after this one can't reach its bank or model
+    clip, model = clips[i], _trained_before(clips, i)
+    probs = predict(model, [clip])[0]
+    best = sorted(range(len(clip.pool) - 1), key=lambda j: -probs[j])[:3]  # ∅ is last
+    alternatives = [{"text": clip.pool[j], "p": float(probs[j])} for j in best]
+    return {"clip": record["id"], "vtt": alternatives[0], "action": _action(model, probs),
+            "alternatives": alternatives, "latency_ms": round((time.perf_counter() - start) * 1000)}
+
+
+def label_clip(store, clip_id: str, text, source) -> bool:
+    """The user's label for a stored clip: `label.user_edit`, which training prefers over STT, and how they gave it.
+    False if there is no such clip; ValueError for a missing text or a source outside LABEL_SOURCES."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("missing label text")
+    if source not in LABEL_SOURCES:
+        raise ValueError(f"label source must be one of {', '.join(LABEL_SOURCES)}, got {source!r}")
+    return backend(store).set_label(clip_id, text, source)
