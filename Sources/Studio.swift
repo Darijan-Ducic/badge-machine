@@ -43,6 +43,7 @@ final class Studio: ObservableObject {
     }
 
     func chooseShortcut() {
+        hotkey.unregister()
         choosing = true
         status = ""
     }
@@ -51,13 +52,16 @@ final class Studio: ObservableObject {
         choosing = false
         pendingShortcut = nil
         status = ""
+        if let shortcut, !hotkey.register(shortcut) {
+            status = "Your saved shortcut is unavailable. Choose another."
+        }
     }
 
     func recordShortcut(_ event: NSEvent) {
         if event.keyCode == 53 { cancelChoosing(); return }
         guard !event.isARepeat else { return }
         guard let choice = Shortcut(event: event) else {
-            status = "Use a function key or a combination such as ⌥Space."
+            status = "Press a key or a keyboard shortcut."
             return
         }
         pendingShortcut = choice
@@ -66,14 +70,14 @@ final class Studio: ObservableObject {
 
     func confirmShortcut() {
         guard let choice = pendingShortcut else { return }
-        guard (choice.keyCode == shortcut?.keyCode && choice.modifiers == shortcut?.modifiers)
-              || hotkey.register(choice) else {
+        guard hotkey.register(choice) else {
             status = "That shortcut is already in use. Try another."
             return
         }
         shortcut = choice
         UserDefaults.standard.set(try? JSONEncoder().encode(choice), forKey: "recordingShortcut")
-        cancelChoosing()
+        choosing = false
+        pendingShortcut = nil
         requestInsertionAccess()
     }
 

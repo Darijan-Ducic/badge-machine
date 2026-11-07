@@ -34,7 +34,7 @@ struct Shortcut: Codable {
             return
         }
         let key = namedKeys[event.keyCode] ?? event.charactersIgnoringModifiers?.uppercased() ?? ""
-        guard modifiers != 0, !key.isEmpty,
+        guard !key.isEmpty,
               namedKeys[event.keyCode] != nil || key.unicodeScalars.allSatisfy({
                   CharacterSet.alphanumerics.union(.punctuationCharacters).union(.symbols).contains($0)
                       && $0.value < 0xF700
@@ -82,6 +82,12 @@ final class GlobalShortcut {
         registration = candidate
         activeID = id.id
         return true
+    }
+
+    func unregister() {
+        if let registration { UnregisterEventHotKey(registration) }
+        registration = nil
+        activeID = 0
     }
 
     deinit {

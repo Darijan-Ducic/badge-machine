@@ -78,14 +78,6 @@ struct StudioView: View {
         .onAppear {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 guard studio.choosing else { return event }
-                let shortcutModifiers: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
-                if event.modifierFlags.intersection(shortcutModifiers).isEmpty {
-                    if event.keyCode == 48 { return event }
-                    if event.keyCode == 36, studio.pendingShortcut != nil {
-                        if !event.isARepeat { studio.confirmShortcut() }
-                        return nil
-                    }
-                }
                 studio.recordShortcut(event)
                 return nil
             }
