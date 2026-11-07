@@ -76,7 +76,9 @@ not probabilities.
 
 ## 5. What learns: personal vs. system
 
-**Personal** — learned automatically from each user's own dictation, per user. This is what v1 trains.
+**Personal** — learned from each user's own dictation, per user. A local Claude Code session following the skill book
+decides when to re-fit, runs the fit scripts, and versions each personal model; nothing re-fits by itself. This is what
+v1 trains.
 
 | Piece | Learns from | Status |
 |---|---|---|
@@ -88,7 +90,8 @@ not probabilities.
 | Camera framing calibration | the user's first clips | planned |
 | Confirm/edit labels in video-only mode | the user's corrections | planned |
 
-**System** — iterated by us + agents, versioned, the same for every user. **Fixed in v1**; each change is a v2 experiment on the same clips.
+**System** — iterated by a local Claude Code session following the skill book (Muse agents are reserved for the product,
+later), versioned, the same for every user. **Fixed in v1**; each change is a v2 experiment on the same clips.
 
 | Piece | v1 setting | Replay cost of a change |
 |---|---|---|
@@ -99,8 +102,8 @@ not probabilities.
 | Stage plan + cold-start default weights | hand-set | free |
 | Tracker knobs | current defaults (T_REFRESH 4 s) | free (vs SAM ground truth) |
 
-A system change never touches anyone's labels: after a new version, each user's personal layers are re-fit from
-their stored raw outputs (free for post-processing changes; call-level changes start a fresh clip history).
+A system change never touches anyone's labels: after a new version, the session re-fits each user's personal layers
+from their stored raw outputs (free for post-processing changes; call-level changes start a fresh clip history).
 
 ## 6. How v1 is measured
 
