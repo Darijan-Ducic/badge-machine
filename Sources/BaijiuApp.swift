@@ -101,7 +101,9 @@ struct StudioView: View {
                 HStack {
                     stamp("TRASCRIZIONE")
                     Spacer()
-                    if !studio.transcript.isEmpty { Button("Copia", action: studio.copy) }
+                    if !studio.transcript.isEmpty && !studio.busy {
+                        Button("Copia", action: studio.copy)
+                    }
                     if studio.clip != nil && !studio.busy { Button("Salva clip…", action: studio.saveClip) }
                 }
                 ScrollView {
@@ -117,10 +119,16 @@ struct StudioView: View {
             .background(.white)
             .overlay(Rectangle().strokeBorder(ink.opacity(0.15)))
 
+            if let notice = studio.transcriptNotice {
+                Text(notice)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+
             HStack {
                 stamp("SOLO VIDEO")
                 Spacer()
-                stamp(studio.online ? "TRASCRIZIONE VIA GEMINI" : "REGISTRAZIONE LOCALE")
+                stamp(studio.providerLabel)
             }
             .foregroundStyle(.secondary)
         }
@@ -132,7 +140,7 @@ struct StudioView: View {
 
     private var result: String {
         switch studio.phase {
-        case .done: studio.transcript
+        case .done, .refining: studio.transcript
         case .failed: studio.error
         case .unclear: "Prova di nuovo con il viso ben illuminato."
         case .transcribing: "Sto leggendo il labiale…"

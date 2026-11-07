@@ -5,25 +5,30 @@ import SwiftUI
 @MainActor
 final class Studio: ObservableObject {
     enum Phase {
-        case ready, starting, recording, finishing, transcribing, done, offline, unclear, failed
+        case ready, starting, recording, finishing, transcribing, refining, done, offline, unclear, failed
     }
 
     @Published private(set) var phase: Phase = .ready
     @Published private(set) var transcript = ""
+    @Published private(set) var transcriptNotice: String?
     @Published private(set) var error = ""
     @Published private(set) var clip: URL?
     @Published private(set) var startedAt = Date()
     let camera = Capture()
     private let gemini: Gemini?
+    private let muse: MuseSpark?
 
     init() {
-        let key = ProcessInfo.processInfo.environment["GEMINI_API_KEY"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        gemini = key.flatMap { $0.isEmpty ? nil : Gemini(key: $0) }
+        let keys = APIKeys()
+        gemini = keys.gemini.map(Gemini.init(key:))
+        muse = keys.meta.map(MuseSpark.init(key:))
     }
 
-    var online: Bool { gemini != nil }
-    var busy: Bool { [.starting, .finishing, .transcribing].contains(phase) }
+    var providerLabel: String {
+        guard gemini != nil else { return "REGISTRAZIONE LOCALE" }
+        return muse == nil ? "TRASCRIZIONE VIA GEMINI" : "GEMINI + MUSE SPARK"
+    }
+    var busy: Bool { [.starting, .finishing, .transcribing, .refining].contains(phase) }
     var active: Bool { [.starting, .recording, .finishing].contains(phase) }
     var action: String { phase == .recording ? "Ferma" : "Avvia" }
 
@@ -34,6 +39,7 @@ final class Studio: ObservableObject {
         case .recording: "Registrazione"
         case .finishing: "Chiusura clip"
         case .transcribing: "Trascrizione in corso"
+        case .refining: "Revisione del testo"
         case .done: "Trascrizione pronta"
         case .offline: "Clip pronta"
         case .unclear: "Labiale poco chiaro"
@@ -48,6 +54,7 @@ final class Studio: ObservableObject {
             camera.stop()
         } else {
             transcript = ""
+            transcriptNotice = nil
             error = ""
             if let clip { try? FileManager.default.removeItem(at: clip) }
             clip = nil
@@ -79,12 +86,28 @@ final class Studio: ObservableObject {
             clip = file
             guard let gemini else { phase = .offline; return }
             phase = .transcribing
-            if let text = try await gemini.transcribe(file) {
-                transcript = text
-                phase = .done
-            } else {
+            guard let draft = try await gemini.transcribe(file) else {
                 phase = .unclear
+                return
             }
+            transcript = draft
+            let reviewNotice = "Controlla i passaggi poco chiari prima di copiare."
+            if draft.contains(Gemini.uncertaintyMarker) {
+                transcriptNotice = reviewNotice
+            }
+            if let muse {
+                phase = .refining
+                do {
+                    let revision = try await muse.refine(draft)
+                    transcript = revision.text
+                    if revision.needsReview { transcriptNotice = reviewNotice }
+                } catch {
+                    transcriptNotice = transcriptNotice == nil
+                        ? "Revisione Meta non riuscita. Puoi copiare la bozza di Gemini."
+                        : "Revisione Meta non riuscita. \(reviewNotice)"
+                }
+            }
+            phase = .done
         } catch {
             self.error = error.localizedDescription
             phase = .failed

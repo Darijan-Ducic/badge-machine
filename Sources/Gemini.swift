@@ -1,6 +1,8 @@
 import Foundation
 
 struct Gemini {
+    static let uncertaintyMarker = "[incerto]"
+
     let key: String
     private let model = "gemini-3.8-flash"
 
@@ -11,7 +13,9 @@ struct Gemini {
                 ["inlineData": ["mimeType": "video/mov", "data": video.base64EncodedString()],
                  "videoMetadata": ["fps": 12]],
                 ["text": """
-                 Read the lip movements in this silent video. Return only the words visibly articulated,                  in their original language. If there is no clear speech or you cannot read it,                  return exactly UNREADABLE. Do not add context or guess missing words.
+                 Read the lip movements in this silent video. Return only the words visibly articulated,
+                 in their original language. Use \(Self.uncertaintyMarker) for unreadable passages within a readable draft.
+                 If no speech is readable, return exactly UNREADABLE. Do not guess missing words.
                  """]
             ]]]
         ]
@@ -30,7 +34,9 @@ struct Gemini {
         let text = result.candidates?.first?.content?.parts
             .filter { $0.thought != true }.compactMap(\.text).joined()
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let text, !text.isEmpty, text != "UNREADABLE" else { return nil }
+        guard let text, text != "UNREADABLE",
+              text.replacingOccurrences(of: Self.uncertaintyMarker, with: "")
+                .contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
         return text
     }
 

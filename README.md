@@ -11,10 +11,12 @@ open "build/Baijiu Machine.app"
 
 Apri la finestra dall’icona nella barra dei menu. Premi **Avvia** e consenti l’accesso alla fotocamera. Premi **Ferma** dopo aver articolato una frase breve. La clip si chiude automaticamente dopo otto secondi. La fotocamera si spegne al termine della registrazione. Puoi salvare la clip locale dalla finestra. L’app non acquisisce audio.
 
-Per provare la trascrizione con Gemini, esci dall’app dal menu e avvia il binario da un terminale in cui hai già esportato `GEMINI_API_KEY`.
+Per attivare la trascrizione, aggiungi `GEMINI_API_KEY` a `.env.local` nella cartella del progetto. Aggiungi `MODEL_API_KEY` per attivare anche la revisione con Meta Muse Spark. Usa una riga per chiave nel formato `NOME=valore`. Salva e riapri l’app dalla cartella `build`. Git ignora il file.
+
+Puoi anche esportare le chiavi nel terminale da cui avvii il binario. Le chiavi esportate hanno precedenza.
 
 ```sh
 "./build/Baijiu Machine.app/Contents/MacOS/Baijiu Machine"
 ```
 
-Con la chiave configurata, l’app invia la clip senza audio a Google al termine di ogni registrazione. Senza chiave, acquisizione e salvataggio funzionano in locale. L’accuratezza sul labiale silenzioso va misurata con clip reali.
+Al termine della registrazione, Gemini riceve la clip senza audio. Muse Spark riceve solo la bozza di testo, rifinisce la punteggiatura e segnala i passaggi da controllare. Se la revisione fallisce, puoi copiare la bozza di Gemini. Senza la chiave Gemini, acquisizione e salvataggio funzionano in locale. L’accuratezza sul labiale silenzioso va misurata con clip reali.
