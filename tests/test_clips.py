@@ -174,3 +174,12 @@ def test_a_runtime_clip_without_stt_is_stored_unlabeled(store, recording):
     (record,) = load(store)
     assert (record["mode"], record["label"]) == ("runtime", {"stt_text": None, "user_edit": None})
     assert (stats(load(store), PHRASES)["clips"], stats(load(store), PHRASES)["labeled"]) == (1, 0)
+
+
+def test_a_config_override_is_logged_over_the_sampler_defaults(store, recording):
+    record = record_clip(recording, phrases=PHRASES, user_id="local", mode="experiment", k=3, store=store,
+                         config={"grid": "3x3", "fps": 12}, **readers("yes"))
+
+    assert (record["config"]["grid"], record["config"]["fps"]) == ("3x3", 12)
+    assert record["config"]["tile_width"] == muse_sampler.CONFIG["tile_width"]
+    assert load(store)[0]["config"]["grid"] == "3x3"
