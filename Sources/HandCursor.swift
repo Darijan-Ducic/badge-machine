@@ -200,7 +200,7 @@ struct HandPointer {
     private var filtered: CGPoint?
     private var posted: CGPoint?
     private var lastSampleAt: TimeInterval?
-    private var pointingSince: TimeInterval?
+    private var lastPointingAt: TimeInterval?
     private var armed: (time: TimeInterval, palm: Palm)?
     private var fistSince: TimeInterval?
 
@@ -214,11 +214,14 @@ struct HandPointer {
         switch gesture {
         case .pointing(let tip, let palm):
             fistSince = nil
-            if pointingSince == nil { pointingSince = time }
-            if let pointingSince, time - pointingSince >= 0.05 { armed = (time, palm) }
+            // Two recent pointing frames rearm the click, even through a brief uncertain pose.
+            if let lastPointingAt, time > lastPointingAt, time - lastPointingAt <= 0.1 {
+                armed = (time, palm)
+            }
+            lastPointingAt = time
             return position(for: tip, after: interval, in: bounds).map(Event.move)
         case .fist(let palm):
-            pointingSince = nil
+            lastPointingAt = nil
             guard let armed, time - armed.time <= 0.65, palm.isNear(armed.palm), let posted else {
                 self.armed = nil
                 fistSince = nil
@@ -229,7 +232,6 @@ struct HandPointer {
             self.armed = nil
             return .click(posted)
         case .other:
-            pointingSince = nil
             fistSince = nil
             return nil
         case .lost:
