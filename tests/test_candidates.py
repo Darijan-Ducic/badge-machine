@@ -155,9 +155,21 @@ def test_label_matches_stt_after_normalizing():
     assert clip(stt="go go on").label == clip().pool.index("go on")  # STT word doubling collapsed
 
 
-def test_label_tolerates_a_near_miss():
-    # "go onn" vs "go on": 5 matching chars, ratio 2*5/11 = .91 >= .85
-    assert clip(stt="go onn").label == clip().pool.index("go on")
+def test_label_needs_an_exact_match_so_a_near_miss_is_a_pool_miss():
+    # Spec change: fuzzy matching (ratio >= .85) merged opposite commands ("turn on/off the lights" = .92), so a
+    # near miss is now a pool miss. "go onn" vs "go on" (ratio .91) no longer counts as "go on".
+    assert clip(stt="go onn").label == clip().pool.index(NONE)
+
+
+def test_near_identical_commands_stay_separate_candidates_with_their_own_votes():
+    on = lambda i: record(i, {**S0["output"], "hypotheses": hyps(("turn on the lights", 0.6))})
+    off = record(2, {**S0["output"], "hypotheses": hyps(("turn off the lights", 0.6))})
+    c = clip(samples=[on(0), on(1), off], stt="turn off the lights")
+    vote = FEATURES.index("vote")
+    # 2 of 3 samples say "on", 1 of 3 says "off"; a fuzzy merge would give both 3/3
+    assert c.features[c.pool.index("turn on the lights")][vote] == pytest.approx(2 / 3)
+    assert c.features[c.pool.index("turn off the lights")][vote] == pytest.approx(1 / 3)
+    assert c.label == c.pool.index("turn off the lights")
 
 
 def test_label_is_none_when_stt_is_not_in_the_pool():

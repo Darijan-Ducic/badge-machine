@@ -80,7 +80,7 @@ def test_history_reports_the_spec_accuracy_definitions():
     # ∅ is the right answer here and wins, but `fused` only credits a correct transcription.
     miss = hand_clip([{"vote": 0.1}], {"none_closed": 3.0}, label=1, stt="go on", gemini_pick="Go on.",
                      muse_pick="no")
-    hit = hand_clip([{"vote": 1.0}, {"vote": 0.2}], {}, label=0, stt="go onn", pool=["go on", "no"],
+    hit = hand_clip([{"vote": 1.0}, {"vote": 0.2}], {}, label=0, stt="Go on!", pool=["go on", "no"],
                     gemini_pick="no", muse_pick="go on")
 
     first, second = prequential([miss, hit])
