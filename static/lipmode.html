@@ -67,11 +67,12 @@
     const $ = (id) => document.getElementById(id);
     const USER = new URLSearchParams(location.search).get("user") || "default";
     const MIN_MS = 500, RECENT = 30; // shortest take sent; frames in the live quality window
+    const MAX_MS = 8000; // a take stops itself here: Muse sees at most 192 frames (48 images × 2×2) = 8 s at 24 fps
     const css = getComputedStyle(document.documentElement), color = (v) => css.getPropertyValue(v).trim();
     const octx = $("overlay").getContext("2d"), pctx = $("crop").getContext("2d");
     const state = { frames: 0, recent: [], quality: "starting", last: null };
     window.__lip = state; // read by tests/lipmode.e2e.mjs
-    let cap = null;
+    let cap = null, stopAt = null;
 
     const note = (text) => { $("note").textContent = text; };
     const pct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
@@ -124,17 +125,20 @@
     function begin() {
       if (!cap || cap.recording || $("hold").disabled) return;
       cap.start();
+      stopAt = setTimeout(() => end(true), MAX_MS);
       $("rec").hidden = false;
       $("hold-icon").className = "sq";
       $("hold-label").textContent = "Release to read";
     }
 
-    async function end() {
+    async function end(capped) { // capped: true only from the MAX_MS timer (event listeners pass an Event)
       if (!cap?.recording) return;
+      clearTimeout(stopAt);
       $("rec").hidden = true;
       $("hold-icon").className = "dot";
       $("hold-label").textContent = "Hold to speak silently";
       const take = await cap.stop();
+      take.capped = capped === true;
       if (take.ms < MIN_MS) return note("Too short: hold for at least half a second while you mouth it.");
       if (!take.flags.length || !take.gate.ok) return repeat(take); // the free check, before any model spend
       note("Reading your lips…");
@@ -156,6 +160,7 @@
       const c = el("article", "card read"), head = el("p", "eyebrow"), chip = el("span", "chip");
       head.append(el("b", null, "Lip read"), `· ${(take.ms / 1000).toFixed(1)} s`, chip);
       c.append(head);
+      if (take.capped) c.append(el("p", "eyebrow", "Capped at 8 s, the longest a read can use at full frame rate."));
       $("feed").prepend(c);
       return { c, head, chip };
     }
