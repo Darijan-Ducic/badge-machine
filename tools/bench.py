@@ -232,6 +232,8 @@ def summarize(rows: list[dict]) -> dict:
         "fused_30_defaults": _mean(r["fused_defaults"] for r in after30),
         "autosend_coverage": _mean(r["sent"] for r in after10),
         "autosend_precision": _mean(r["fused_core"] for r in sent),
+        "fused_30_wins": sum(r["fused_core"] and not r["fused_defaults"] for r in after30),
+        "fused_30_losses": sum(r["fused_defaults"] and not r["fused_core"] for r in after30),
         "pool_recall": _mean(r["clip"].label != len(r["clip"].pool) - 1 for r in rows if "clip" in r),
         "errors": sum(r.get("errors", 0) for r in rows),
         "cost": sum(r.get("cost") or 0 for r in rows),
@@ -336,6 +338,25 @@ def _run_record(dataset: str, scope: str, summary: dict, rows: list[dict], user:
     }
 
 
+def blocks(rows: list[dict], size: int = 12) -> list[dict]:
+    """One speaker's stream in consecutive blocks of `size` clips (by clip index): pool recall, fused (staged,
+    predict-then-train) and the closed / Gemini top-1 per block, so a learning curve shows."""
+    out = []
+    for lo in range(0, len(rows), size):
+        part = rows[lo:lo + size]
+        out.append({"from": lo, "n": len(part), "pool_recall": _mean(r["clip"].label != len(r["clip"].pool) - 1
+                                                                     for r in part),
+                    "fused": _mean(r["fused_core"] for r in part), "closed_top1": _mean(r["closed_top1"] for r in part),
+                    "gemini_top1": _mean(r["gemini_top1"] for r in part)})
+    return out
+
+
+def binomial_p(successes: float, n: int, chance: float) -> float | None:
+    """One-sided P(X >= successes) for X ~ Binomial(n, chance); fractional tie credit rounds down."""
+    from scipy.stats import binomtest
+    return float(binomtest(int(successes), n, chance, alternative="greater").pvalue) if n else None
+
+
 def measure(records: list[dict], dataset: str) -> dict:
     prefix = f"practice:{dataset}:"
     records = [r for r in records if str(r.get("user_id", "")).startswith(prefix)]
@@ -383,8 +404,27 @@ def table(result: dict, chance: float | None) -> str:
                           f"{_fmt(s['fused_30'])} ({_fmt(s['fused_30_defaults'])}) n={s['n_30']}",
                           _fmt(s["autosend_coverage"]), _fmt(s["autosend_precision"])])
         text += f"\n\n{title}\n" + _grid(lines)
+    for title, block in [("fused, app pool", app), ("fused, closed pool", result["closed_pool"])]:
+        for scope, s in _scopes(block):
+            if s["n_30"]:
+                text += (f"\n{title} {scope.split(':')[-1]}: core {_fmt(s['fused_30'])} vs defaults "
+                         f"{_fmt(s['fused_30_defaults'])} on the same {s['n_30']} clips "
+                         f"(core-only right {s['fused_30_wins']}, defaults-only right {s['fused_30_losses']})")
     if chance is not None:
-        text += f"\nchance top-1 {chance * 100:.1f}%"
+        text += f"\nchance top-1 {chance * 100:.1f}%, top-3 {min(1, 3 * chance) * 100:.1f}%"
+        for scope, s in _scopes(app):
+            p = [binomial_p(s[key] * s["n"], s["n"], c) for key, c in
+                 [("closed_top1", chance), ("closed_top3", 3 * chance), ("gemini_top1", chance),
+                  ("gemini_top3", 3 * chance)]]
+            text += (f"\n{scope.split(':')[-1]} one-sided binomial p vs chance: closed@1 {p[0]:.1g}  closed@3 {p[1]:.1g}"
+                     f"  gemini@1 {p[2]:.1g}  gemini@3 {p[3]:.1g}")
+    for key, title in [("_rows", "app pool"), ("_rows_cp", "closed pool")]:
+        for scope, rows in result[key].items():
+            if scope == "pooled":
+                continue
+            text += f"\n{title} {scope.split(':')[-1]} by clip index: " + "  ".join(
+                f"[{b['from'] + 1}-{b['from'] + b['n']}] pool {_fmt(b['pool_recall'])} fused {_fmt(b['fused'])} "
+                f"cl@1 {_fmt(b['closed_top1'])} gem@1 {_fmt(b['gemini_top1'])}" for b in blocks(rows))
     for scope, s in _scopes(app):
         if "open_slots" in s:
             cp = (result["closed_pool"].get(scope) or {}).get("fused_slots") or []
