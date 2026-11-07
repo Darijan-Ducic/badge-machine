@@ -1,0 +1,63 @@
+/* Badge machine theme, ported from pre-coach (Practice Studio): studio/static/app.css, per docs/spec.md → "UI shape".
+   Light and editorial: a #f5f5f7 page with a soft wash of color at the top, white rounded cards, a black floating dock.
+   Gray builds structure; each color has one job: red = past the time / recording, yellow = heads-up,
+   green = on plan / said, blue = the coach and the files it writes.
+   Selectors keep pre-coach's names so a rule here can be traced back to app.css. */
+@font-face { font-family: "Geist"; src: url("fonts/geist-latin.woff2") format("woff2"); font-weight: 300 700; font-display: swap; }
+:root {
+  --paper: #f5f5f7; --card: #fff; --well: #f2f2f5; --well-2: #e5e5ea;
+  --ink: #111; --ink-2: #4a4a4a; --ink-3: #8b8b8b; --ink-4: #b9b9b9;
+  --hair: rgba(0,0,0,.06); --hair-2: rgba(0,0,0,.10);
+  --over: #e5483b;   --over-ink: #c2352a;   --over-wash: #fdecea;
+  --near: #f5a623;   --near-ink: #9a5d00;   --near-wash: #fff2d6;
+  --onplan: #26a65b; --onplan-ink: #157a3f; --onplan-wash: #e2f4e8;
+  --coach: #3a6cf4;  --coach-ink: #2752c9;  --coach-wash: #e8eefe;
+  --press: var(--over);
+  --lift: 0 1px 1px rgba(0,0,0,.03), 0 10px 28px rgba(0,0,0,.05), 0 28px 56px rgba(0,0,0,.035);
+  --r-card: 32px; --r-inner: 22px; --edge: 24px;
+  --ease: cubic-bezier(.2,.7,.2,1);
+  --font: "Geist", "Segoe UI Variable Display", "SF Pro Display", -apple-system, system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; min-height: 100%; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+b { font-weight: 600; }
+.eyebrow { margin: 0; font-size: 13px; color: var(--ink-3); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.eyebrow b { color: var(--ink); font-weight: 500; }
+
+/* the wash of color at the top of the page, fading into it (full strength only on pre-coach's Home) */
+.haze { position: absolute; left: 0; right: 0; top: 0; height: max(100vh, 760px); z-index: 0; pointer-events: none; overflow: hidden; transition: opacity .5s; }
+.haze::before { content: ""; position: absolute; inset: -12% -6% 0; filter: blur(28px);
+  background: radial-gradient(36% 52% at 9% 3%, rgba(146, 158, 238, .58), transparent 70%), radial-gradient(28% 40% at 27% 30%, rgba(186, 214, 247, .5), transparent 72%),
+    radial-gradient(40% 48% at 52% -2%, rgba(232, 211, 244, .7), transparent 72%), radial-gradient(32% 56% at 97% 18%, rgba(246, 194, 206, .62), transparent 72%),
+    radial-gradient(28% 40% at 80% 44%, rgba(252, 226, 222, .5), transparent 72%); }
+.haze::after { content: ""; position: absolute; inset: 0; background: linear-gradient(transparent 38%, var(--paper) 88%); }
+body:not([data-section="home"]) .haze { opacity: .45; }
+main { position: relative; z-index: 1; }
+@keyframes enter { from { opacity: 0; transform: translateY(12px); } }
+
+/* cards */
+.card { position: relative; background: var(--card); border-radius: var(--r-card); box-shadow: var(--lift); border: 1px solid rgba(0,0,0,.03); padding: 28px; min-width: 0; }
+.col { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.headline { margin: 0; font-weight: 400; font-size: 30px; line-height: 1.18; letter-spacing: -0.025em; max-width: 18ch; }
+.headline b { font-weight: 600; }
+.tip-text { margin: 12px 0 0; font-size: 18px; line-height: 1.45; letter-spacing: -0.01em; }
+
+/* the camera screen: a centered card with the self-view well (pre-coach's local recorder) */
+.framing-wrap { min-height: 100vh; display: grid; place-items: center; padding: 40px 24px 120px; }
+.framing { width: min(560px, 100%); padding: 14px 14px 30px; background: var(--card); border-radius: var(--r-card); box-shadow: var(--lift); text-align: center; }
+.cam { position: relative; aspect-ratio: 16 / 10; border-radius: var(--r-inner); background: var(--well); overflow: hidden; }
+.cam video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+.cam .thirds { position: absolute; inset: 0; background: linear-gradient(90deg, transparent 33.2%, rgba(255,255,255,.45) 33.3%, transparent 33.5%, transparent 66.5%, rgba(255,255,255,.45) 66.6%, transparent 66.8%); }
+.framing .headline { margin: 0 auto; max-width: 18ch; font-size: 26px; }
+.framing .note { margin: 14px 0 0; font-size: 13px; color: var(--ink-3); min-height: 20px; }
+
+/* the dock: the page's actions, in a black pill floating at the bottom center */
+.dock { position: fixed; left: 50%; bottom: var(--edge); transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 6px; padding: 6px; border-radius: 999px; background: var(--ink); box-shadow: 0 14px 34px rgba(0,0,0,.22); animation: enter .4s var(--ease) both; }
+.dock .go { display: inline-flex; align-items: center; gap: 10px; height: 46px; padding: 0 24px 0 20px; border-radius: 999px; background: #fff; color: var(--ink); font-weight: 500; transition: transform .15s; }
+.dock .go:hover { transform: translateY(-1px); }
+.dock .go:disabled { opacity: .5; cursor: default; transform: none; }
+.dock .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--over); }
+.dock .sq { width: 10px; height: 10px; border-radius: 2px; background: var(--over); }
