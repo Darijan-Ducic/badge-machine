@@ -608,3 +608,30 @@ def test_closed_api_error_becomes_an_error_item(short_clip, muse):
 
     assert set(item) == ITEM_KEYS
     assert item["output"] is None and "Connection error" in item["error"]
+
+
+# ---------------------------------------------------------------- few-shot examples (additive; default unchanged)
+
+
+def test_examples_come_before_the_clip_each_as_its_transcript_then_one_image(short_clip, long_clip, muse):
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
+
+    sample_open(short_clip, 1, examples=[{"clip": long_clip, "text": "we need to make sure"},
+                                          {"clip": short_clip, "text": "middle class families"}])
+
+    parts = fake.requests[0]["messages"][0]["content"]
+    kinds = [p["type"] for p in parts]
+    clip_images = len(labeled_grids(short_clip).images)
+    assert kinds[-clip_images:] == ["image_url"] * clip_images
+    assert kinds[:-clip_images] == ["text", "text", "image_url", "text", "image_url", "text"]
+    assert "we need to make sure" in parts[1]["text"] and "middle class families" in parts[3]["text"]
+
+
+def test_the_clips_own_images_are_the_same_with_or_without_examples(short_clip, long_clip, muse):
+    fake = muse(lambda request: to_wire(in_range_sample(29)))
+
+    sample_open(short_clip, 1)
+    sample_open(short_clip, 1, examples=[{"clip": long_clip, "text": "we need to make sure"}])
+
+    plain, shot = (images_of(r) for r in fake.requests)
+    assert shot[-len(plain):] == plain and len(shot) == len(plain) + 1
