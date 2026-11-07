@@ -58,7 +58,7 @@ our us you your he him his she her it its they them their this that these those 
 will would shall should can could may might must do does did have has had not no yes just very also than then too
 all any some each every more most much many such only own same about into over under again further once up down out
 off s t don't i'm it's we're that's let's""".split())
-_SLOTS = threading.BoundedSemaphore(4)  # at most 4 concurrent model calls, across every read in this process
+_SLOTS = threading.BoundedSemaphore(4)  # concurrent model calls in this process (read --slots; lips uses one)
 
 
 # ---------------------------------------------------------------- arms and boxes
@@ -257,8 +257,9 @@ def experiment_commit() -> str:
 # ---------------------------------------------------------------- data: turn sets, reads
 
 
-def _sessions_turns(user: str) -> dict[str, tuple]:
-    """clip id -> (session id, turn) of every processed turn of the user's sessions."""
+def _sessions_turns(user: str, pending: bool = False) -> dict[str, tuple]:
+    """turn key -> (session id, session t, turn) of every processed turn of the user's sessions; the key is the turn's
+    clip id. With `pending`, also turns that have STT but no clip yet, keyed "<session id>#<turn>"."""
     import sessions
     store, found = sessions._backend(None), {}
     for summary in sessions.list_sessions(user)["sessions"]:
@@ -266,6 +267,8 @@ def _sessions_turns(user: str) -> dict[str, tuple]:
         for turn in record["turns"]:
             if turn["status"] == "processed" and turn.get("clip_id"):
                 found[turn["clip_id"]] = (summary["id"], record["t"], turn)
+            elif pending and turn.get("stt") and turn["status"] == "pending":
+                found[f"{summary['id']}#{turn['i']}"] = (summary["id"], record["t"], turn)
     return found
 
 
@@ -279,9 +282,16 @@ def load_set(name: str) -> list[str]:
     return json.loads(_set_path(name).read_text())["clips"]
 
 
-def freeze(user: str, name: str, n: int | None, skip: list[str]) -> list[str]:
+def union(name: str, parts: list[str]) -> list[str]:
+    """A set made of earlier sets, in order (for pooled reports)."""
+    clips = list(dict.fromkeys(c for part in parts for c in load_set(part)))
+    _set_path(name).write_text(json.dumps({"clips": clips, "t": time.time(), "union": parts}))
+    return clips
+
+
+def freeze(user: str, name: str, n: int | None, skip: list[str], pending: bool = False) -> list[str]:
     done = {c for s in skip for c in load_set(s)}
-    turns = sorted(_sessions_turns(user).items(), key=lambda kv: (kv[1][1], kv[1][2]["i"]))
+    turns = sorted(_sessions_turns(user, pending).items(), key=lambda kv: (kv[1][1], kv[1][2]["i"]))
     clips = [c for c, _ in turns if c not in done][:n]
     SETS.mkdir(parents=True, exist_ok=True)
     _set_path(name).write_text(json.dumps({"user": user, "clips": clips, "t": time.time(), "skip": skip}))
@@ -292,10 +302,10 @@ def exp_user(label: str, user: str) -> str:
     return f"exp:lab-crop-{label}:{user}"
 
 
-def _reads(read_user: str) -> dict[str, dict]:
-    """source clip id -> the latest re-read clip of `read_user`."""
+def _reads(read_users: str) -> dict[str, dict]:
+    """source clip id -> the latest re-read clip of the (comma-separated) `read_users`."""
     import clips
-    return {r["experiment"]["source_clip"]: r for r in clips.backend(None).load(read_user)
+    return {r["experiment"]["source_clip"]: r for user in read_users.split(",") for r in clips.backend(None).load(user)
             if r.get("experiment", {}).get("source_clip")}
 
 
@@ -325,7 +335,7 @@ def _skipped_gemini(clip, phrases, usage=None):
     raise RuntimeError("skipped: crop experiment reads open samples only")
 
 
-def read_turn(turn_info, *, label: str, spec: dict, user: str, k: int, experiment_name: str, phrases) -> dict:
+def read_turn(key: str, turn_info, *, label: str, spec: dict, user: str, k: int, experiment_name: str, phrases) -> dict:
     import clips
     import crop
     import sessions
@@ -347,7 +357,7 @@ def read_turn(turn_info, *, label: str, spec: dict, user: str, k: int, experimen
             transcript=turn["stt"], mouths=[[0, *box]], score_closed=_skipped_closed, gemini=_skipped_gemini,
             crop_width=width,
             extra={"experiment": {"name": experiment_name, "lever": "crop", "arm": label, "spec": spec,
-                                  "session_id": sid, "turn": turn["i"], "source_clip": turn["clip_id"],
+                                  "session_id": sid, "turn": turn["i"], "source_clip": key,
                                   "tracker_box": median, "box": box, "crop_width": width,
                                   "mouth_px": [median[2] / crop.GEOMETRY["CROP_PAD"],
                                                median[3] / crop.GEOMETRY["CROP_PAD"]],
@@ -356,10 +366,13 @@ def read_turn(turn_info, *, label: str, spec: dict, user: str, k: int, experimen
     return record
 
 
-def read_arms(user: str, set_name: str, arms: list[str], k: int, budget: float, workers: int = 2) -> None:
+def read_arms(user: str, set_name: str, arms: list[str], k: int, budget: float, workers: int = 2,
+              slots: int = 4) -> None:
+    global _SLOTS
     from scorers import load_phrases
+    _SLOTS = threading.BoundedSemaphore(slots)
     throttle_muse()
-    clip_ids, info = load_set(set_name), _sessions_turns(user)
+    clip_ids, info = load_set(set_name), _sessions_turns(user, pending=True)
     phrases, spent, lock = load_phrases(), [0.0], threading.Lock()
     for text in arms:
         label, spec = parse_arm(text)
@@ -371,7 +384,7 @@ def read_arms(user: str, set_name: str, arms: list[str], k: int, budget: float, 
             with lock:
                 if spent[0] >= budget:
                     return None
-            record = read_turn(info[clip_id], label=label, spec=spec, user=user, k=k, experiment_name=set_name,
+            record = read_turn(clip_id, info[clip_id], label=label, spec=spec, user=user, k=k, experiment_name=set_name,
                                phrases=phrases)
             cost = experiment.clip_cost(record) or 0
             with lock:
@@ -392,11 +405,16 @@ def _rows(user: str, clip_ids: list[str], records: dict[str, dict]) -> list[dict
 
 
 def report(user: str, set_name: str, arms: list[str], read_users: dict[str, str], save: bool, hypothesis: str,
-           verdict: str, reopen: str) -> None:
+           verdict: str, reopen: str, baseline: str | None = None) -> None:
+    """Each arm against the original clips of the same turns, or against the re-reads of arm `baseline`."""
     import clips
     clip_ids = load_set(set_name)
     store = clips.backend(None)
-    originals = {c: store.get(c) for c in clip_ids}
+    if baseline:
+        originals = _reads(read_users.get(baseline) or exp_user(baseline, user))
+        clip_ids = [c for c in clip_ids if c in originals]
+    else:
+        originals = {c: store.get(c) for c in clip_ids}
     base_rows = _rows(user, clip_ids, originals)
     base = summarize(base_rows)
     cols = ("lift_viseme", "lift_word", "lift_viseme_pick", "lift_word_pick", "viseme", "word", "viseme_mean_k",
@@ -406,7 +424,8 @@ def report(user: str, set_name: str, arms: list[str], read_users: dict[str, str]
           f"{'p(vis)':>8}{'$':>7}")
     print(f"{'original':<14}{base['n']:>4}" + "".join(f"{base[c]:>17.3f}" for c in cols))
     lips = json.loads(LIPS.read_text()) if LIPS.exists() else {}
-    _lips_line("original", {c: crop_box_of(originals[c]) for c in clip_ids}, lips)
+    if not baseline:
+        _lips_line("original", {c: crop_box_of(originals[c]) for c in clip_ids}, lips)
     for text in arms:
         label = text.split(":")[0]
         reads = _reads(read_users.get(label) or exp_user(label, user))
@@ -455,7 +474,7 @@ def measure_lips(user: str, set_name: str, frames: int = 4) -> None:
     import sam
     import sessions
     cache = json.loads(LIPS.read_text()) if LIPS.exists() else {}
-    info, store = _sessions_turns(user), sessions._backend(None)
+    info, store = _sessions_turns(user, pending=True), sessions._backend(None)
     todo = [c for c in load_set(set_name) if c not in cache]
     print(f"lips: {len(todo)} turns to measure, {frames} frames each")
     for clip_id in todo:
@@ -525,6 +544,8 @@ def main(argv=None) -> int:
     t.add_argument("--set", required=True)
     t.add_argument("--n", type=int)
     t.add_argument("--skip", action="append", default=[])
+    t.add_argument("--pending", action="store_true", help="also turns with STT that the server has not read yet")
+    t.add_argument("--union", action="append", help="make the set from these earlier sets instead")
     r = sub.add_parser("read")
     r.add_argument("--user", required=True)
     r.add_argument("--set", required=True)
@@ -532,6 +553,7 @@ def main(argv=None) -> int:
     r.add_argument("--k", type=int, default=5)
     r.add_argument("--budget", type=float, default=3.0)
     r.add_argument("--workers", type=int, default=2)
+    r.add_argument("--slots", type=int, default=4, help="concurrent model calls (4 in total across processes)")
     o = sub.add_parser("report")
     o.add_argument("--user", required=True)
     o.add_argument("--set", required=True)
@@ -541,6 +563,7 @@ def main(argv=None) -> int:
     o.add_argument("--hypothesis", default="")
     o.add_argument("--verdict", default="inconclusive")
     o.add_argument("--reopen", default="")
+    o.add_argument("--baseline", help="pair against this arm's re-reads instead of the original clips")
     sub.add_parser("spend")
     lp = sub.add_parser("lips")
     lp.add_argument("--user", required=True)
@@ -548,13 +571,15 @@ def main(argv=None) -> int:
     lp.add_argument("--frames", type=int, default=4)
     args = p.parse_args(argv)
     if args.cmd == "turns":
-        clips = freeze(args.user, args.set, args.n, args.skip)
+        clips = union(args.set, args.union) if args.union else freeze(args.user, args.set, args.n, args.skip,
+                                                                         args.pending)
         print(f"{args.set}: {len(clips)} turns frozen -> {_set_path(args.set)}")
     elif args.cmd == "read":
-        read_arms(args.user, args.set, args.arm, args.k, args.budget, args.workers)
+        read_arms(args.user, args.set, args.arm, args.k, args.budget, args.workers, args.slots)
     elif args.cmd == "report":
         read_users = dict(item.split("=", 1) for item in args.reads)
-        report(args.user, args.set, args.arm, read_users, args.save, args.hypothesis, args.verdict, args.reopen)
+        report(args.user, args.set, args.arm, read_users, args.save, args.hypothesis, args.verdict, args.reopen,
+               args.baseline)
     elif args.cmd == "lips":
         measure_lips(args.user, args.set, args.frames)
     else:
