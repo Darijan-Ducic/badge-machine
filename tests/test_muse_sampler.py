@@ -21,8 +21,8 @@ from openai.types.chat import ChatCompletion
 from PIL import Image
 
 import muse_sampler
-from muse_sampler import (CONFIG, SCHEMA_V1, WIRE_SCHEMA, from_wire, labeled_grids, sample_open, score_closed, stamp,
-                          validate_open)
+from muse_sampler import (CONFIG, SCHEMA_V1, WIRE_SCHEMA, closed_from_wire, from_wire, labeled_grids, sample_open,
+                          score_closed, stamp, validate_open)
 
 DOC = Path(__file__).resolve().parent.parent / "docs" / "uncertainty-design.md"
 PHRASES = Path(__file__).resolve().parent.parent / "data" / "phrases.txt"
@@ -485,27 +485,86 @@ def test_open_prompt_contains_no_phrase_list(short_clip, muse):
     assert [p for p in multiword if p in text] == []
 
 
-def test_closed_scores_map_back_to_phrases_with_spaces(short_clip, muse):
-    phrases = ["turn on the lights", "turn off the lights", "good night"]
-    truth = {"turn on the lights": 0.1, "turn off the lights": 0.7, "good night": 0.05}
+# Twelve phrases, so the ids cross from one digit to two: unpadded ids would sort 1, 10, 11, 12, 2, ...
+TWELVE = ["yes", "no", "hello", "thank you", "stop", "next", "go back", "help me", "call mom", "send message",
+          "turn on the lights", "turn off the lights"]
 
+
+def menu_reader(truth: dict, none: float):
+    """A fake model that reads the numbered menu in the prompt, scores each phrase under the id the menu gives it,
+    and answers in the closed wire format."""
     def reply(request):
-        # Answer like a model reading the menu: find each phrase's id in the prompt, score it by that id.
-        schema = request["response_format"]["json_schema"]["schema"]
-        ids = list(schema["properties"]["scores"]["properties"])
+        ids = list(request["response_format"]["json_schema"]["schema"]["properties"]["1_scores"]["properties"])
         text = text_of(request)
-        by_id = {}
+        scores = {}
         for phrase, s in truth.items():
-            [key] = [i for i in ids if f"{i}: {phrase}\n" in text + "\n"]
-            by_id[key] = s
-        return {"scores": by_id, "none": 0.2}
+            [key] = [i for i in ids if re.search(rf"^{re.escape(i)}: {re.escape(phrase)}$", text, re.M)]
+            scores[key] = s
+        return {"1_scores": scores, "2_none": none}
+    return reply
 
-    muse(reply)
 
-    item = score_closed(short_clip, phrases)
+def closed_request(fake) -> tuple[dict, str]:
+    [request] = fake.requests
+    return request["response_format"]["json_schema"]["schema"], text_of(request)
+
+
+def test_closed_scores_map_back_to_phrases_with_spaces(short_clip, muse):
+    truth = {phrase: round(0.05 * (i + 1), 2) for i, phrase in enumerate(TWELVE)}  # a distinct score per phrase
+    muse(menu_reader(truth, 0.2))
+
+    item = score_closed(short_clip, TWELVE)
 
     assert set(item) == ITEM_KEYS and item["call"] == "closed" and item["error"] is None
     assert item["output"] == {"scores": truth, "none": 0.2}
+
+
+def test_closed_wire_schema_scores_every_phrase_before_none(short_clip, muse):
+    fake = muse(menu_reader(dict.fromkeys(TWELVE, 0.1), 0.2))
+
+    score_closed(short_clip, TWELVE)
+
+    schema, _ = closed_request(fake)
+    assert list(schema["properties"]) == ["1_scores", "2_none"] == sorted(schema["properties"])
+    for obj in objects(schema):
+        assert obj["additionalProperties"] is False and obj["required"] == list(obj["properties"])
+
+
+def test_closed_phrase_ids_sort_in_list_order(short_clip, muse):
+    fake = muse(menu_reader(dict.fromkeys(TWELVE, 0.1), 0.2))
+
+    score_closed(short_clip, TWELVE)
+
+    schema, text = closed_request(fake)
+    ids = list(schema["properties"]["1_scores"]["properties"])
+    assert len(ids) == 12 and len({len(i) for i in ids}) == 1, "ids must share one width"
+    assert ids == sorted(ids), "lexicographic order must equal list order"
+    assert re.findall(r"^(\d+): (.+)$", text, re.M) == list(zip(ids, TWELVE)), "menu lists phrase i under id i"
+
+
+def closed_to_wire(output: dict, phrases: list[str]) -> dict:
+    """Test-local inverse: ids zero-padded to the width of the largest id."""
+    width = len(str(len(phrases)))
+    return {"1_scores": {f"{i:0{width}d}": output["scores"][p] for i, p in enumerate(phrases, 1)},
+            "2_none": output["none"]}
+
+
+def test_closed_wire_output_translates_to_phrase_scores():
+    raw = {"1_scores": {"01": 0.9, "02": 0.0, "03": 0.1, "04": 0.2, "05": 0.3, "06": 0.4, "07": 0.5, "08": 0.6,
+                        "09": 0.7, "10": 0.8, "11": 0.25, "12": 0.125},
+           "2_none": 0.3}
+
+    output = closed_from_wire(raw, TWELVE)
+
+    assert output == {"scores": dict(zip(TWELVE, [0.9, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.25, 0.125])),
+                      "none": 0.3}
+
+
+@pytest.mark.parametrize("phrases", [TWELVE[:3], TWELVE], ids=["one-digit", "two-digit"])
+def test_closed_outputs_survive_the_round_trip_through_the_wire_format(phrases):
+    output = {"scores": {p: round(0.07 * i, 2) for i, p in enumerate(phrases)}, "none": 0.4}
+
+    assert closed_from_wire(closed_to_wire(output, phrases), phrases) == output
 
 
 def test_closed_api_error_becomes_an_error_item(short_clip, muse):
