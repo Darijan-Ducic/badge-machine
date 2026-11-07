@@ -135,6 +135,133 @@ flowchart LR
   class ERR,AGENT,GATE planned
 ```
 
+## Update cadence: when each piece learns
+
+```mermaid
+flowchart LR
+  subgraph clip ["Every labeled clip · seconds"]
+    direction TB
+    C1["STT turn arrives → clip stored<br/>raw outputs + call-level config, never edited"]
+    C2["Phrase bank count +1"]
+    C3["Personal scorer weights + threshold re-fit<br/>from all of this user's raw clips, < 1 s"]
+    C4["Per-phrase readiness updated"]
+    C1 --> C2 --> C3 --> C4
+  end
+  subgraph milestone ["Label milestones · 10 / 30 / 60 clips"]
+    M1["Stage unlocks more free weights<br/>defaults → temperature → core → full"]
+  end
+  subgraph offline ["Offline · nightly or on demand"]
+    O1["Agent iteration on replay sets<br/>free experiments run freely,<br/>paid ones only within a budget"]
+  end
+  subgraph promote ["On promotion · gate passed + your OK"]
+    direction TB
+    P1["System version bump<br/>sys-v1 → sys-v2"]
+    P2["Every user's personal layers re-fit<br/>free when only post-processing changed"]
+    P1 --> P2
+  end
+  clip --> milestone
+  clip -. "opt-in clips" .-> offline
+  offline --> promote
+  promote -. "new defaults for every clip after" .-> clip
+
+  classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
+  classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
+  class C2,C3,M1 built
+  class C1,C4,O1,P2 building
+  class P1 planned
+```
+
+## Versioning: what every clip, model, and run records
+
+```mermaid
+erDiagram
+  USER ||--o{ CLIP : records
+  DATASET ||--|{ CLIP : contains
+  CLIP ||--|{ SAMPLE : "K open + closed + Gemini"
+  USER ||--o{ PERSONAL_MODEL : has
+  SYSTEM_VERSION ||--o{ PERSONAL_MODEL : "re-fit under"
+  SYSTEM_VERSION ||--o{ RUN : "evaluated by"
+  DATASET ||--o{ RUN : "replayed in"
+
+  CLIP {
+    string id
+    string user_id
+    string session_id
+    string call_config_hash "frozen when recorded"
+    string stt_text "the label"
+    string label_source "stt, confirm, edit"
+    json tracker_boxes "per frame"
+  }
+  SAMPLE {
+    string call "open, closed, gemini"
+    int sample_idx
+    json output "raw, never edited"
+    int latency_ms
+    json usage "tokens"
+  }
+  SYSTEM_VERSION {
+    string id "sys-v1, sys-v2"
+    string call_config "schema, prompt, grid, fps, crop, K, temperature, effort, models"
+    string post_config "viseme costs, features, pool rules, stages, tracker knobs"
+    string code_commit "git hash"
+    string status "current, candidate, retired"
+  }
+  PERSONAL_MODEL {
+    string system_version
+    int trained_on "labeled clips"
+    string stage
+    float threshold
+  }
+  RUN {
+    string id
+    string baseline_run
+    string dataset_order "dataset id + order seed"
+    string hypothesis "why this change"
+    string author "agent or human"
+    json metrics "VTT vs STT, held-out"
+    string gate "pass or fail"
+  }
+  DATASET {
+    string id
+    string source "practice footage or opt-in users"
+  }
+```
+
+A personal model is never stored as opaque weights: it is a deterministic re-fit of (system version, the user's raw
+clips), so any version can be rebuilt, compared, or rolled back.
+
+## Agent iteration: how one change gets in
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant S as Clip store
+  participant A as Iteration agent
+  participant L as Replay lab
+  participant R as Runs log
+  participant H as You
+  participant V as Version registry
+  S->>A: STT vs VTT disagreements, by phrase and quality
+  A->>R: read past runs, skip ideas that already failed
+  A->>A: hypothesis + ONE change
+  alt free knob: post-processing
+    A->>L: replay baseline vs variant, same clips, same order
+  else paid knob: call-level
+    A->>L: pilot on 20 clips within the budget
+    L-->>A: pilot metrics
+    A->>L: full re-run only if the pilot improves
+  end
+  L-->>R: run record: config hash, metrics, gate
+  alt gate passes: held-out VTT accuracy up
+    R-->>H: proposed promotion + curve vs baseline (Training page)
+    H->>V: approve → new system version
+    V-->>S: every user's personal layers re-fit
+  else gate fails
+    R-->>A: logged as a failed idea, reverted
+  end
+```
+
 ## Stages at a glance
 
 | Stage | Where | Cost per clip |
