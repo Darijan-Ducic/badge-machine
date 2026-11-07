@@ -3,12 +3,15 @@ labeled by STT on its own audio, and kept turns go to the clip pipeline in the b
 
 Store: MongoDB (collection `sessions`, recordings in GridFS bucket `sessions`) when MONGODB_URI is set, else
 data/sessions. Session status: recorded -> transcribed -> processing -> done | failed.
-Turn status: pending -> processed | skipped | failed, with a reason when not processed.
+Turn status: pending -> processed | skipped | failed, with a reason when not processed; a turn's `attempts` is how
+many tries its latest call took (its STT, then its clip processing once pending; 0 when nothing ran). After a restart,
+resume_pending queues the pending turns again from the stored recording and boxes.
 """
 
 import functools
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -21,7 +24,9 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import httpx
 import numpy as np
+import openai
 import pymongo
 from gridfs import GridFSBucket
 from gridfs.errors import NoFile
@@ -37,6 +42,7 @@ MIN_PIECE_MS = 2000  # a dip cut leaves both pieces at least this long
 MIN_TURN_MS = 500  # shorter turns are skipped: "too short"
 MAX_TURN_MS = 8000  # turns are merged up to / cut down to this; longer ones are skipped: "over 8 s"
 DAILY_CAP = 50  # processed turns per user per local day; the rest are skipped: "daily cap"
+RETRY_DELAYS_S = (1, 4)  # a turn's STT or clip call that fails transiently is tried again after each of these waits
 
 DATA = Path("data/sessions")
 SAMPLE_RATE = 16000
@@ -49,6 +55,9 @@ CONTAINERS = {
 TURN_RESULT = ("clip_id", "vtt", "vtt_gemini", "vtt_muse", "correct")
 _lock = threading.RLock()  # file store: turns finish concurrently; read-modify-append must not interleave
 _cap_lock = threading.Lock()  # concurrent sessions of one user must not both spend the same daily-cap slots
+# This server process. A pending turn is claimed by the run that queued it; one claimed by an earlier run was lost with
+# that run's in-memory queue, so resume_pending takes it up again.
+_RUN = uuid.uuid4().hex
 
 
 # ---- segmentation ---------------------------------------------------------------------------------------------------
@@ -132,17 +141,19 @@ def slice_boxes(boxes, start_ms: int, end_ms: int) -> list[list]:
 
 
 def used_today(sessions, user_id: str, now: float) -> int:
-    """Turns of this user's sessions from now's local day that are pending or processed: the daily cap spent so far."""
+    """Turns of this user's sessions from now's local day that are pending or processed: the daily cap spent so far.
+    Dataset sessions (practice / emulated footage) don't spend it."""
     day = time.localtime(now)[:3]
     return sum(turn["status"] in ("pending", "processed") for s in sessions
-               if s["user_id"] == user_id and time.localtime(s["t"])[:3] == day for turn in s["turns"])
+               if s["user_id"] == user_id and not s.get("dataset") and time.localtime(s["t"])[:3] == day
+               for turn in s["turns"])
 
 
 # ---- stores ---------------------------------------------------------------------------------------------------------
 
 class _FileStore:
     """Records as JSON lines in <root>/index.jsonl, each line a record's full latest state (the last line per id wins);
-    recordings as <root>/<id>.<webm|mp4>."""
+    recordings as <root>/<id>.<webm|mp4>, their boxes as <root>/<id>.boxes.json."""
 
     def __init__(self, root: Path):
         self.root = root
@@ -163,9 +174,10 @@ class _FileStore:
         with _lock, (self.root / "index.jsonl").open("a") as index:
             index.write(json.dumps(record) + "\n")
 
-    def insert(self, record: dict, recording: bytes) -> None:
+    def insert(self, record: dict, recording: bytes, boxes) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / f"{record['id']}.{record['container']}").write_bytes(recording)
+        (self.root / f"{record['id']}.boxes.json").write_text(json.dumps(boxes))
         self._append(record)
 
     def update(self, session_id: str, fields: dict, turn: int | None = None) -> None:
@@ -174,13 +186,27 @@ class _FileStore:
             (record if turn is None else record["turns"][turn]).update(fields)
             self._append(record)
 
+    def claim(self, session_id: str, turn: int, run: str) -> bool:
+        """Mark a pending turn as queued by `run`; False when it is no longer pending or `run` already has it."""
+        with _lock:
+            current = self.get(session_id)["turns"][turn]
+            if current["status"] != "pending" or current.get("claim") == run:
+                return False
+            self.update(session_id, {"claim": run}, turn=turn)
+            return True
+
     def recording(self, session_id: str) -> bytes | None:
         record = self.get(session_id)
         return None if record is None else (self.root / f"{session_id}.{record['container']}").read_bytes()
 
+    def boxes(self, session_id: str) -> list | None:
+        path = self.root / f"{session_id}.boxes.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
 
 class MongoStore:
-    """Records in the `sessions` collection, recordings in GridFS bucket `sessions` with the session id as file id."""
+    """Records in the `sessions` collection, recordings in GridFS bucket `sessions` with the session id as file id, their
+    boxes as JSON in the same bucket with file id "<session id>.boxes"."""
 
     def __init__(self, db):
         self.db = db
@@ -193,17 +219,31 @@ class MongoStore:
     def get(self, session_id: str) -> dict | None:
         return self.records.find_one({"id": session_id}, {"_id": False})
 
-    def insert(self, record: dict, recording: bytes) -> None:
+    def insert(self, record: dict, recording: bytes, boxes) -> None:
         self.recordings.upload_from_stream_with_id(record["id"], f"{record['id']}.{record['container']}", recording)
+        self.recordings.upload_from_stream_with_id(f"{record['id']}.boxes", f"{record['id']}.boxes.json",
+                                                   json.dumps(boxes).encode())
         self.records.insert_one(dict(record))  # insert_one writes _id into the dict it gets; keep the caller's clean
 
     def update(self, session_id: str, fields: dict, turn: int | None = None) -> None:
         prefix = "" if turn is None else f"turns.{turn}."
         self.records.update_one({"id": session_id}, {"$set": {prefix + k: v for k, v in fields.items()}})
 
+    def claim(self, session_id: str, turn: int, run: str) -> bool:
+        """Mark a pending turn as queued by `run`, atomically; False when it is no longer pending or `run` has it."""
+        at = f"turns.{turn}."
+        return self.records.update_one({"id": session_id, at + "status": "pending", at + "claim": {"$ne": run}},
+                                       {"$set": {at + "claim": run}}).modified_count == 1
+
     def recording(self, session_id: str) -> bytes | None:
         try:
             return self.recordings.open_download_stream(session_id).read()
+        except NoFile:
+            return None
+
+    def boxes(self, session_id: str) -> list | None:
+        try:
+            return json.loads(self.recordings.open_download_stream(f"{session_id}.boxes").read())
         except NoFile:
             return None
 
@@ -269,13 +309,34 @@ def _reason(error: Exception) -> str:
     return f"{type(error).__name__}: {error}"
 
 
+def _transient(error: Exception) -> bool:
+    """A timeout, a dropped or refused connection, or an HTTP 5xx: worth trying again. Anything else fails again."""
+    if isinstance(error, (TimeoutError, ConnectionError, httpx.TransportError, openai.APIConnectionError)):
+        return True
+    status = getattr(error, "status_code", None) or getattr(getattr(error, "response", None), "status_code", None)
+    return isinstance(status, int) and status >= 500
+
+
+def _attempt(call, sleep) -> tuple:
+    """call(), tried again after each of RETRY_DELAYS_S while it fails transiently -> (result, None, attempts), or
+    (None, the last error, attempts)."""
+    for attempts, delay in enumerate((*RETRY_DELAYS_S, None), 1):
+        try:
+            return call(), None, attempts
+        except Exception as e:
+            if delay is None or not _transient(e):
+                return None, e, attempts
+            sleep(delay)
+
+
 # ---- sessions -------------------------------------------------------------------------------------------------------
 
 def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "stt_on", dataset: str | None = None,
                   source: str | None = None, start: float | None = None, process_turn, executor,
-                  transcribe=transcribe_turns, store=None) -> dict:
+                  transcribe=transcribe_turns, store=None, sleep=time.sleep) -> dict:
     """Store the recording, cut it into turns, STT the whole session and each turn, and return the session's STT text;
-    kept turns are submitted to `executor` for `process_turn`. `start` is the recording's offset in `source`, in s."""
+    kept turns are submitted to `executor` for `process_turn`. `start` is the recording's offset in `source`, in s.
+    A turn's STT and process_turn are retried on a transient failure, waiting with `sleep`."""
     store = _backend(store)
     session_id, container = uuid.uuid4().hex[:12], _container(recording)
     with tempfile.TemporaryDirectory() as tmp:
@@ -286,7 +347,7 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
         store.insert({"id": session_id, "t": time.time(), "user_id": user_id, "dataset": dataset, "source": source,
                       "start": 0.0 if start is None else float(start), "duration_ms": duration_ms,
                       "container": container, "mode": mode, "flags": flags, "status": "recorded", "reason": None,
-                      "stt_text": None, "turns": []}, recording)
+                      "stt_text": None, "turns": []}, recording, boxes)
         try:
             segments = plan_segments(duration_ms, _silences(wav, duration_ms), _levels(pcm))
             # The reply is one extra STT call on the whole session (full context, one round trip of latency);
@@ -294,7 +355,8 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
             per_ms = SAMPLE_RATE // 1000
             with ThreadPoolExecutor(8) as pool:
                 whole = pool.submit(transcribe, wav.read_bytes())
-                heard = {i: pool.submit(transcribe, _wav_bytes(pcm[a * per_ms:b * per_ms]))
+                heard = {i: pool.submit(_attempt, functools.partial(transcribe, _wav_bytes(pcm[a * per_ms:b * per_ms])),
+                                        sleep)
                          for i, (a, b) in enumerate(segments) if _length_reason(a, b) is None}
                 text = whole.result()["text"]
         except Exception as e:
@@ -303,20 +365,22 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
 
     turns = []
     for i, (a, b) in enumerate(segments):
-        stt, error = None, None
+        stt, error, attempts = None, None, 0
         if i in heard:
-            try:
-                stt = heard[i].result()["text"]
-            except Exception as e:
-                error = _reason(e)
+            labeled, failure, attempts = heard[i].result()
+            stt, error = (labeled["text"], None) if failure is None else (None, _reason(failure))
         turns.append({"i": i, "start_ms": a, "end_ms": b, "stt": stt, "status": "failed" if error else None,
-                      "reason": error, **dict.fromkeys(TURN_RESULT)})
+                      "reason": error, "attempts": attempts, "claim": None, **dict.fromkeys(TURN_RESULT)})
     with _cap_lock:
         labeled = [t for t in turns if t["status"] is None]
+        # Practice / emulated footage (a dataset session) is not held to the daily cap of a real user.
+        spent, cap = (0, math.inf) if dataset else (used_today(store.all(), user_id, time.time()), None)
         decisions = policy([{"start_ms": t["start_ms"], "end_ms": t["end_ms"], "text": t["stt"]} for t in labeled],
-                           used_today=used_today(store.all(), user_id, time.time()))
+                           used_today=spent, cap=cap)
         for t, (status, reason) in zip(labeled, decisions):
             t["status"], t["reason"] = status, reason
+            if status == "pending":
+                t["claim"] = _RUN  # queued below, by this run: resume_pending must not queue it again
         store.update(session_id, {"status": "transcribed", "stt_text": text, "turns": turns})
 
     pending = [t for t in turns if t["status"] == "pending"]
@@ -324,38 +388,70 @@ def start_session(recording: bytes, *, user_id: str, boxes, flags, mode: str = "
         store.update(session_id, {"status": "done"})
     for turn in pending:
         executor.submit(_process_turn, store, session_id, recording, container, turn, boxes, user_id, mode,
-                        process_turn)
+                        process_turn, sleep)
     return {"session": session_id, "stt": text, "turns": len(turns)}
 
 
-def _process_turn(store, session_id, recording, container, turn, boxes, user_id, mode, process_turn) -> None:
+def resume_pending(process_turn, executor, store=None, *, sleep=time.sleep) -> int:
+    """Submit to `executor` the pending turns of every unfinished session that this server run hasn't queued — the
+    queue a restart lost — from the stored recording and boxes; returns how many. Each turn is claimed first, so a
+    second call, or one while its turns are still queued or running, submits none of them again. Call at startup."""
+    store, submitted = _backend(store), 0
+    for record in store.all():
+        waiting = [t for t in record["turns"] if t["status"] == "pending" and t.get("claim") != _RUN]
+        if record["status"] in ("done", "failed") or not waiting:
+            continue
+        recording, boxes = store.recording(record["id"]), store.boxes(record["id"])
+        for turn in waiting:
+            if store.claim(record["id"], turn["i"], _RUN):
+                executor.submit(_process_turn, store, record["id"], recording, record["container"], turn, boxes,
+                                record["user_id"], record["mode"], process_turn, sleep)
+                submitted += 1
+    return submitted
+
+
+def _process_turn(store, session_id, recording, container, turn, boxes, user_id, mode, process_turn, sleep) -> None:
     store.update(session_id, {"status": "processing"})
+    attempts = 0
     try:
         with tempfile.TemporaryDirectory() as tmp:
             source, segment = Path(tmp, f"recording.{container}"), Path(tmp, f"turn-{turn['i']}.{container}")
             source.write_bytes(recording)
             _cut(source, turn["start_ms"], turn["end_ms"], container, segment)
-            result = process_turn(segment, transcript=turn["stt"],
-                                  boxes=slice_boxes(boxes, turn["start_ms"], turn["end_ms"]), user_id=user_id,
-                                  session_id=session_id, turn=turn["i"], mode=mode)
+            result, error, attempts = _attempt(functools.partial(
+                process_turn, segment, transcript=turn["stt"], boxes=slice_boxes(boxes, turn["start_ms"], turn["end_ms"]),
+                user_id=user_id, session_id=session_id, turn=turn["i"], mode=mode), sleep)
+        if error is not None:
+            raise error
         fields = {"status": "processed", "reason": None, **{k: result.get(k) for k in TURN_RESULT}}
     except Exception as e:
         fields = {"status": "failed", "reason": _reason(e)}
-    store.update(session_id, fields, turn=turn["i"])
+    store.update(session_id, {**fields, "attempts": attempts}, turn=turn["i"])
     if all(t["status"] in ("processed", "skipped", "failed") for t in store.get(session_id)["turns"]):
         store.update(session_id, {"status": "done"})
 
 
 # ---- the /sessions contract -----------------------------------------------------------------------------------------
 
+def _seconds(turns) -> float:
+    return round(sum(t["end_ms"] - t["start_ms"] for t in turns) / 1000, 2)
+
+
 def _summary(record: dict) -> dict:
     turns, duration = record["turns"], record["duration_ms"] / 1000
+    lost = {}
+    for t in turns:
+        if t["status"] in ("skipped", "failed"):
+            lost.setdefault(t["reason"], []).append(t)
     return {"id": record["id"], "t": record["t"], "user_id": record["user_id"], "dataset": record["dataset"],
             "source": record["source"], "start": record["start"], "end": round(record["start"] + duration, 3),
             "duration_s": round(duration, 2), "status": record["status"], "turns": len(turns),
             "processed": sum(t["status"] == "processed" for t in turns),
             "skipped": sum(t["status"] == "skipped" for t in turns),
-            "vtt_correct": sum(bool(t["correct"] and t["correct"].get("vtt")) for t in turns)}
+            "vtt_correct": sum(bool(t["correct"] and t["correct"].get("vtt")) for t in turns),
+            # Coverage: the speech in the session's turns, that of processed turns, and that lost, by reason.
+            "speech_s": _seconds(turns), "covered_s": _seconds(t for t in turns if t["status"] == "processed"),
+            "lost_s": {reason: _seconds(lost_turns) for reason, lost_turns in lost.items()}}
 
 
 def list_sessions(user: str | None = None, store=None) -> dict:
@@ -375,10 +471,12 @@ def get_session(session_id: str, store=None) -> dict | None:
     if record is None:
         return None
     summary = _summary(record)
-    return {**{k: summary[k] for k in ("id", "t", "user_id", "dataset", "source", "start", "end", "status")},
+    return {**{k: summary[k] for k in ("id", "t", "user_id", "dataset", "source", "start", "end", "status", "speech_s",
+                                       "covered_s", "lost_s")},
             "video": f"/sessions/{session_id}/video", "stt_text": record["stt_text"],
             "turns": [{"i": t["i"], "start": t["start_ms"] / 1000, "end": t["end_ms"] / 1000, "stt": t["stt"],
-                       "status": t["status"], "reason": t["reason"], **{k: t[k] for k in TURN_RESULT}}
+                       "status": t["status"], "reason": t["reason"], "attempts": t.get("attempts"),
+                       **{k: t[k] for k in TURN_RESULT}}
                       for t in record["turns"]]}
 
 
