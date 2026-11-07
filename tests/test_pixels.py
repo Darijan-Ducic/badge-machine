@@ -146,3 +146,26 @@ def test_read_clip_crops_with_the_given_cropper(tmp_path, recording):
 
     assert calls == [[[0, 1, 2, 3, 4]]]
     assert record["config"]["crop"] == "custom-crop"
+
+
+def test_recentre_puts_the_tracker_sized_box_on_the_lips():
+    boxes = [[0, 10, 10, 60, 30], [33, 12, 10, 60, 30], [67, 50, 10, 80, 40]]  # median size 60x30
+    lips = {0: [{"id": 1, "box": [100, 50, 20, 10]}], 2: [{"id": 1, "box": [200, 60, 30, 10]}]}  # frame 1: no lips
+
+    out = pixels.recentre(boxes, lips, [0.0, 33.3, 66.7])
+
+    assert out == [[0.0, 80.0, 40.0, 60.0, 30.0], [66.7, 185.0, 50.0, 60.0, 30.0]]
+
+
+def test_sam_lips_crop_follows_the_lips_when_the_tracker_box_stands_still(tmp_path):
+    source, target = tmp_path / "in.mp4", tmp_path / "out.mp4"
+    moving = write_moving_square(source)
+    still = [[t, 100, 100, 64, 40] for t, *_ in moving]  # a tracker that never moved
+    lips = {i: [{"id": 3, "box": [square_x(i), 112, SIDE, SIDE]}] for i in range(N)}
+
+    crop_id = pixels.cropper(pixels.Spec(stabilize=True, sam_lips=True), segment_video=lambda path, prompt: {
+        "width": W, "height": H, "frames": lips})(source, target, mouths=still)
+
+    frames = decode(target)
+    assert max(abs(bright_centre_x(f) / f.shape[1] - 0.5) for f in frames) < 0.06
+    assert "sam-lips" in crop_id
