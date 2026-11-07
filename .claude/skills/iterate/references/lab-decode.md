@@ -10,6 +10,6 @@ Run: `uv run --env-file .env python tools/exp_decode.py --user practice:obama-we
 | generic@len ($0) | +0.027→+0.055 (14/7, 0.19) | +0.032→+0.062 (15/6, 0.08) | — | 0 |
 
 - PARKED (refine, decode, decode_vis): the LIFT gain over VTT · Muse is a LENGTH effect. A content-free generic sentence cut to the duration-predicted word count (2–3 words/s) matches or beats both arms. Pooled LIFT still rewards length, because duration predicts STT length.
-- RULE: ALWAYS add the `generic@len` arm (`/tmp/ld_offline.py` logic) and judge any lengthening method against it, never against the short control.
+- RULE: ALWAYS add the `generic@len` arm (`tools/exp_decode_offline.py`, $0 on cached items) and judge any lengthening method against it, never against the short control.
 - Reopen when an upstream lever lifts single-pass viseme LIFT clearly above generic@len (crop, frames, models), so the second pass has real signal to merge. Second speaker (CREMA-D 1001/1002) never ran: paused for the demo.
 - Cost: reasoning dominates (6k–15k reasoning tokens per call even at effort low). Parked untested: (c) Gemini ensemble (no open Gemini mode), (d) iterative re-watch (refine already shows no content gain).
