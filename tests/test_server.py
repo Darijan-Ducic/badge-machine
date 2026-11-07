@@ -1,5 +1,5 @@
-"""HTTP contract of /stats, /clips, /clips/<id>, /clips/<id>/video and /preheat/clip, served from a real
-ThreadingHTTPServer over each store backend — model calls are fakes, no network."""
+"""HTTP contract of /stats, /clips, /clips/<id>, /clips/<id>/video, /preheat/clip, /vtt and /vtt/<id>/label, served
+from a real ThreadingHTTPServer over each store backend — model calls are fakes, no network."""
 
 import json
 import math
@@ -21,8 +21,9 @@ from tests.fakes import PHRASES, Gemini, SampleOpen, ScoreClosed, readers, v1_ou
 OLD_STATS_KEYS = {"labeled", "clips", "stage", "next_stage", "threshold", "camera_fps", "window", "accuracy", "history"}
 LIST_KEYS = {"id", "t", "user_id", "mode", "stt", "top", "action", "correct", "pool_hit", "stage"}
 DETAIL_KEYS = {"id", "t", "user_id", "mode", "stt", "config", "video", "frames", "stage", "action", "threshold", "pool",
-               "samples", "closed", "gemini"}
+               "samples", "closed", "gemini", "vtt_muse"}
 CLIP_KEYS = {"clip", "stt", "label", "label_phrase", "read", "correct", "stats"}
+VTT_KEYS = {"clip", "vtt", "action", "alternatives", "latency_ms"}
 NONE_WIN = dict(sample_open=SampleOpen(v1_output(present=False)), score_closed=ScoreClosed(none=0.95, default=0.01),
                 gemini=Gemini(probs=dict.fromkeys(PHRASES, 0.25)))
 
@@ -268,3 +269,103 @@ def test_preheat_without_a_user_records_the_default_user(api, store, recording, 
     assert api.post("/preheat/clip?fps=30&prompted=0", content=recording).status_code == 200
 
     assert [r["user_id"] for r in load(store)] == [clips.DEFAULT_USER]
+
+
+# ---------------------------------------------------------------- /clips/<id> vtt_muse
+
+
+def test_clip_detail_carries_the_muse_vote_as_vtt_muse(api, store, recording):
+    # K=3 open samples whose tops are no, yes, no -> "no" with 2 of 3 votes
+    clip = add(store, recording, None, "no", "yes", "no", mode="lip")
+
+    assert get(api, f"/clips/{clip}")["vtt_muse"] == {"text": "no", "p": pytest.approx(2 / 3)}
+
+
+def test_vtt_muse_is_null_when_every_open_sample_failed(api, store, recording):
+    clip = add(store, recording, None, "no", mode="lip", fail={0, 1, 2})
+
+    assert get(api, f"/clips/{clip}")["vtt_muse"] == {"text": None, "p": 0.0}
+
+
+# ---------------------------------------------------------------- /vtt and /vtt/<id>/label (lip mode)
+
+
+@pytest.fixture
+def muted(recording, tmp_path) -> bytes:
+    """The browser-like recording with its audio dropped, as lip mode sends it."""
+    source, target = tmp_path / "with-audio.webm", tmp_path / "muted.webm"
+    source.write_bytes(recording)
+    subprocess.run(["ffmpeg", "-v", "error", "-i", source, "-an", "-c:v", "copy", target], check=True)
+    return target.read_bytes()
+
+
+@pytest.fixture
+def lip_calls(monkeypatch):
+    fakes = {**readers("yes", gemini="yes"), "heard": []}
+    monkeypatch.setattr(muse_sampler, "sample_open", fakes["sample_open"])
+    monkeypatch.setattr(muse_sampler, "score_closed", fakes["score_closed"])
+    monkeypatch.setattr(scorers, "gemini_scores", fakes["gemini"])
+    monkeypatch.setattr(server, "transcribe", lambda data: fakes["heard"].append(data) or "yes")
+    return fakes
+
+
+def post_vtt(api, video, user="ann", **headers) -> dict:
+    response = api.post(f"/vtt?user={user}", content=video, headers={"Content-Type": "video/webm", **headers})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_vtt_route_reads_a_muted_clip_with_k3_and_answers_the_page_contract(api, store, muted, lip_calls):
+    boxes = [[0, 8, 24, 32, 16], [33, 10, 24, 30, 16], [66, 40, 0, 10, 10]]
+
+    body = post_vtt(api, muted, **{"X-Tracker-Boxes": json.dumps(boxes), "X-Tracker-Flags": '["occluded?"]'})
+
+    assert set(body) == VTT_KEYS
+    assert (body["vtt"]["text"], body["action"]) == ("yes", "confirm")  # defaults never auto-send
+    assert set(body["vtt"]) == {"text", "p"} and 0 < body["vtt"]["p"] < 1
+    assert body["alternatives"][0] == body["vtt"] and len(body["alternatives"]) == 3
+    assert all(set(a) == {"text", "p"} for a in body["alternatives"])
+    assert isinstance(body["latency_ms"], int)
+    (stored,) = load(store)
+    assert (stored["id"], stored["user_id"], stored["mode"]) == (body["clip"], "ann", "lip")
+    assert (stored["config"]["crop"], stored["tracker_flags"]) == ("v1-tracker-median", ["occluded?"])
+    assert stored["label"] == {"stt_text": None, "user_edit": None}
+    assert [call[1] for call in lip_calls["sample_open"].calls] == [3]
+    assert lip_calls["heard"] == [], "lip mode runs no STT"
+
+
+def test_label_route_stores_the_users_label_on_that_clip(api, store, muted, lip_calls):
+    clip, other = post_vtt(api, muted)["clip"], post_vtt(api, muted)["clip"]
+
+    response = api.post(f"/vtt/{clip}/label", json={"text": "turn on the lights", "source": "confirm"})
+
+    assert (response.status_code, response.json()) == (200, {"clip": clip, "label": "turn on the lights"})
+    assert backend(store).get(clip)["label"] == {"stt_text": None, "user_edit": "turn on the lights",
+                                                 "source": "confirm"}
+    assert backend(store).get(other)["label"] == {"stt_text": None, "user_edit": None}
+
+
+@pytest.mark.parametrize("request_body", [{"text": "yes", "source": "typed"}, {"text": "yes", "source": None},
+                                          {"text": "yes"}, {"source": "edit"}, {"text": "", "source": "edit"}])
+def test_label_route_rejects_a_bad_source_or_missing_text_with_400(api, store, muted, lip_calls, request_body):
+    clip = post_vtt(api, muted)["clip"]
+
+    response = api.post(f"/vtt/{clip}/label", json=request_body)
+
+    assert response.status_code == 400, response.text
+    assert backend(store).get(clip)["label"] == {"stt_text": None, "user_edit": None}
+
+
+def test_label_route_rejects_a_body_that_is_not_json_with_400(api, store, muted, lip_calls):
+    clip = post_vtt(api, muted)["clip"]
+
+    response = api.post(f"/vtt/{clip}/label", content=b"yes please")
+
+    assert response.status_code == 400, response.text
+    assert backend(store).get(clip)["label"] == {"stt_text": None, "user_edit": None}
+
+
+def test_label_route_is_404_for_an_unknown_clip(api):
+    response = api.post("/vtt/no-such-clip/label", json={"text": "yes", "source": "edit"})
+
+    assert response.status_code == 404
