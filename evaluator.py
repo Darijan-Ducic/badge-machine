@@ -180,8 +180,13 @@ def failures(train_records: list[dict], config: dict, **viseme_fns) -> list[dict
     """Clips among `train_records` that the config reads wrong (VTT != STT), with their top candidates."""
     labeled = [r for r in train_records if r.get("stt") is not None]
     clips = replay(labeled, config, **viseme_fns)
+    return failures_from(labeled, clips, prequential_probs(clips, config["stages"]))
+
+
+def failures_from(records: list[dict], clips: list[Clip], probs: list[np.ndarray]) -> list[dict]:
+    """The failures among already replayed and scored clips (records, clips and probs aligned)."""
     found = []
-    for i, (record, clip, probs) in enumerate(zip(labeled, clips, prequential_probs(clips, config["stages"]))):
+    for i, (record, clip, probs) in enumerate(zip(records, clips, probs)):
         none, top = len(clip.pool) - 1, int(np.argmax(probs))
         if top != none and match(clip.stt, [clip.pool[top]]) is not None:
             continue
