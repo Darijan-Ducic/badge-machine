@@ -39,8 +39,9 @@ class Model:
     threshold: float
 
 
-def stage_for(n_labeled: int) -> str:
-    return next(name for minimum, name in STAGES if n_labeled >= minimum)
+def stage_for(n_labeled: int, stages: list[tuple[int, str]] = STAGES) -> str:
+    """`stages`: (minimum labeled clips, stage name) pairs in any order; one must start at 0."""
+    return next(name for minimum, name in sorted(stages, reverse=True) if n_labeled >= minimum)
 
 
 def _pad(clips: list[Clip]) -> tuple[np.ndarray, np.ndarray]:
@@ -77,9 +78,10 @@ def auto_send(model: Model, probs: np.ndarray) -> bool:
     return int(np.argmax(probs)) != len(probs) - 1 and float(np.max(probs)) >= model.threshold
 
 
-def train(clips: list[Clip], precision: float = 0.9, gate: bool = True) -> Model:
+def train(clips: list[Clip], precision: float = 0.9, gate: bool = True, stages: list[tuple[int, str]] = STAGES
+          ) -> Model:
     labeled = [c for c in clips if c.label is not None]
-    stage = stage_for(len(labeled))
+    stage = stage_for(len(labeled), stages)
     if stage == "defaults":
         return Model(stage, DEFAULT_WEIGHTS.copy(), np.inf)
     features, mask = _pad(labeled)
@@ -102,7 +104,7 @@ def _matches(stt: str | None, text: str | None) -> bool:
     return stt is not None and text is not None and match(stt, [text]) is not None
 
 
-def prequential(clips: list[Clip]) -> list[dict]:
+def prequential(clips: list[Clip], stages: list[tuple[int, str]] = STAGES) -> list[dict]:
     """Score each labeled clip with a model trained only on earlier clips: the honest, climbing accuracy for the UI.
 
     fused: top non-∅ candidate matches STT and ∅ didn't win; gemini: Gemini's argmax phrase matches STT;
@@ -110,7 +112,7 @@ def prequential(clips: list[Clip]) -> list[dict]:
     """
     history = []
     for i, clip in enumerate(clips):
-        model = train(clips[:i], gate=False)
+        model = train(clips[:i], gate=False, stages=stages)
         probs = predict(model, [clip])[0]
         top, none = int(probs.argmax()), len(clip.pool) - 1
         history.append({

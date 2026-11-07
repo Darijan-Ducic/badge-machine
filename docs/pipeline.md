@@ -102,8 +102,8 @@ flowchart LR
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
   class LBL,BANK,W,TH built
-  class USE,IN building
-  class READY,FEW,CAL,OUT planned
+  class USE,IN,READY building
+  class FEW,CAL,OUT planned
 ```
 
 ## System loop: what we iterate, versioned v1 → v2
@@ -128,9 +128,9 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class PAID,FREE built
+  class PAID,FREE,GATE built
   class SETS,VER,REFIT building
-  class ERR,AGENT,GATE planned
+  class ERR,AGENT planned
 ```
 
 ## Update cadence: when each piece learns

@@ -4,3 +4,4 @@ __pycache__/
 .claude/worktrees/
 data/clips/
 .tasks/HANDOFF-*.md
+data/runs/
