@@ -268,6 +268,10 @@ def main() -> None:
             print(f"{row['session']}: {row['start']:.2f}-{row['end']:.2f} ({row['end'] - row['start']:.1f} s) "
                   f"window {row['window']} face {row['face_width']}", file=sys.stderr)
     print(f"{len(rows)} session(s) -> {args.out / 'manifest.jsonl'}", file=sys.stderr)
+    for row in rows:
+        if abs(row["face_width"] - args.face_width) > 0.03:
+            print(f"WARNING {row['session']}: face is {row['face_width']} of the width, not {args.face_width}: the "
+                  f"source is too tight for a 4:3 crop at that ratio (no padding is added)", file=sys.stderr)
 
 
 if __name__ == "__main__":
