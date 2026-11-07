@@ -241,6 +241,23 @@ def test_a_turns_inputs_show_its_cut_and_the_tracker_boxes_in_it(api, store, rec
     assert turn["flags"] == {"frames": 3, "counts": {"[]": 2, "['no-face']": 1}}
 
 
+def test_a_frame_of_the_session_video_is_served_at_the_session_size(api, store, recording, monkeypatch, tmp_path):
+    kept = tmp_path / "sessions" if isinstance(store, Path) else sessions.MongoStore(store.db)
+    monkeypatch.setattr(server, "SESSIONS", kept)
+    session = {"id": "s1", "t": 0.0, "user_id": "ann", "container": "webm", "turns": []}
+    sessions._backend(kept).insert(session, recording, [])
+
+    frame = api.get("/sessions/s1/frame.jpg?t=0.25")
+    path = tmp_path / "frame.jpg"
+    path.write_bytes(frame.content)
+
+    assert (frame.status_code, frame.headers["content-type"]) == (200, "image/jpeg")
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    assert out == "64,48", "the frame is in the recording's own pixels, the crop rectangle's coordinates"
+    assert api.get("/sessions/nope/frame.jpg?t=0").status_code == 404
+
+
 def test_a_clip_outside_any_session_has_no_turn(api, store, recording, sent):
     record = read(store, recording, sent)
 
