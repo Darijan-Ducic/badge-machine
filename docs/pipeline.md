@@ -36,7 +36,7 @@ flowchart TD
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
   class CAM,GEM,GATE,SAM,TRK,TRIG,QG,REPEAT,CROP,MUSEK,MUSEC,POOL,FEAT,FUSE built
-  class SEND,CONFIRM planned
+  class SEND,CONFIRM building
 ```
 
 ## Learning: how it gets better
@@ -44,7 +44,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   CLIP["Each recorded clip<br/>raw K samples + closed + Gemini outputs<br/>features recomputed from raw: replays are free"]
-  STT["STT on: Muse Voice Transcribe<br/>reference label"]
+  STT["STT on: dictation cut at our own pauses<br/>2–8 s turns, Muse Voice Transcribe per turn<br/>reference label"]
   CONF["Video only: the user's confirm<br/>answer is a label too"]
   MATCH["Transcript → phrase ID"]
   STORE[("Clip store<br/>MongoDB Atlas, local fallback")]
@@ -72,8 +72,9 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class STT,MATCH,GT,STORE,UI,REPLAY,KNOBS,CLIP,STAGES,PREQ,FUSE built
-  class CONF,AGENT,PROMPTS planned
+  class STT,MATCH,GT,STORE,UI,REPLAY,KNOBS,CLIP,STAGES,PREQ,FUSE,AGENT built
+  class PROMPTS building
+  class CONF planned
 ```
 
 ## Personal loop: learns from each user's own dictation
@@ -102,8 +103,8 @@ flowchart LR
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
   class LBL,BANK,W,TH built
-  class USE,IN building
-  class READY,FEW,CAL,OUT planned
+  class USE,IN,READY building
+  class FEW,CAL,OUT planned
 ```
 
 ## System loop: what we iterate, versioned v1 → v2
@@ -128,9 +129,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class PAID,FREE built
-  class SETS,VER,REFIT building
-  class ERR,AGENT,GATE planned
+  class PAID,FREE,GATE,ERR,AGENT,VER built
+  class SETS,REFIT building
 ```
 
 ## Update cadence: when each piece learns
@@ -165,9 +165,8 @@ flowchart LR
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class C2,C3,M1 built
-  class C1,C4,O1,P2 building
-  class P1 planned
+  class C2,C3,M1,O1 built
+  class C1,C4,P1,P2 building
 ```
 
 ## Versioning: what every clip, model, and run records
