@@ -29,6 +29,7 @@ struct BaijiuApp: App {
             Button("Open Baijiu Machine") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "studio")
+                studio.resumeShortcutMonitoring()
             }
             Button("Quit") { NSApp.terminate(nil) }
         } label: {
@@ -104,7 +105,7 @@ struct StudioView: View {
             }
 
             if studio.needsModifierSetup {
-                Button("Enable Modifier Shortcuts in Accessibility", action: studio.openModifierAccessibility)
+                Button("Open Accessibility Settings", action: studio.openModifierAccessibility)
             }
 
             if !studio.status.isEmpty {
@@ -117,6 +118,7 @@ struct StudioView: View {
         .frame(width: 435)
         .foregroundStyle(ink)
         .background(paper)
+        .onAppear { studio.resumeShortcutMonitoring() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             studio.resumeShortcutMonitoring()
         }

@@ -42,7 +42,7 @@ final class Studio: ObservableObject {
     ]
     private let fnMonitor = FnKeyMonitor()
     private let modifierTapMonitor = ModifierTapMonitor()
-    @Published private(set) var modifierMonitoringReady = false
+    @Published private(set) var modifierAccessibilityMissing = false
     private var fnArmed = false
     @Published private(set) var fnMonitoringReady = false
     private let gemini: Gemini?
@@ -78,7 +78,7 @@ final class Studio: ObservableObject {
         shortcuts.values.contains(where: \.isStandaloneModifier)
     }
 
-    var needsModifierSetup: Bool { !choosing && hasModifierShortcut && !modifierMonitoringReady }
+    var needsModifierSetup: Bool { !choosing && modifierAccessibilityMissing }
     var needsFnSetup: Bool { !choosing && fnMode != nil && !fnMonitoringReady }
 
     private func activate(_ mode: Mode) {
@@ -201,11 +201,13 @@ final class Studio: ObservableObject {
     }
 
     func resumeShortcutMonitoring() {
-        if !choosing && hasModifierShortcut {
-            modifierMonitoringReady = modifierTapMonitor.start()
+        modifierAccessibilityMissing = hasModifierShortcut && !AXIsProcessTrusted()
+        if !choosing && hasModifierShortcut && !modifierAccessibilityMissing {
+            if !modifierTapMonitor.start() {
+                status = "Could not start modifier shortcuts. Reopen Baijiu Machine to try again."
+            }
         } else {
             modifierTapMonitor.stop()
-            modifierMonitoringReady = false
         }
         if choosing || fnMode != nil {
             fnMonitoringReady = fnMonitor.start()
@@ -258,7 +260,8 @@ final class Studio: ObservableObject {
     }
 
     func openModifierAccessibility() {
-        requestInsertionAccess(message: "")
+        resumeShortcutMonitoring()
+        guard needsModifierSetup else { return }
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         NSWorkspace.shared.open(url)
     }
