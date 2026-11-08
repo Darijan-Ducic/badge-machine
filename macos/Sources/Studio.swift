@@ -45,14 +45,10 @@ final class Studio: ObservableObject {
     @Published private(set) var modifierAccessibilityMissing = false
     private var fnArmed = false
     @Published private(set) var fnInputMonitoringMissing = false
-    private let gemini: Gemini?
-    private let muse: MuseSpark?
+    private let reader = LipReader()
     private var target: CursorTarget?
 
     init() {
-        let keys = APIKeys()
-        gemini = keys.gemini.map(Gemini.init(key:))
-        muse = keys.meta.map(MuseSpark.init(key:))
         modifierTapMonitor.onTap = { [weak self] shortcut in
             guard let self, let mode = Mode.allCases.first(where: {
                 self.shortcuts[$0]?.isStandaloneModifier == true && self.shortcuts[$0]?.keyCode == shortcut.keyCode
@@ -290,7 +286,7 @@ final class Studio: ObservableObject {
             let cameraStarted = phase == .recording
             target = CursorTarget.current()
             phase = .processing
-            status = "Transcribing…"
+            status = "Finding your lips…"
             if cameraStarted { camera.stop() }
         case .ready:
             guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
@@ -298,7 +294,6 @@ final class Studio: ObservableObject {
                 return
             }
             guard AXIsProcessTrusted() else { requestInsertionAccess(); return }
-            guard gemini != nil else { status = "Gemini is not configured."; return }
             phase = .starting
             status = "Starting camera…"
             camera.start(onStart: { [weak self] in
@@ -323,13 +318,18 @@ final class Studio: ObservableObject {
             let file = try result.get()
             defer { try? FileManager.default.removeItem(at: file) }
             guard let target else { status = "Place the cursor in a text field before stopping."; return }
-            guard let gemini else { return }
-            guard let draft = try await gemini.transcribe(file) else {
-                status = "Could not read the phrase. Try again."
+            let boxes = try await LipBoxes.scan(file)
+            guard !boxes.isEmpty else {
+                status = "No lips found in the recording. Face the camera and try again."
                 return
             }
-            let revision = if let muse { try? await muse.refine(draft) } else { nil as MuseSpark.Revision? }
-            switch target.insert(revision?.text ?? draft) {
+            status = "Reading lips…"
+            let text = try await reader.read(file, boxes: boxes).text
+            guard !text.isEmpty else {
+                status = "The lip reader returned no line. Try again."
+                return
+            }
+            switch target.insert(text) {
             case .inserted: status = "Text inserted."
             case .pasteRequested: status = "Paste requested."
             case .targetUnavailable: status = "Could not insert text in the original field."
