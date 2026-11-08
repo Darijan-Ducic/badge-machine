@@ -314,6 +314,7 @@ def lip_calls(monkeypatch):
     monkeypatch.setattr(muse_sampler, "score_closed", fakes["score_closed"])
     monkeypatch.setattr(scorers, "gemini_scores", fakes["gemini"])
     monkeypatch.setattr(server, "transcribe", lambda data: fakes["heard"].append(data) or "yes")
+    monkeypatch.setattr(clips, "LIP_READERS", "all")  # these tests read with every reader (K=3 Muse open)
     return fakes
 
 
@@ -576,6 +577,7 @@ def test_readiness_of_a_user_without_clips_is_empty(api, store, recording):
 
 
 def test_vtt_lines_are_the_most_probable_phrase_list_lines_only(api, store, muted, monkeypatch):
+    monkeypatch.setattr(clips, "LIP_READERS", "all")  # an open reading must compete in `alternatives`
     fakes = readers("hi i am steven wang", gemini="yes")
     monkeypatch.setattr(muse_sampler, "sample_open", fakes["sample_open"])
     monkeypatch.setattr(muse_sampler, "score_closed", fakes["score_closed"])
@@ -598,3 +600,17 @@ def test_vtt_gemini_lines_are_geminis_three_most_probable_phrases(api, store, mu
     body = post_vtt(api, muted)
 
     assert [line["text"] for line in body["gemini_lines"]] == [PHRASES[3], PHRASES[1], PHRASES[0]]
+
+
+def test_fast_lip_reads_call_only_the_gemini_list_scorer_and_still_offer_three_lines(api, store, muted, monkeypatch):
+    fakes = readers("hi i am steven wang", gemini="yes")
+    for name, fake in (("sample_open", fakes["sample_open"]), ("score_closed", fakes["score_closed"])):
+        monkeypatch.setattr(muse_sampler, name, fake)
+    monkeypatch.setattr(scorers, "gemini_scores", fakes["gemini"])
+    monkeypatch.setattr(clips, "LIP_READERS", "gemini_list")
+
+    body = post_vtt(api, muted)
+
+    assert (fakes["sample_open"].calls, fakes["score_closed"].calls) == ([], [])
+    assert len(fakes["gemini"].calls) == 1
+    assert len(body["lines"]) == 3 and body["lines"][0]["text"] == "yes"
