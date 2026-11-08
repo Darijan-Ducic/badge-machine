@@ -66,6 +66,7 @@
 
     const $ = (id) => document.getElementById(id);
     const USER = new URLSearchParams(location.search).get("user") || "default";
+    const TOP3 = new URLSearchParams(location.search).has("top3");
     const MIN_MS = 500, RECENT = 30; // shortest take sent; frames in the live quality window
     const MAX_MS = 8000; // a take stops itself here: Muse sees at most 192 frames (48 images × 2×2) = 8 s at 24 fps
     const css = getComputedStyle(document.documentElement), color = (v) => css.getPropertyValue(v).trim();
@@ -189,7 +190,10 @@
         pending.remove();
         head.insertBefore(document.createTextNode(` · ${data.latency_ms} ms`), chip);
         const view = { c, chip, clip: data.clip };
-        if (data.action === "auto") sent(view, data);
+        if (TOP3 && data.alternatives?.length) {  // ?top3: always offer the 3 most probable lines to pick from
+          setChip(chip, data.action === "auto" ? "onplan" : "near", data.action === "auto" ? "Sure" : "Pick one");
+          ask(view, data.alternatives, "You said one of these");
+        } else if (data.action === "auto") sent(view, data);
         else if (data.action === "confirm") {
           setChip(chip, "near", "Confirm");
           ask(view, data.alternatives?.length ? data.alternatives : [data.vtt], "Did you mean");
