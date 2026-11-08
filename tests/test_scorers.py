@@ -61,3 +61,13 @@ def test_gemini_without_usage_metadata_leaves_usage_empty(gemini, clip):
     scorers.gemini_scores(clip, PHRASES, usage=usage)
 
     assert usage == {}
+
+
+def test_a_52_line_list_loads_and_gemini_gets_52_distinct_single_character_ids(tmp_path):
+    lines = [f"line number {i}" for i in range(52)]
+    path = tmp_path / "phrases.txt"
+    path.write_text("\n".join(lines) + "\n")
+
+    assert scorers.load_phrases(path) == lines
+    ids = scorers.IDS[: len(lines)]
+    assert len(set(ids)) == 52 and all(len(i) == 1 for i in ids)
