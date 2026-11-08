@@ -86,8 +86,35 @@ def _top_hypothesis(output: dict) -> str | None:
 
 
 def _bad_quality(output: dict) -> bool:
+    if _dropped(output, "quality"):
+        return False  # unknown, not bad
     quality = output.get("quality") or {}
     return quality.get("mouth_visible") != "full" or quality.get("blur") == "high"
+
+
+def _dropped(output: dict, field: str) -> bool:
+    """True when a schema variant (muse_sampler.SCHEMAS, schema_version other than v1) has no `field` by design; its
+    features then use the replacement noted at each use. v1 outputs never take this path."""
+    return output.get("schema_version") not in (None, "v1") and field not in output
+
+
+def _no_speech(output: dict) -> bool:
+    if _dropped(output, "speech"):
+        return not output.get("hypotheses")  # variant prompts: no visible speech -> empty hypotheses
+    return (output.get("speech") or {}).get("present") is False
+
+
+def _observed_or_read(output: dict, to_visemes) -> list[str]:
+    if _dropped(output, "visemes"):  # the top hypothesis's own visemes stand in for the observed ones
+        top = _top_hypothesis(output)
+        return to_visemes(_normalize(top)) if top else []
+    return _observed(output)
+
+
+def _alt_words(output: dict) -> set[str]:
+    if _dropped(output, "slots"):  # every word of every hypothesis stands in for the slot alternatives
+        return {w for h in output.get("hypotheses") or [] for w in _normalize(h["text"]).split()}
+    return {w for s in output.get("slots") or [] for a in s.get("alts") or [] for w in _normalize(a["w"]).split()}
 
 
 def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, bank: dict, stt: str | None = None, *,
@@ -108,10 +135,9 @@ def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, ban
     for text in phrases + list((bank.get("counts") or {})):
         entries.setdefault(_normalize(text), text)
     entries.pop("", None)
-    observed = [_observed(o) for o in outputs]
+    observed = [_observed_or_read(o, to_visemes) for o in outputs]
     hypotheses = [[h["text"] for h in o.get("hypotheses") or []] for o in outputs]
-    alt_words = [{w for s in o.get("slots") or [] for a in s.get("alts") or [] for w in _normalize(a["w"]).split()}
-                 for o in outputs]
+    alt_words = [_alt_words(o) for o in outputs]
 
     def nearness(entry: str) -> float:
         codes = to_visemes(entry)
@@ -159,7 +185,7 @@ def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, ban
         1.0,
         float((closed or {}).get("none") or 0.0),
         mean(_bad_quality(o) for o in outputs),
-        mean((o.get("speech") or {}).get("present") is False for o in outputs),
+        mean(_no_speech(o) for o in outputs),
     ]
     texts = list(pool.values())
     features = np.array([real(t) for t in texts] + [none_row], dtype=float)

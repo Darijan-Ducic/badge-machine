@@ -347,3 +347,135 @@ def score_closed(clip: Path, phrases: list[str]) -> dict:
         return closed_from_wire(raw, phrases), ("; ".join(problems) or None)
 
     return _call(make_client(), "closed", 0, closed_request(grids, phrases), finish)
+
+
+# ---------------------------------------------------------------- open-call schema variants (v1 stays the default)
+# Each variant is schema v1 minus some fields, or with one field replaced; its prompt is v1's wording for the fields it
+# keeps, so the schema is the only thing that changes. `view` turns a variant output into the dict
+# candidates.featurize reads (hypotheses always carry "text"; absent fields are left out, never invented).
+
+_HYPOTHESES = {"type": "array", "items": _obj(text={"type": "string"}, s=_SCORE)}
+_WORDS = {"type": "array", "minItems": 1, "items": _obj(w={"type": "string"}, s=_SCORE)}
+
+
+def _variant(name: str, **fields) -> dict:
+    return _obj(schema_version={"type": "string", "enum": [name]}, **fields)
+
+
+SCHEMAS = {
+    "v1": SCHEMA_V1,
+    "h1": _variant("h1", hypotheses=_HYPOTHESES),  # hypotheses only
+    "vh1": _variant("vh1", visemes=SCHEMA_V1["properties"]["visemes"], hypotheses=_HYPOTHESES),  # no slots
+    "sh1": _variant("sh1", slots=SCHEMA_V1["properties"]["slots"], hypotheses=_HYPOTHESES),  # no visemes
+    "dh1": _variant("dh1", mouth={"type": "string"}, hypotheses=_HYPOTHESES),  # free-form description first
+    "nb1": _variant("nb1", hypotheses={"type": "array", "items": _obj(words=_WORDS, s=_SCORE)}),  # per-word scores
+}
+
+_STEPS = {
+    "speech": "speech: present is true only if you see a mouth making speech movements. frames is the [first, last] "
+              "frame number of the speech, or null when present is false.",
+    "quality": "quality: mouth_visible is \"full\" (lips clearly visible throughout), \"partial\" (small, turned away, "
+               "cut off, or hidden in some frames) or \"none\" (no mouth visible). blur is \"low\", \"medium\" or "
+               "\"high\" for the mouth region. occluded_frames lists the [start, end] ranges where the mouth is "
+               "hidden or out of frame; [] if none.",
+    "visemes": "visemes: the sequence of mouth shapes during the speech, each with the [start, end] frames it holds. "
+               "Use only these codes (alphabet visemes-v1):\n" + _VISEME_TABLE,
+    "slots": "slots: split the speech into word slots, in order. For each slot, f is the [start, end] frames of that "
+             "word and alts are the words that fit those mouth shapes, best first. Many words look the same on the "
+             "lips (p/b/m, f/v, t/d/n/l), so list the plausible look-alikes: 2 to 5 alts per slot unless you are "
+             "certain. If a word is unreadable, still give your best guesses with low scores.",
+    "mouth": "mouth: in plain words and in time order, describe what the mouth does, citing frame numbers: when the "
+             "lips press together, round, spread or open wide, when the teeth or tongue show, and where the pauses "
+             "between words are. This description is your evidence for the next step.",
+}
+_HYPOTHESES_STEP = {
+    "h1": "hypotheses: 3 to 5 whole-sentence readings of everything said in the clip, best first. Many words look "
+          "the same on the lips (p/b/m, f/v, t/d/n/l), so the readings may differ in those look-alike words.",
+    "vh1": "hypotheses: 3 to 5 whole-sentence readings, best first, that fit the viseme sequence.",
+    "sh1": "hypotheses: 3 to 5 whole-sentence readings, best first, combining the slot alternatives into natural "
+           "language.",
+    "dh1": "hypotheses: 3 to 5 whole-sentence readings of everything said in the clip, best first, that fit your "
+           "description. Many words look the same on the lips (p/b/m, f/v, t/d/n/l), so the readings may differ in "
+           "those look-alike words.",
+    "nb1": "hypotheses: 3 to 5 whole-sentence readings of everything said in the clip, best first. Each reading is "
+           "its words in order, every word w with its own s (your confidence in that word), then s for the whole "
+           "reading. Many words look the same on the lips (p/b/m, f/v, t/d/n/l), so the readings may differ in "
+           "those look-alike words.",
+}
+
+
+def _variant_prompt(grids: Grids, schema: str) -> str:
+    fields = [f for f in SCHEMAS[schema]["properties"] if f != "schema_version"]
+    steps = [_STEPS[f] if f != "hypotheses" else _HYPOTHESES_STEP[schema] for f in fields]
+    keys = ", ".join(f"{i}_{f}" for i, f in enumerate(["schema_version", *fields]))
+    numbered = "\n".join(f"{i}. {step}" for i, step in enumerate(steps, 1))
+    framed = {"speech", "quality", "visemes", "slots"} & set(fields)
+    rules = ["- Judge only from what is visible. With no visible mouth or no speech: empty "
+             + " and ".join(f for f in fields if f in ("visemes", "slots", "hypotheses"))
+             + (" and an empty mouth" if "mouth" in fields else "") + "."]
+    if framed:
+        rules.insert(0, f"- Every [start, end] uses frame numbers printed on the tiles, with start <= end, within 0 to "
+                        f"{grids.n_frames - 1}.")
+    return f"""You are an expert lip reader. The images show a muted video clip of a person; there is no audio. \
+Read their lips and report what you see, with your uncertainty.
+
+{_frames_note(grids)}
+
+Fill in the JSON fields in order; each step is the evidence for the next. Every JSON key starts with its number in \
+that order ({keys}; inside an object 1_, 2_, ...); the names below omit it.
+
+{numbered}
+
+Scores: every s is your own subjective confidence, from 0 to 1, that this alternative is what was said. Scores need \
+not sum to 1. Give low scores when the evidence is weak; honest uncertainty is more useful than a confident guess.
+
+Rules:
+""" + "\n".join(rules)
+
+
+def validate_variant(output: dict, schema: str, n_frames: int) -> list[str]:
+    """Violations of one open output against `schema` (a SCHEMAS key), plus frame ranges outside the clip."""
+    if schema == "v1":
+        return validate_open(output, n_frames)
+    problems = [f"{e.json_path}: {e.message}" for e in Draft202012Validator(SCHEMAS[schema]).iter_errors(output)]
+    if problems:
+        return problems
+    ranges = [(f"$.{field}[{i}].f", item["f"]) for field in ("visemes", "slots")
+              for i, item in enumerate(output.get(field, []))]
+    return [f"{path}: [{a}, {b}] is reversed or outside frames 0..{n_frames - 1}"
+            for path, (a, b) in ranges if not 0 <= a <= b < n_frames]
+
+
+def view(output: dict, schema: str) -> dict:
+    """The output as candidates.featurize reads it. nb1: each reading gets "text", its words joined in order."""
+    if schema != "nb1":
+        return output
+    return {**output, "hypotheses": [{"text": " ".join(w["w"] for w in h["words"]), "s": h["s"], "words": h["words"]}
+                                     for h in output.get("hypotheses", [])]}
+
+
+def variant_request(clip: Path, schema: str = "v1"):
+    """(request, finish, grids) for one open call under `schema`; `finish(raw) -> (view output, error)`. v1 builds
+    exactly sample_open's request."""
+    grids = labeled_grids(clip, CONFIG["grid"], CONFIG["tile_width"])
+    if schema == "v1":
+        request = _request(_open_prompt(grids), grids, "lipread_v1", WIRE_SCHEMA)
+    else:
+        request = _request(_variant_prompt(grids, schema), grids, f"lipread_{schema}", _wire(SCHEMAS[schema], 0))
+
+    def finish(raw):
+        output = from_wire(raw)
+        problems = validate_variant(output, schema, grids.n_frames)
+        return view(output, schema), ("; ".join(problems) or None)
+
+    return request, finish, grids
+
+
+def sample_open_schema(clip: Path, k: int, schema: str = "v1") -> list[dict]:
+    """sample_open under any SCHEMAS entry: K parallel calls, items in the sample_open shape."""
+    if schema == "v1":
+        return sample_open(clip, k)
+    request, finish, _ = variant_request(clip, schema)
+    client = make_client()
+    with ThreadPoolExecutor(max_workers=max(k, 1)) as pool:
+        return list(pool.map(lambda i: _call(client, "open", i, request, finish), range(k)))
