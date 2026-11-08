@@ -98,6 +98,18 @@ test('c: the smoothed mouth trails a steady 6 px/frame glide by at most 3 px onc
   }
 });
 
+test('f: refresh keyframes whose lips sit a little off a healthy track move the mouth onto them and keep the anchor', async () => {
+  const face = makeFace(180, 220, 7), L = { face, x: 230, y: 130, mouthOpen: 0.4 }, m = mouthBox(L);
+  const off = [m[0] + 0.2 * m[2], m[1], m[2], m[3]]; // SAM's lips 0.2 mouth widths right of where the first keyframe put them
+  const frames = clip(40, () => [L]);
+  const { sam, calls } = fakeSam((i, p) => (p === 'face' ? [faceBox(L)] : [i === 0 ? m : off]));
+  const { out } = await run(frames, sam, { T_REFRESH: 0.5, COLOR: 0 }); // geometry alone: colour calibration would also get there
+  assert.ok(calls.length >= 3, 'fewer than two refresh keyframes; the test is vacuous');
+  const err = dist(mid(out.at(-1).rawMouth), mid(off)) / m[2];
+  assert.ok(err <= 0.06, `after the refreshes the mouth is still ${err.toFixed(3)} mouth widths off SAM's lips`);
+  assert.ok(dist(mid(out.at(-1).anchor), mid(out[1].anchor)) <= 1.5, `the anchor moved from ${out[1].anchor} to ${out.at(-1).anchor}: re-placed, not kept`);
+});
+
 const STILL = { x: 230, y: 130 };
 function coverScene(n, covered) {
   const face = makeFace(180, 220, 7), L = { face, ...STILL, mouthOpen: 0.4 }, m = mouthBox(L);
@@ -114,6 +126,8 @@ test('d: a covered mouth (SAM sees the face but no lips) is flagged occluded?, a
   const hits = occ.filter((o, i) => o && covered(i)).length, wrong = occ.filter((o, i) => o && !covered(i) && i < 24 + 5).length;
   assert.ok(hits >= 10, `only ${hits}/12 covered frames flagged occluded?`);
   assert.equal(wrong, 0, 'a frame before the cover was flagged occluded?');
+  const m = mouthBox({ face: makeFace(180, 220, 7), ...STILL, mouthOpen: 0.4 });
+  out.forEach((r, i) => { if (covered(i)) assert.ok(dist(mid(r.rawMouth), mid(m)) <= 3, `frame ${i}: the mouth wandered to ${r.rawMouth.map(Math.round)} under the cover`); });
   out.slice(24 + 5).forEach((r, k) => assert.deepEqual(r.flags, [], `frame ${24 + 5 + k} still flagged ${r.flags}`));
 });
 
@@ -125,4 +139,16 @@ test('e: a changed look with the lips still in view (a head turn) is re-learned,
   const { out } = await run(frames, sam, QUIET);
   out.forEach((r, i) => assert.ok(!r.flags.includes('occluded?'), `frame ${i} flagged occluded? after a look change`));
   out.slice(20).forEach((r, k) => assert.ok(r.conf >= CONFIG.T_CONF && r.flags.length === 0, `frame ${20 + k}: conf ${r.conf.toFixed(2)}, flags ${r.flags}`));
+});
+
+test('g: a head speeding up to 24 px/frame (past the 16 px search radius) is followed without SAM', async () => {
+  const face = makeFace(160, 200, 7), xs = [20];
+  for (let i = 1; i < 20; i++) xs.push(xs.at(-1) + Math.min(24, 2 * i));
+  const layers = xs.map((x) => ({ face, x, y: 130, mouthOpen: 0.4 }));
+  assert.ok(Math.max(...xs) + 160 < W, 'the face leaves the frame');
+  const frames = clip(layers.length, (i) => [layers[i]]);
+  const { sam, calls } = fakeSam((i, p) => (p === 'face' ? [faceBox(layers[i])] : [mouthBox(layers[i])]));
+  const { out } = await run(frames, sam, { ...QUIET, T_MOTION: 1 });
+  assert.deepEqual(calls.map((c) => c[0]), [0], 'SAM had to rescue the track');
+  out.forEach((r, i) => assert.ok(dist(mid(r.rawMouth), mid(mouthBox(layers[i]))) <= 2.5, `frame ${i}: raw mouth ${dist(mid(r.rawMouth), mid(mouthBox(layers[i]))).toFixed(1)} px off`));
 });
