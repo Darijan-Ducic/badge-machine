@@ -237,16 +237,16 @@ struct HandPointer {
         case .scrolling(let height):
             clickArmed = false
             thumbNearSince = nil
-            if spreadSince == nil { spreadSince = time }
-            guard let spreadSince, time - spreadSince >= 0.055 else { return nil }
-            guard let previousHeight = scrollHeight else {
+            if spreadSince == nil {
+                spreadSince = time
                 scrollHeight = height
-                return nil
             }
+            guard let spreadSince, time - spreadSince >= 0.025,
+                  let previousHeight = scrollHeight else { return nil }
             let delta = height - previousHeight
-            guard abs(delta) >= 0.008 else { return nil }
+            guard abs(delta) >= 0.005 else { return nil }
             scrollHeight = height
-            let pixels = Int32((delta * 1600).rounded())
+            let pixels = Int32((delta * 4800).rounded())
             return .scroll(pixels)
         case .other:
             thumbNearSince = nil
