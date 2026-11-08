@@ -315,29 +315,12 @@ final class Studio: ObservableObject {
         }
     }
 
-    /// Lip mode's pick, in the app: the click labels the take for training; a line other than the pasted one goes
-    /// on the clipboard with a notification (the app never edits text it already pasted).
-    private func showOptions(read: LipReader.Read, lines: [String], pasted: String?, note: String) {
-        hud.showOptions(lines, pasted: pasted, note: note) { [reader] pick in
-            Task { try? await reader.label(clip: read.clip, text: pick) }
-            guard pick != pasted else { return }
-            let sentence = LipReader.sentences([pick])
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(sentence, forType: .string)
-            Notifier.post(title: "Copied to clipboard", body: sentence)
-        }
-    }
-
     private func finish(_ result: Result<URL, Error>) async {
-        var insertedText: String?, copiedText: String?, read: LipReader.Read?
+        var insertedText: String?, copiedText: String?
         defer {
             phase = .ready
             target = nil
-            if let read, let lines = read.segments.first?.map(\.text), !lines.isEmpty, insertedText ?? copiedText != nil {
-                showOptions(read: read, lines: lines, pasted: read.paragraph.first,
-                            note: insertedText != nil ? "Pasted the first. Click the one you said to train it."
-                                                      : "Copied the first to the clipboard. Click the one you said.")
-            } else if let insertedText { hud.show(.done(insertedText)) }
+            if let insertedText { hud.show(.done(insertedText)) }
             else if let copiedText { hud.show(.copied(copiedText)) }
             else { hud.show(.failed(status)) }
         }
@@ -351,9 +334,7 @@ final class Studio: ObservableObject {
             }
             status = "Reading lips…"
             // The same crop as Lip mode and Preheat: the lip boxes, so every take is read and trained one way.
-            let result = try await reader.read(file, boxes: boxes)
-            read = result
-            let text = result.text
+            let text = try await reader.read(file, boxes: boxes).text
             guard !text.isEmpty else {
                 status = "The lip reader returned no line. Try again."
                 return
