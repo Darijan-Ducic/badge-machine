@@ -157,3 +157,14 @@ def test_clips_are_stored_in_the_seeded_order_even_when_they_finish_out_of_order
     fakes()
     ingest(path, other, "--seed", "12")
     assert [r["key"] for r in load(other)] != [r["key"] for r in records], "the order is shuffled by the seed"
+
+
+def test_a_manifest_line_with_its_own_phrase_list_is_read_and_stored_under_it(tmp_path, footage, store, fakes):
+    fake = fakes()
+    own = ["it's eleven o'clock", "don't forget a jacket"]
+
+    ingest(manifest(tmp_path, footage, n=1, phrases=own), store)
+
+    (record,) = load(store)
+    assert record["phrases"] == own
+    assert fake["score_closed"].calls[0][1] == own, "the closed call scores the line's phrases"
