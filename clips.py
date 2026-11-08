@@ -606,8 +606,11 @@ def vtt_clip(recording: bytes, phrases: list[str], store=None, *, user_id: str =
     listed = {preheat_normalize(p) for p in phrases}  # `lines`: the same ranking, phrase-list lines only (?top3)
     ranked = sorted(range(len(clip.pool) - 1), key=lambda j: -probs[j])
     lines = [{"text": clip.pool[j], "p": float(probs[j])} for j in ranked if preheat_normalize(clip.pool[j]) in listed][:3]
+    gemini_output = (record.get("gemini") or {}).get("output") or {}  # `gemini_lines`: Gemini's own top 3 (demo)
+    gemini_lines = [{"text": t, "p": float(v)} for t, v in sorted(gemini_output.items(), key=lambda kv: -kv[1])[:3]]
     return {"clip": record["id"], "vtt": alternatives[0], "action": _action(model, probs),
-            "alternatives": alternatives, "lines": lines, "latency_ms": round((time.perf_counter() - start) * 1000)}
+            "alternatives": alternatives, "lines": lines, "gemini_lines": gemini_lines,
+            "latency_ms": round((time.perf_counter() - start) * 1000)}
 
 
 def label_clip(store, clip_id: str, text, source) -> bool:

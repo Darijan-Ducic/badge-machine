@@ -67,6 +67,7 @@
     const $ = (id) => document.getElementById(id);
     const USER = new URLSearchParams(location.search).get("user") || "default";
     const TOP3 = new URLSearchParams(location.search).has("top3");
+    const DEMO = new URLSearchParams(location.search).has("demo");  // ?demo: Gemini's top 3, no sources, p or timings
     const MIN_MS = 500, RECENT = 30; // shortest take sent; frames in the live quality window
     const MAX_MS = 8000; // a take stops itself here: Muse sees at most 192 frames (48 images × 2×2) = 8 s at 24 fps
     const css = getComputedStyle(document.documentElement), color = (v) => css.getPropertyValue(v).trim();
@@ -188,9 +189,12 @@
           body: take.blob,
         }).then(json);
         pending.remove();
-        head.insertBefore(document.createTextNode(` · ${data.latency_ms} ms`), chip);
+        if (!DEMO) head.insertBefore(document.createTextNode(` · ${data.latency_ms} ms`), chip);
         const view = { c, chip, clip: data.clip };
-        if (TOP3 && data.lines?.length) {  // ?top3: always offer the 3 most probable phrase-list lines to pick from
+        if (DEMO && data.gemini_lines?.length) {
+          setChip(chip, "near", "Pick one");
+          ask(view, data.gemini_lines, "You said one of these");
+        } else if (TOP3 && data.lines?.length) {  // ?top3: always offer the 3 most probable phrase-list lines to pick from
           setChip(chip, data.action === "auto" ? "onplan" : "near", data.action === "auto" ? "Sure" : "Pick one");
           ask(view, data.lines, "You said one of these");
         } else if (data.action === "auto") sent(view, data);
@@ -239,7 +243,7 @@
       for (const a of alternatives) {
         const b = el("button", "opt");
         b.type = "button";
-        b.append(el("span", null, a.text), el("small", null, `p ${a.p.toFixed(2)}`));
+        b.append(el("span", null, a.text), ...(DEMO ? [] : [el("small", null, `p ${a.p.toFixed(2)}`)]));
         b.onclick = () => choose(a.text, "confirm", b);
         opts.append(b);
       }
