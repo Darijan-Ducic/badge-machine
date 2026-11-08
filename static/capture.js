@@ -1,16 +1,42 @@
 // Camera capture for the pages that record clips for the lip readers (Lip mode, Dictation).
 // Opens the camera (and the mic only with `audio: true`), runs the mouth tracker on every camera frame (SAM
-// re-anchors via POST /sam?prompt=face, as in track.html), and while a take is open records the FULL camera
+// re-anchors via POST /sam?prompt=..., as in track.html), and while a take is open records the FULL camera
 // stream with MediaRecorder plus, per recorded frame, the tracker's flags and smoothed mouth-crop box.
 // The browser never makes the final crop: the server crops lip-mode and dictation clips with one shared function.
 //
+// Tracker: v2 (static/tracker2.js, lips-anchored) or v1 (static/tracker.js), chosen by ?tracker=v1|v2 on the page
+// URL (default DEFAULT_TRACKER) or the `tracker` option. The flags header names it: JSON.stringify(take.flags) starts
+// with "tracker:<version>" (the server keeps X-Tracker-Flags as a list of strings; nothing reads it per frame).
+//
 //   const cap = await openCapture({ video, audio: false, onFrame: (r) => draw(r) });
 //   cap.start();  ...  const take = await cap.stop();
-//   take: {blob, ms, width, height, flags: [[...flag]] per frame, boxes: [[t_ms, x, y, w, h]] per frame with a
-//          box (recording pixels, top-left origin, t_ms from the take's start), gate: {ok, ratio}}
-import { createTracker, qualityGate } from "./tracker.js";
+//   take: {blob, ms, width, height, tracker: 'v1'|'v2', flags: [[...flag]] per frame, boxes: [[t_ms, x, y, w, h]]
+//          per frame with a box (recording pixels, top-left origin, t_ms from the take's start), gate: {ok, ratio}}
+import * as V1 from "./tracker.js";
+import * as V2 from "./tracker2.js";
 
-export async function openCapture({ video, audio = false, maxWidth = 640, onFrame = () => {}, onError = () => {} }) {
+export const DEFAULT_TRACKER = "v2"; // tools/tracker_eval.mjs held-out: lower centre and fast-motion error than v1
+const TRACKERS = { v1: V1, v2: V2 };
+const { qualityGate } = V1;
+
+// The tracker a page asked for in its query string (?tracker=v1|v2), else the default.
+export function trackerChoice(search = globalThis.location?.search ?? "") {
+  const v = new URLSearchParams(search).get("tracker");
+  return v in TRACKERS ? v : DEFAULT_TRACKER;
+}
+
+// A tracker of that version on sam(frame, prompt) -> boxes: v1 asks for the face, v2 for the lips (then the face).
+export function makeTracker(version, sam) {
+  return version === "v1" ? V1.createTracker({ samFace: (f) => sam(f, "face") }) : V2.createTracker({ sam });
+}
+
+// Per-frame flags that serialize with the tracker version first (JSON.stringify -> ["tracker:v2", [...], ...]),
+// so the upload says which tracker made its boxes while take.flags.length stays the frame count.
+export function withVersion(flags, version) {
+  return Object.defineProperty(flags, "toJSON", { value: () => [`tracker:${version}`, ...flags] });
+}
+
+export async function openCapture({ video, audio = false, maxWidth = 640, tracker: version = trackerChoice(), onFrame = () => {}, onError = () => {} }) {
   const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", frameRate: { ideal: 30 } }, audio });
   video.srcObject = stream;
   if (video.readyState < 1) await new Promise((resolve) => video.addEventListener("loadedmetadata", resolve, { once: true }));
@@ -27,21 +53,21 @@ export async function openCapture({ video, audio = false, maxWidth = 640, onFram
   const sam = document.createElement("canvas");
   sam.width = work.width;
   sam.height = work.height;
-  async function samFace(frame) {
+  async function askSam(frame, prompt) {
     sam.getContext("2d").putImageData(frame.image, 0, 0);
     const blob = await new Promise((resolve) => sam.toBlob(resolve, "image/jpeg", 0.85));
-    const res = await fetch("/sam?prompt=face", { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: blob });
+    const res = await fetch(`/sam?prompt=${encodeURIComponent(prompt)}`, { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: blob });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return (data.objects || []).map((o) => o.box);
   }
-  const tracker = createTracker({ samFace });
+  const tracker = makeTracker(version, askSam);
 
   function grab(t) {
     wctx.drawImage(video, 0, 0, work.width, work.height);
     const { width: w, height: h } = work, image = wctx.getImageData(0, 0, w, h), rgba = image.data, data = new Uint8ClampedArray(w * h);
     for (let i = 0, p = 0; i < data.length; i++, p += 4) data[i] = (rgba[p] * 77 + rgba[p + 1] * 150 + rgba[p + 2] * 29) >> 8;
-    return { data, width: w, height: h, t: t / 1000, image };
+    return { data, width: w, height: h, t: t / 1000, image, rgba }; // rgba: v2's lip colour model
   }
 
   const MAX_QUEUE = 90; // ~3 s of frames waiting on SAM; past that a frame keeps the last result
@@ -84,7 +110,7 @@ export async function openCapture({ video, audio = false, maxWidth = 640, onFram
   next();
 
   const api = {
-    stream, video, work, tracker,
+    stream, video, work, tracker, version,
     scale: k, // recording pixels per tracker pixel
     width: video.videoWidth, height: video.videoHeight,
     fps,
@@ -111,10 +137,10 @@ export async function openCapture({ video, audio = false, maxWidth = 640, onFram
       tk.recorder.stop();
       await Promise.all([stopped, draining]); // queued frames fill their slots
       const done = tk.frames.filter((f) => f.flags);
-      const flags = done.map((f) => f.flags);
+      const flags = withVersion(done.map((f) => f.flags), version);
       const boxes = done.filter((f) => f.box).map((f) => [Math.round(f.t), ...f.box.map((v) => Math.round(v * k))]);
       return { blob: new Blob(tk.chunks, { type: tk.recorder.mimeType }), ms, width: api.width, height: api.height,
-        flags, boxes, gate: qualityGate(flags, tracker.config) };
+        tracker: version, flags, boxes, gate: qualityGate(flags, tracker.config) };
     },
   };
   return api;
