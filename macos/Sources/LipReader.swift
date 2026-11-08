@@ -61,8 +61,10 @@ struct LipReader {
         var request = URLRequest(url: components.url!, timeoutInterval: 180)
         request.httpMethod = "POST"
         request.setValue("video/quicktime", forHTTPHeaderField: "Content-Type")
-        request.setValue(String(decoding: try JSONEncoder().encode(boxes), as: UTF8.self),
-                         forHTTPHeaderField: "X-Tracker-Boxes")
+        if !boxes.isEmpty {  // no boxes: the server reads the full frame
+            request.setValue(String(decoding: try JSONEncoder().encode(boxes), as: UTF8.self),
+                             forHTTPHeaderField: "X-Tracker-Boxes")
+        }
         request.setValue(#"["tracker:vision"]"#, forHTTPHeaderField: "X-Tracker-Flags")
         request.httpBody = video
         return request

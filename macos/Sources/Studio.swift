@@ -333,7 +333,9 @@ final class Studio: ObservableObject {
                 return
             }
             status = "Reading lips…"
-            let text = try await reader.read(file, boxes: boxes).text
+            // Full frame, not the lip crop: every take the readers were measured and trained on was full-frame
+            // (Gemini top-3 14/21 there); the tight Vision crop repeated two lines at p 1.0. The boxes only gate.
+            let text = try await reader.read(file, boxes: []).text
             guard !text.isEmpty else {
                 status = "The lip reader returned no line. Try again."
                 return
