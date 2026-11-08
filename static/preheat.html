@@ -52,7 +52,8 @@
   </div></main>
   <div class="status" id="rec" hidden><span class="rec"></span>Recording</div>
   <nav class="dock"><button class="go" id="hold" type="button" disabled><span class="dot" id="hold-icon"></span><span id="hold-label">Hold to record</span></button></nav>
-  <script>
+  <script type="module">
+    import { openCapture } from "./capture.js";  // the same lip tracker and crop boxes as Lip mode
     const $ = (id) => document.getElementById(id);
     const MIN_MS = 500, FEED_FPS = 24;
     const ICON = {
@@ -60,7 +61,7 @@
       no: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
       none: '<path d="M7 12h10"/>',
     };
-    let stream, fps = null, phrases = [], at = 0, rec = null;
+    let cap = null, fps = null, phrases = [], at = 0, rec = null;
 
     const note = (text) => { $("note").textContent = text; };
     const pct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
@@ -80,13 +81,12 @@
       $("say-n").textContent = `· ${at + 1} of ${phrases.length}`;
     }
     const nextPhrase = () => { at = (at + 1) % phrases.length; showPhrase(); };
-    const ready = () => { $("hold").disabled = !(stream && phrases.length); $("skip").disabled = !phrases.length; };
+    const ready = () => { $("hold").disabled = !(cap && phrases.length); $("skip").disabled = !phrases.length; };
 
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", frameRate: { ideal: 30 } }, audio: true })
-      .then((s) => {
-        stream = s;
-        $("preview").srcObject = s;
-        fps = s.getVideoTracks()[0].getSettings().frameRate ?? null;
+    openCapture({ video: $("preview"), audio: false, onError: (err) => note(`Tracker error: ${err.message}`) })
+      .then((c) => {
+        cap = c;
+        fps = c.fps ?? null;
         $("fps").textContent = fps == null ? "fps unknown" : `${+fps.toFixed(1)} fps`;
         if (fps != null && fps < FEED_FPS) {
           $("fps-warn").textContent = `Below ${FEED_FPS} fps: the lip readers are fed ${FEED_FPS}`;
@@ -103,11 +103,9 @@
     fetch("/stats").then(json).then(showStats).catch(() => {});
 
     function start() {
-      if (rec || $("hold").disabled) return;
-      const recorder = new MediaRecorder(stream), chunks = [];
-      recorder.ondataavailable = (e) => chunks.push(e.data);
-      rec = { recorder, chunks, prompted: at, t0: performance.now() };
-      recorder.start();
+      if (rec || $("hold").disabled || cap.recording) return;
+      rec = { prompted: at, t0: performance.now() };
+      cap.start();
       $("rec").hidden = false;
       $("hold-icon").className = "sq";
       $("hold-label").textContent = "Release to stop";
@@ -115,18 +113,17 @@
 
     function stop() {
       if (!rec) return;
-      const { recorder, chunks, prompted, t0 } = rec, ms = performance.now() - t0;
+      const { prompted, t0 } = rec, ms = performance.now() - t0;
       rec = null;
       $("rec").hidden = true;
       $("hold-icon").className = "dot";
       $("hold-label").textContent = "Hold to record";
       if (ms < MIN_MS) {
-        recorder.stop();
+        cap.stop();
         note("Too short: hold for at least half a second while you say it.");
         return;
       }
-      recorder.onstop = () => send(new Blob(chunks, { type: recorder.mimeType }), prompted, ms);
-      recorder.stop();
+      cap.stop().then((take) => send(take, prompted, ms));
       nextPhrase();
       note("Sent. Say the next one while it reads.");
     }
@@ -148,7 +145,7 @@
       return span;
     }
 
-    async function send(blob, prompted, ms) {
+    async function send(take, prompted, ms) {
       $("clips-hint").hidden = true;
       const card = el("article", "card clip");
       const head = el("p", "eyebrow");
@@ -162,7 +159,10 @@
 
       try {
         const query = new URLSearchParams({ fps: fps ?? "", prompted });
-        const data = await fetch(`/preheat/clip?${query}`, { method: "POST", body: blob }).then(json);
+        const data = await fetch(`/preheat/clip?${query}`, {
+          method: "POST", body: take.blob,
+          headers: { "Content-Type": take.blob.type || "video/webm", "X-Tracker-Flags": JSON.stringify(take.flags), "X-Tracker-Boxes": JSON.stringify(take.boxes) },
+        }).then(json);
         state.remove();
         head.append(` · ${data.clip}`);
         const heard = el("p", "heard", "STT heard");
