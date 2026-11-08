@@ -62,6 +62,12 @@ struct StudioView: View {
                                 .accessibilityHidden(true)
                         }
 
+                    if studio.fnConfirmationNeedsPermission {
+                        Text("Confirm to request Input Monitoring for Fn.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+
                     if studio.pendingShortcut != nil {
                         Button("Confirm", action: studio.confirmShortcut)
                             .buttonStyle(.borderedProminent)

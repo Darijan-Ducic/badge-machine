@@ -79,6 +79,10 @@ final class Studio: ObservableObject {
     }
 
     var needsModifierSetup: Bool { !choosing && modifierAccessibilityMissing }
+    var fnConfirmationNeedsPermission: Bool {
+        pendingShortcut?.isFn == true && !CGPreflightListenEventAccess()
+    }
+
     var needsFnSetup: Bool { !choosing && fnMode != nil && !fnMonitoringReady }
 
     private func activate(_ mode: Mode) {
@@ -250,6 +254,7 @@ final class Studio: ObservableObject {
             return
         }
 
+        let requestFnPermission = fnConfirmationNeedsPermission
         shortcuts[mode] = choice
         UserDefaults.standard.set(try? JSONEncoder().encode(choice), forKey: mode.preferenceKey)
         editingMode = nil
@@ -257,6 +262,7 @@ final class Studio: ObservableObject {
         status = ""
         resumeShortcutMonitoring()
         for other in Mode.allCases where other != mode { restoreShortcut(for: other) }
+        if requestFnPermission { _ = CGRequestListenEventAccess() }
     }
 
     func openModifierAccessibility() {
