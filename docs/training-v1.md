@@ -69,6 +69,7 @@ not probabilities.
 | `gemini` | Gemini | its Gemini probability |
 | `prior` | your history | how often this speaker says it |
 | `in_bank` | phrase list | 1 if it is a known phrase |
+| `pick_history` | your history | how often your earlier takes that Gemini read the same way turned out to be this line |
 | `is_none` | — | marks the ∅ "none of these" candidate |
 | `none_closed` | Muse closed | the closed call's "none of these" score (∅ only) |
 | `bad_quality` | Muse ×5 | share of samples reporting a partial/hidden mouth or heavy blur (∅ only) |

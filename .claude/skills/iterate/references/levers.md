@@ -117,7 +117,10 @@ loop. Read the lab chapter before testing a lever it covers. If a chapter is mis
   1/20, a near-uniform pool), and 0.10–0.16 in `temperature`.
 - **Try:** weigh `slot_support` and `viseme_sim` from the start. Zeroing a feature is free (`versions:set_feature`,
   `experiment:drop`); other weights are a code edit judged with compare.py.
-- **Status:** untested.
+- **`pick_history` = 0.1 (2026-11-07):** a tie-breaker weight on the user's own label history under Gemini's top pick.
+  User `local`, 22 list takes: top-3 +1/−0 tune, +1/−0 held-out, top-1 unchanged. Re-judge when the user reaches 30
+  labels (core fits it) and on a second user.
+- **Status:** active (`pick_history` only, inconclusive); the rest untested.
 
 ### 3 · Gemini forced choice
 - **Where:** scorers.py:19 (prompt), 55-66 (enum of phrase IDs, no "none"), 71-78 (renormalized to sum 1).

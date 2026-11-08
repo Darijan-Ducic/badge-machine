@@ -135,7 +135,10 @@ def test_a_failure_row_shows_the_label_rank_and_p_and_the_top_three(bucket_repor
     assert (miss["label_rank"], miss["label_p"]) == (None, None)  # the STT text is not a candidate
     abstained = rows["clip-003"]
     assert abstained["vtt"].startswith("∅") and abstained["top"][0]["text"].startswith("∅")
-    assert abstained["label_rank"] == 2  # ∅ .95 > yes please .04 + .25 > every other phrase .01 + .25
+    # Gemini ties every phrase at .25, so its top pick is the first, "call mom"; clips 0-2 (Gemini picked "call mom")
+    # were labeled call mom, feed the cat, stop, so each gets pick_history 1/3 (x .1): ∅ .95 > call mom = stop
+    # .01 + .25 + .033 > yes please .04 + .25 > play some music .01 + .25 > feed the cat .033
+    assert abstained["label_rank"] == 4
 
 
 # ---------------------------------------------------------------- no leak, and the test split stays closed
@@ -312,7 +315,10 @@ def test_a_past_stt_text_is_proposed_by_the_bank():
     earlier = says_call_mom(0, "feed the cat")  # not a phrase; said once, so it joins the next clip's bank
     later = stored(1, [v1_output(("feed the cat", 0.8))], SURE, 0.05, GEMINI_SURE, "feed the cat")
     sources = {c["text"]: c["sources"] for c in tool.clip_story([earlier, later], "clip-001")["pool"]}
-    assert sources["feed the cat"] == ["hypothesis", "slots", "bank"]  # its visemes are the observed ones exactly
+    # bank: its visemes are the observed ones exactly; history: Gemini picked "call mom" on both clips, and the
+    # earlier one was labeled "feed the cat"
+    assert sources["feed the cat"] == ["hypothesis", "slots", "bank", "history"]
+    assert "history" not in sources["call mom"]  # never the label of a take Gemini read as "call mom"
 
 
 def test_every_candidate_has_a_source_and_three_come_from_the_bank(world):

@@ -88,7 +88,7 @@ def row(result, text):
 
 def test_features_are_named_in_spec_order():
     assert FEATURES == ["vote", "top_vote", "mean_score", "slot_support", "viseme_sim", "closed", "gemini", "prior",
-                        "in_bank", "is_none", "none_closed", "bad_quality", "no_speech"]
+                        "in_bank", "pick_history", "is_none", "none_closed", "bad_quality", "no_speech"]
 
 
 def test_pool_holds_every_source_deduped_with_none_last():
@@ -110,6 +110,7 @@ def test_features_of_a_candidate_every_source_backs():
         "gemini": 0.5,
         "prior": math.log(4 / 14),         # (3 + 1) / 14
         "in_bank": 1.0,
+        "pick_history": 0.0,               # BANK has no "picks"
         "is_none": 0.0, "none_closed": 0.0, "bad_quality": 0.0, "no_speech": 0.0,
     })
 
@@ -123,6 +124,7 @@ def test_features_of_a_candidate_only_the_bank_and_visemes_back():
         "gemini": 0.0,                     # not in the phrase list Gemini scored
         "prior": math.log(3 / 14),         # (2 + 1) / 14
         "in_bank": 0.0,                    # a past STT text, not a phrase-list entry
+        "pick_history": 0.0,
         "is_none": 0.0, "none_closed": 0.0, "bad_quality": 0.0, "no_speech": 0.0,
     })
 
@@ -134,7 +136,7 @@ def test_features_of_a_slot_recombination_nobody_hypothesized():
         "viseme_sim": 7 / 18,              # 1 - (1/3 [go,gon] + 2/4 [go,goup] + 4/4 [go,help]) / 3
         "closed": 0.0, "gemini": 0.0,
         "prior": math.log(1 / 14),         # never said before
-        "in_bank": 0.0,
+        "in_bank": 0.0, "pick_history": 0.0,
         "is_none": 0.0, "none_closed": 0.0, "bad_quality": 0.0, "no_speech": 0.0,
     })
 
@@ -142,7 +144,7 @@ def test_features_of_a_slot_recombination_nobody_hypothesized():
 def test_none_carries_the_clip_level_signals():
     assert row(clip(), NONE) == pytest.approx({
         "vote": 0.0, "top_vote": 0.0, "mean_score": 0.0, "slot_support": 0.0, "viseme_sim": 0.0,
-        "closed": 0.0, "gemini": 0.0, "prior": 0.0, "in_bank": 0.0,
+        "closed": 0.0, "gemini": 0.0, "prior": 0.0, "in_bank": 0.0, "pick_history": 0.0,
         "is_none": 1.0,
         "none_closed": 0.3,
         "bad_quality": 2 / 3,              # S1 mouth partial, S2 blur high; S0 clean
@@ -245,3 +247,31 @@ def test_an_open_hypothesis_that_is_also_reserved_does_not_use_up_an_open_slot()
 
     assert len(result.pool) == 24
     assert result.pool[0] == "go on"
+
+
+# Earlier takes, by Gemini's top pick then label: Gemini picked "go on" 4 times, and the user's label was "go on"
+# once and "wait" 3 times; Gemini picked "stop" twice, both labeled "no". GEMINI's top pick here is "go on".
+PICKS = {"go on": {"go on": 1, "wait": 2, "Wait.": 1}, "stop": {"no": 2}}
+
+
+def picked(gemini=GEMINI):
+    return featurize(SAMPLES, CLOSED, gemini, {**BANK, "picks": PICKS}, None, to_visemes=fake_to_visemes,
+                     viseme_distance=fake_viseme_distance)
+
+
+def test_pick_history_is_the_share_of_earlier_takes_with_the_same_gemini_pick_labeled_as_the_candidate():
+    result = picked()
+
+    assert row(result, "wait")["pick_history"] == pytest.approx(3 / 4)  # "Wait." counts as "wait"
+    assert row(result, "go on")["pick_history"] == pytest.approx(1 / 4)
+    assert row(result, "no")["pick_history"] == 0.0  # its history is under Gemini's "stop" pick, not this read's
+    assert row(result, NONE)["pick_history"] == 0.0
+    # "wait" is in no other source's top 3 (closed 4th at .12, see POOL); its history reserves it a slot
+    assert "wait" not in POOL and "wait" in result.pool
+
+
+def test_pick_history_is_zero_without_a_gemini_read():
+    result = picked(gemini=None)
+
+    assert (result.features[:, FEATURES.index("pick_history")] == 0).all()
+    assert sorted(result.pool[:-1]) == sorted(POOL)
