@@ -19,7 +19,7 @@ final class Studio: ObservableObject {
         var description: String {
             switch self {
             case .whisper: "Move your lips silently and type at the text cursor."
-            case .cursor: "Point with two fingers together. Bring your thumb near your index joint to click. Spread the two fingers and move up or down to scroll."
+            case .cursor: "Point with two fingers together. Bring your thumb near the fingertips to click. Spread the two fingers and move up or down to scroll."
             }
         }
     }

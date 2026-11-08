@@ -115,21 +115,34 @@ struct Finger {
 }
 
 enum HandGesture {
+    static let clickDistance: CGFloat = 0.32
+
     case pointing(CGPoint, thumbDistance: CGFloat?)
+    case pinching(thumbDistance: CGFloat)
     case scrolling(height: CGFloat)
     case other
     case lost
 
     static func classify(index: Finger, middle: Finger, thumb: CGPoint?, palmWidth: CGFloat) -> HandGesture {
         guard palmWidth >= 0.025 else { return .lost }
-        guard let indexAngle = index.straightness, let middleAngle = middle.straightness else { return .other }
-        guard indexAngle > 0.8, middleAngle > 0.8,
-              index.reach > 0.55 * palmWidth, middle.reach > 0.55 * palmWidth else { return .other }
+        let extended = (index.straightness ?? 0) > 0.8 && (middle.straightness ?? 0) > 0.8
+            && index.reach > 0.55 * palmWidth && middle.reach > 0.55 * palmWidth
         let spread = hypot(index.tip.x - middle.tip.x, index.tip.y - middle.tip.y) / palmWidth
         if spread > 0.48 {
-            return .scrolling(height: (index.base.y + middle.base.y) / 2)
+            return extended ? .scrolling(height: (index.base.y + middle.base.y) / 2) : .other
         }
-        let thumbDistance = thumb.map { hypot($0.x - index.joint.x, $0.y - index.joint.y) / palmWidth }
+        let thumbDistance = thumb.map {
+            min(hypot($0.x - index.tip.x, $0.y - index.tip.y),
+                hypot($0.x - middle.tip.x, $0.y - middle.tip.y)) / palmWidth
+        }
+        guard extended else {
+            // Allow the fingers to bend naturally as the thumb reaches their tips.
+            if let thumbDistance, thumbDistance <= clickDistance,
+               index.reach > 0.45 * palmWidth, middle.reach > 0.45 * palmWidth {
+                return .pinching(thumbDistance: thumbDistance)
+            }
+            return .other
+        }
         return .pointing(CGPoint(x: (index.tip.x + middle.tip.x) / 2,
                                  y: (index.tip.y + middle.tip.y) / 2), thumbDistance: thumbDistance)
     }
@@ -214,6 +227,13 @@ struct HandPointer {
                 return .click(posted)
             }
             return movement.map(Event.move)
+        case .pinching(let thumbDistance):
+            spreadSince = nil
+            scrollHeight = nil
+            if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
+                return .click(posted)
+            }
+            return nil
         case .scrolling(let height):
             clickArmed = false
             thumbNearSince = nil
@@ -240,8 +260,8 @@ struct HandPointer {
     }
 
     private mutating func shouldClick(thumbDistance: CGFloat?, at time: TimeInterval) -> Bool {
-        if let thumbDistance, thumbDistance >= 0.42 { clickArmed = true }
-        guard clickArmed, let thumbDistance, thumbDistance <= 0.28 else {
+        if let thumbDistance, thumbDistance >= 0.46 { clickArmed = true }
+        guard clickArmed, let thumbDistance, thumbDistance <= HandGesture.clickDistance else {
             thumbNearSince = nil
             return false
         }
