@@ -153,7 +153,8 @@ def main(argv=None) -> int:
     stts = [r["stt"] for r in rows]
     for arm in ("control", "fewshot"):
         for metric in ("word", "viseme"):
-            for r, v in zip(rows, personal.lift([r[arm]["text"] for r in rows], stts, metric)):
+            for r, v in zip(rows, personal.lift([r[arm]["text"] for r in rows], stts, metric,
+                                                nearest=personal.LIFT_NEAREST)):
                 r[arm][f"{metric}_lift"] = v
     for r in rows:
         print(f"#{r['i']:<3} word {r['control']['word']:+.3f} -> {r['fewshot']['word']:+.3f}   viseme "

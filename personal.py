@@ -30,6 +30,7 @@ UNK_ALPHA = 0.5  # add-alpha mass for unknown words in the unigram floor
 LAMBDAS = (0.2, 0.3, 0.5)  # Jelinek-Mercer weights for unigram, bigram, trigram
 WEIGHTS = (0.0, 0.03, 0.1, 0.3, 1.0, 3.0)  # personal-LM weight grid for the LM arms
 TARGET_OTHERS = 10  # earlier labels a training target's lift is measured against
+LIFT_NEAREST = 10  # length-matched lift: impostor STTs = the 10 other turns closest in word count
 MIN_FIT = 10  # earlier targets before the personal scorer leaves its default weights
 ARMS = ("muse", "prior_only", "lm_rescore", "slot_lm", "scorer_staged", "scorer_personal", "viseme_default",
         "viseme_personal")
@@ -39,15 +40,23 @@ WINDOWED = ARMS[1:]  # arms whose personal layers honor `last`
 # ---------------------------------------------------------------- metrics
 
 
-def lift(reads: list[str], stts: list[str], metric: str) -> list[float]:
+def lift(reads: list[str], stts: list[str], metric: str, nearest: int | None = None) -> list[float]:
     """Per read: its score vs its own STT minus its mean score vs the OTHER turns' STTs in the set (lab-metrics rule).
-    A read that only sounds like the speaker (constant or frequent words) scores alike against every turn: lift 0."""
+    A read that only sounds like the speaker (constant or frequent words) scores alike against every turn: lift 0.
+
+    Plain lift still pays a content-free read for matching its turn's LENGTH (clip duration predicts STT length), so
+    `nearest=k` compares against only the k other turns closest in STT word count (ties: set order): length-matched
+    lift, under which a filler of the right length earns nothing."""
     import experiment
     score = {"word": experiment.word_acc, "viseme": experiment.viseme_acc}[metric]
+    sizes = [len(_normalize(s).split()) for s in stts]
     out = []
     for j, read in enumerate(reads):
         own = score([read or ""], [stts[j]])
-        others = [score([read or ""], [s]) for m, s in enumerate(stts) if m != j]
+        pool = [m for m in range(len(stts)) if m != j]
+        if nearest:
+            pool = sorted(pool, key=lambda m: abs(sizes[m] - sizes[j]))[:nearest]
+        others = [score([read or ""], [stts[m]]) for m in pool]
         out.append(own - sum(others) / len(others) if others else 0.0)
     return out
 
