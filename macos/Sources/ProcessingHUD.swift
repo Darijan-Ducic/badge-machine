@@ -14,6 +14,7 @@ final class ProcessingHUD {
         hideTask?.cancel()
         let panel = self.panel ?? Self.makePanel()
         self.panel = panel
+        panel.ignoresMouseEvents = true
         let view = NSHostingView(rootView: HUDView(state: state))
         panel.contentView = view
         panel.setContentSize(view.fittingSize)
@@ -28,6 +29,28 @@ final class ProcessingHUD {
             }
         case .recording, .reading:
             break
+        }
+    }
+
+    /// Lip mode's card: "You said one of these" with the read's top lines, the pasted one marked. A click calls
+    /// `onPick` (the panel never takes focus, so the user's text field keeps it). Stays up for 12 s.
+    func showOptions(_ lines: [String], pasted: String?, note: String, onPick: @escaping (String) -> Void) {
+        hideTask?.cancel()
+        let panel = self.panel ?? Self.makePanel()
+        self.panel = panel
+        panel.ignoresMouseEvents = false
+        let view = FirstClickHostingView(rootView: OptionsView(lines: lines, pasted: pasted, note: note) { [weak self] pick in
+            onPick(pick)
+            self?.show(.done(pick))
+        })
+        panel.contentView = view
+        panel.setContentSize(view.fittingSize)
+        Self.place(panel)
+        panel.orderFrontRegardless()
+        hideTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard !Task.isCancelled else { return }
+            self?.hide()
         }
     }
 
@@ -89,6 +112,42 @@ private struct HUDView: View {
         .font(.system(size: 13, weight: .medium))
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .fixedSize()
+    }
+}
+
+/// Buttons in a panel that never becomes key still answer the first click.
+private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+private struct OptionsView: View {
+    let lines: [String]
+    let pasted: String?
+    let note: String
+    let onPick: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("You said one of these").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+            ForEach(lines, id: \.self) { line in
+                Button { onPick(line) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: line == pasted ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(line == pasted ? .green : .secondary)
+                        Text(line).font(.system(size: 14, weight: .medium))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .frame(minWidth: 280, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+            }
+            Text(note).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+        .padding(14)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .fixedSize()
     }

@@ -55,6 +55,16 @@ struct LipReader {
         return try Self.decodeVTT(fallback)
     }
 
+    /// The user's pick for a read, as Lip mode's tap sends it: `POST /vtt/<clip>/label` {"text", "source": "confirm"}.
+    func label(clip: String, text: String) async throws {
+        var request = URLRequest(url: server.appendingPathComponent("vtt/\(clip)/label"), timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["text": text, "source": "confirm"])
+        let (_, code) = try await send(request)
+        guard code == 200 else { throw URLError(.badServerResponse) }
+    }
+
     func request(_ path: String, video: Data, boxes: [[Int]]) throws -> URLRequest {
         var components = URLComponents(url: server.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "user", value: user)]
