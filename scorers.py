@@ -15,7 +15,7 @@ from muse_video import MODEL as MUSE_MODEL, make_client
 
 GEMINI_MODEL = "gemini-4-argon"  # gemini-3.8-flash rejects response_logprobs
 # Single-character IDs are single tokens, so the logprobs of Gemini's first output token cover every phrase.
-IDS = list(string.ascii_uppercase + string.digits)
+IDS = list(string.ascii_uppercase + string.digits + string.ascii_lowercase)  # 62 single-token IDs
 PROMPT = "This is a muted close-up of one person's mouth. Read their lips and decide which phrase they said."
 # Lip reading holds up down to ~21 fps and degrades below (Maan, TU Delft 2019, LipNet on LRW); Gemini caps video
 # sampling at 24 fps. Both models get the same rate so calibration and few-shot examples stay comparable.
