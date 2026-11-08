@@ -55,6 +55,10 @@
         </article>
       </div>
       <section class="col" id="feed" aria-live="polite">
+        <article class="card" id="para" hidden>
+          <p class="eyebrow"><b>You said</b><span id="para-n"></span><button class="opt" id="para-clear" type="button">Clear</button></p>
+          <h2 class="headline" id="para-text"></h2>
+        </article>
         <p class="eyebrow" id="feed-hint">Reads land here, newest first.</p>
       </section>
     </div>
@@ -191,9 +195,10 @@
         pending.remove();
         if (!DEMO) head.insertBefore(document.createTextNode(` · ${data.latency_ms} ms`), chip);
         const view = { c, chip, clip: data.clip };
-        if (DEMO && data.lines?.length) {  // ?demo: the pipeline's top 3 list lines, with no sources on screen
+        if (DEMO && data.lines?.length) {  // demo: the pipeline's top 3 list lines, with no sources on screen
           setChip(chip, "near", "Pick one");
           ask(view, data.lines, "You said one of these");
+          setLine(view.clip, data.lines[0].text);  // the paragraph takes the top line; a tap replaces it
         } else if (TOP3 && data.lines?.length) {  // ?top3: always offer the 3 most probable phrase-list lines to pick from
           setChip(chip, data.action === "auto" ? "onplan" : "near", data.action === "auto" ? "Sure" : "Pick one");
           ask(view, data.lines, "You said one of these");
@@ -257,9 +262,21 @@
         if (button !== go) button.setAttribute("aria-pressed", "true");
         if (!(await label(view, text, source))) { controls.forEach((x) => { x.disabled = false; }); button.removeAttribute("aria-pressed"); return; }
         box.replaceWith(el("p", "eyebrow", source === "edit" ? "Typed" : "Confirmed"), el("h2", "headline", text));
+        if (DEMO) setLine(view.clip, text);
         setChip(view.chip, "onplan", "Sent");
       }
     }
+
+    // demo paragraph: one line per take, in take order; a confirmed option replaces that take's line
+    const para = [];
+    function setLine(clip, text) {
+      const hit = para.find((e) => e.clip === clip);
+      if (hit) hit.text = text; else para.push({ clip, text });
+      $("para").hidden = false;
+      $("para-n").textContent = ` · ${para.length} line${para.length === 1 ? "" : "s"}`;
+      $("para-text").textContent = para.map((e) => e.text.charAt(0).toUpperCase() + e.text.slice(1)).join(". ") + ".";
+    }
+    $("para-clear").onclick = () => { para.length = 0; $("para").hidden = true; };
 
     async function label(view, text, source) {
       view.c.querySelector(".msg.error")?.remove();
