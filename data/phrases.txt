@@ -1,24 +1,12 @@
-yes
-no
 hello
 thank you
-stop
-next
-go back
 help me
 call mom
-send message
-turn on the lights
-turn off the lights
 play music
-pause
-volume up
-volume down
+turn on the lights
 what time is it
 good morning
-good night
 I love you
 see you later
-excuse me
 open the door
 I am hungry
