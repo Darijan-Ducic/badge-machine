@@ -200,10 +200,16 @@ def test_a_misheard_prompted_take_is_labeled_with_the_line_on_screen():
     assert clips._label_text(_prompted_record("They built this today", prompted=1)) == "we built this today"
 
 
-def test_a_prompted_take_that_says_something_else_keeps_its_stt_and_a_user_edit_still_wins():
-    assert clips._label_text(_prompted_record("like the future of AI is here.")) == "like the future of AI is here."
-    assert clips._label_text(_prompted_record("", prompted=1)) == ""
+def test_a_prompted_take_trains_on_the_line_on_screen_even_when_stt_heard_the_room_or_nothing():
+    # A noisy room or silent mouthing: STT hears other voices or nothing, but the user read the line on screen.
+    assert clips._label_text(_prompted_record("by the deadline. Yeah.")) == "this is lip reading"
+    assert clips._label_text(_prompted_record("", prompted=1)) == "we built this today"
+    assert clips._label_text(_prompted_record(None, prompted=1)) == "we built this today"
+
+
+def test_a_user_edit_still_wins_and_an_unprompted_clip_keeps_its_stt():
     assert clips._label_text(_prompted_record("This is sleep reading", user_edit="no sound at all")) == "no sound at all"
+    assert clips._label_text(_prompted_record("hello there", prompted=None)) == "hello there"
 
 
 # ---------------------------------------------------------------- Gemini open samples (schema v1, like Muse's)
