@@ -201,13 +201,14 @@ export function createTracker({ sam, config = {} } = {}) {
     try { return await sam(frame, prompt); } catch (e) { info.error = String(e?.message ?? e); return null; }
   }
 
-  // The lips measured by colour near the anchor's mouth, pulled into the learned geometry by its confidence.
-  function measure(frame) {
+  // The lips measured by colour near the anchor's mouth, pulled into the learned geometry by its confidence
+  // (only on frames worth learning from: not while the match is broken or the mouth is known to be covered).
+  function measure(frame, adapt) {
     const pred = mouthOf(anchor), blob = lipBlob(frame, colour, pred), ratio = colour.mass > 0 ? blob.mass / colour.mass : 0;
     const w = pred[2], lips = [blob.cx + colour.dx * w, blob.cy + colour.dy * w];
     const gap = dist(lips, center(pred)) / Math.max(1, w);
     const q = gap > cfg.COLOR_GATE ? 0 : clamp((ratio - cfg.MASS_LO) / (cfg.MASS_HI - cfg.MASS_LO), 0, 1);
-    if (q > 0) {
+    if (adapt && q > 0) {
       const g = cfg.COLOR_GAIN * q, aw = anchor[2], [cx, cy] = center(pred);
       off = [off[0] + (g * (lips[0] - cx)) / aw, off[1] + (cfg.COLOR_Y * g * (lips[1] - cy)) / aw];
       if (blob.sy > 0) rh += cfg.COLOR_H * g * ((colour.ky * blob.sy) / aw - rh);
@@ -230,7 +231,7 @@ export function createTracker({ sam, config = {} } = {}) {
       anchor = tracked;
       tpl.proven = true;
     } else if (lost) vel = [0, 0];
-    const seen = tracking && useColour && colour ? measure(frame) : null;
+    const seen = tracking && useColour && colour ? measure(frame, !lost && !occluded) : null;
     // lips not visible: the colour model sees too little lip, or the match broke
     const hidden = lost || (!!seen && seen.ratio < cfg.HIDDEN_MASS);
 
