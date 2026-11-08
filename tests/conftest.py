@@ -54,3 +54,10 @@ def recording(tmp_path_factory) -> bytes:
     """A real browser-like webm (VP8 + Opus tone, 0.5 s at 30 fps), so the crop step runs real ffmpeg."""
     from tests.fakes import make_recording
     return make_recording(tmp_path_factory.mktemp("recording") / "clip.webm")
+
+
+@pytest.fixture(autouse=True)
+def _every_reader(monkeypatch):
+    """The suite describes the full-reader pipeline; a test of the fast path sets clips.LIP_READERS itself."""
+    import clips
+    monkeypatch.setattr(clips, "LIP_READERS", "all")

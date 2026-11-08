@@ -252,3 +252,18 @@ def test_vtt_muse_stays_the_muse_vote_when_gemini_open_reads_otherwise(store, re
                          gemini_open=GeminiOpen(v1_output(("no", 0.9))), **readers("yes"))
 
     assert clip_detail(store, record["id"])["vtt_muse"] == {"text": "yes", "p": 1.0}
+
+
+def test_gemini_rich_reads_run_only_geminis_rich_output_and_the_pipeline_reads_it(store, recording, monkeypatch):
+    import clips as clips_module
+    monkeypatch.setattr(clips_module, "LIP_READERS", "gemini_rich")
+    gemini_open = GeminiOpen(v1_output(("lights out please", 0.7)))
+    fakes = readers("no", "no")
+
+    result = process_clip(recording, 30.0, 0, transcribe=lambda _: "", phrases=PHRASES, store=store,
+                          gemini_open=gemini_open, **fakes)
+
+    assert (fakes["sample_open"].calls, fakes["score_closed"].calls, fakes["gemini"].calls) == ([], [], [])
+    assert len(gemini_open.calls) == 1
+    pool = {c["text"]: c for c in clip_detail(store, result["clip"])["pool"]}
+    assert pool["lights out please"]["features"]["vote"] == pytest.approx(1.0)  # every rich sample proposes it
