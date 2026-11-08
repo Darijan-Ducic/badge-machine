@@ -127,6 +127,7 @@ does not train the scorer. The temperature stage's scale is bounded below by 0.0
 | `gemini` | its Gemini probability (0 if not in the phrase list) | 0 |
 | `prior` | log((user count + 1) / (total + bank size + 1)) | 0 |
 | `in_bank` | 1 if in the phrase list | 0 |
+| `pick_history` | share of the user's earlier labeled takes with this clip's Gemini top pick that were labeled c (bank `picks`); its top 3 are reserved pool slots | 0 |
 | `is_none` | 0 | 1 |
 | `none_closed` | 0 | closed-call "none" score |
 | `bad_quality` | 0 | fraction of valid samples with `mouth_visible` ≠ full or `blur` = high |

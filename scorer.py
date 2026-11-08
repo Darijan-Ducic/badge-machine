@@ -11,6 +11,9 @@ Default weights: each direct "this is the phrase" signal counts once — open-sa
 `mean_score`), the closed call (`closed`) and Gemini (`gemini`) — and ∅ is backed only by the explicit reports that
 nothing was said or nothing fits (`none_closed`, `no_speech`). Indirect or self-assessed signals (`slot_support`,
 `viseme_sim`, `prior`, `in_bank`, `is_none`, `bad_quality`) start at 0 and must earn weight from labels.
+`pick_history` (what the user's earlier takes with the same Gemini top pick turned out to be) starts at a tie-breaker
+weight, PICK_HISTORY_WEIGHT: at most 0.1, it can't overturn a confident Gemini pick (1.0 vs ~0), but it orders the
+candidates Gemini leaves near 0, where Gemini's own order is noise (replay: docs/iteration-log.md, 2026-11-07).
 
 Auto-send: P(top) >= threshold and the top pick is not ∅. The threshold comes from out-of-fold predictions (5 folds),
 counting only clips whose held-out top pick is a real candidate, since a ∅ pick is never sent.
@@ -26,9 +29,12 @@ from fusion import predict as fused_probs
 
 STAGES = [(60, "full"), (30, "core"), (10, "temperature"), (0, "defaults")]
 FOLDS = 5
-CORE = ["vote", "top_vote", "mean_score", "closed", "gemini", "is_none", "none_closed", "bad_quality", "no_speech"]
+CORE = ["vote", "top_vote", "mean_score", "closed", "gemini", "pick_history", "is_none", "none_closed", "bad_quality",
+        "no_speech"]
+PICK_HISTORY_WEIGHT = 0.1
 DEFAULT_WEIGHTS = np.array([{"vote": 1.0, "top_vote": 1.0, "mean_score": 1.0, "closed": 1.0, "gemini": 1.0,
-                             "none_closed": 1.0, "no_speech": 1.0}.get(name, 0.0) for name in FEATURES])
+                             "pick_history": PICK_HISTORY_WEIGHT, "none_closed": 1.0, "no_speech": 1.0}.get(name, 0.0)
+                            for name in FEATURES])
 _CORE_COLUMNS = [FEATURES.index(name) for name in CORE]
 TEMPERATURE_MIN = 1e-2  # the temperature scale stays positive, so it never reverses the default ranking
 

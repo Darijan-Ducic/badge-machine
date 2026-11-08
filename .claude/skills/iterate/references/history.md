@@ -42,6 +42,20 @@ Newest first. One entry per iteration, data event, or decision:
 
 ## Log
 
+### 2026-11-07 · Demo personal loop (user `local`, 9-line list): `pick_history` fills Gemini's empty top-3 slots
+- **What:** new feature `pick_history` (candidates.py): of the user's earlier takes with the same Gemini top pick, the
+  share labeled as each candidate; its top 3 get reserved pool slots; default weight 0.1 (scorer.py), in CORE.
+- **Why:** live reads use Gemini's list score only, so the top 3 WAS Gemini's top 3. Gemini is peaky (1.00 on its
+  pick, ~0.00 elsewhere), so slots 2-3 were noise ("coffee is keeping us alive" in 15 of 22 top-3s, right once), and
+  Gemini reads "this is intense" as "hey guys I'm Darian" on 3 of 3 takes.
+- **Evidence:** prequential replay of the live path on 22 list-labeled takes (`/tmp/learner/evidence/pick_history.json`):
+  tune n = 17 top-1 8 → 8 (+0/−0), top-3 11 → 12 (+1/−0); held-out (last 5) top-1 1 → 1, top-3 4 → 5 (+1/−0).
+  Weight plateau 0.02-0.2 identical on tune. Free (replay only). One speaker, one session.
+- **Decision:** kept on the worktree branch, **inconclusive** (1 net held-out win < 3): it can't change top-1 by
+  design and can only reorder what Gemini leaves near 0. Scratch registry `/tmp/learner/registry` sys-v2.
+- **Levers:** #2 (starting weights) → active for `pick_history` only.
+- **By:** demo-learner subagent (iterate, 2026-11-07 18:16 PST).
+
 ### 2026-11-07 · Labels measured good; lift over impostors becomes the metric; a second speaker
 - **What:** lab-labels measured STT label quality; lab-metrics showed raw accuracy can be gamed and set lift over
   impostors as the primary metric; a second speaker, `practice:fauci-messages:fauci`, started streaming.

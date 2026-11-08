@@ -26,6 +26,15 @@ def hand_clip(real_rows, none_row, label, stt="go on", pool=None, gemini_pick=No
     return Clip(pool, features, label, stt, gemini_pick, muse_pick)
 
 
+def test_default_pick_history_orders_what_gemini_leaves_near_zero_but_never_overturns_a_sure_gemini_pick():
+    # A live read (Gemini's list score only): Gemini is sure of phrase 0; phrase 2's earlier takes with the same
+    # Gemini pick were all labeled phrase 2, phrase 0's never. Default scores: 0: .999; 1: .0006; 2: .0004 + .1.
+    clip = hand_clip([{"gemini": 0.999}, {"gemini": 0.0006}, {"gemini": 0.0004, "pick_history": 1.0}], {}, label=2)
+    probs = predict(Model("defaults", DEFAULT_WEIGHTS.copy(), np.inf), [clip])[0]
+
+    assert list(np.argsort(-probs)[:3]) == [0, 2, 1]
+
+
 def test_stage_grows_with_labeled_clip_count():
     assert [stage_for(n) for n in (0, 9, 10, 29, 30, 59, 60)] == [
         "defaults", "defaults", "temperature", "temperature", "core", "core", "full"]
@@ -51,8 +60,8 @@ def test_core_stage_fits_only_the_core_features():
     model = train(featurized(simulate(2, 40, muse=2, closed=2, gemini=2, visemes=0.5, miss_rate=0.2)))
 
     assert model.stage == "core"
-    assert CORE == ["vote", "top_vote", "mean_score", "closed", "gemini", "is_none", "none_closed", "bad_quality",
-                    "no_speech"]
+    assert CORE == ["vote", "top_vote", "mean_score", "closed", "gemini", "pick_history", "is_none", "none_closed",
+                    "bad_quality", "no_speech"]
     outside = [i for i, name in enumerate(FEATURES) if name not in CORE]
     assert (model.weights[outside] == 0).all()
 

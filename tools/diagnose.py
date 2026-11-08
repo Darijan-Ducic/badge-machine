@@ -46,7 +46,7 @@ import clips  # noqa: E402
 import experiment  # noqa: E402
 import scorer  # noqa: E402
 import visemes  # noqa: E402
-from candidates import FEATURES, _observed, _recombinations, _top, match  # noqa: E402
+from candidates import FEATURES, _observed, _recombinations, _top, match, pick_history  # noqa: E402
 from preheat import _normalize  # noqa: E402
 
 CLIPS_PAGE = "http://localhost:8765/clips.html?clip={}"
@@ -63,7 +63,7 @@ MEANING = {
 }
 BAD_VIDEO = 0.5
 TOP = 3
-SOURCES = ("hypothesis", "slots", "closed", "gemini", "bank")
+SOURCES = ("hypothesis", "slots", "closed", "gemini", "bank", "history")
 _BAD, _SILENT = FEATURES.index("bad_quality"), FEATURES.index("no_speech")
 
 
@@ -218,6 +218,7 @@ def _sources(record: dict, earlier: list[dict], clip) -> list[list[str]]:
         "closed": _top(((record["closed"].get("output") or {}).get("scores")) or {}, 3),
         "gemini": _top(record["gemini"].get("output") or {}, 3),
         "bank": _bank_nearest(record, earlier, outputs),
+        "history": _top(pick_history(clips.banks(earlier + [record])[-1], record["gemini"].get("output")), 3),
     }
     keys = {name: {_normalize(t) for t in texts} for name, texts in proposed.items()}
     return [[name for name in SOURCES if _normalize(text) in keys[name]] for text in clip.pool[:-1]] + [[]]

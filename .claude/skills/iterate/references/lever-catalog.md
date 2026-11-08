@@ -155,6 +155,7 @@ Every feature can be zeroed for free with `versions:set_feature` (versions.py:17
 | gemini | candidates.py:143 | its Gemini p, 0 if not in menu | free | same | — |
 | prior | candidates.py:124, 144 | log(count+1) − log(total + entries + 1) | free | same; scale via prior_strength (below) | user frequency |
 | in_bank | candidates.py:145 | 1 if in phrase list | free | same | — |
+| pick_history | candidates.py `pick_history`; banks built in clips.py `banks` | share of earlier takes with the same Gemini top pick labeled as c; top 3 reserved in the pool | free | same; weight scorer.py `PICK_HISTORY_WEIGHT` (0.1) | Gemini's near-0 top-3 slots (live lip path) |
 | is_none | candidates.py:150 | 1 on ∅ | free | same | ∅ bias |
 | none_closed | candidates.py:151 | closed `none` score on ∅ | free | same | ∅ support |
 | bad_quality | candidates.py:152, 82-84 | share of samples with mouth_visible≠full or blur=high, on ∅ | free | same | ∅ support |
@@ -169,8 +170,8 @@ Every feature can be zeroed for free with `versions:set_feature` (versions.py:17
 | Lever | Where (file:line) | Current value | Class | How an experiment changes it today | What it plausibly affects |
 |---|---|---|---|---|---|
 | Stage plan | scorer.py:27 | `[(60,"full"),(30,"core"),(10,"temperature"),(0,"defaults")]` | free | `versions:set_stages` (1..1000, temperature<core<full; versions.py:22, 116-120); `experiment:stages` (any subset with one at 0, experiment.py:100-102); applied evaluator.py:162-171 / experiment.py:225-226. UI: code edit (clips.py:31) | when fitted weights replace defaults |
-| DEFAULT_WEIGHTS | scorer.py:30-31 | `vote, top_vote, mean_score, closed, gemini, none_closed, no_speech = 1.0`; others 0 | free | code edit only (scorer.py:30-31); zeroing only via drop | the ENTIRE scorer below 10 labeled clips |
-| CORE feature set | scorer.py:29 | `vote, top_vote, mean_score, closed, gemini, is_none, none_closed, bad_quality, no_speech` | free | code edit only | slot_support / viseme_sim / prior / in_bank get weight only at `full` |
+| DEFAULT_WEIGHTS | scorer.py:33-36 | `vote, top_vote, mean_score, closed, gemini, none_closed, no_speech = 1.0`; `pick_history = 0.1`; others 0 | free | code edit only (scorer.py:33-36); zeroing only via drop | the ENTIRE scorer below 10 labeled clips |
+| CORE feature set | scorer.py:30-31 | `vote, top_vote, mean_score, closed, gemini, pick_history, is_none, none_closed, bad_quality, no_speech` | free | code edit only | slot_support / viseme_sim / prior / in_bank get weight only at `full` |
 | Temperature stage form | scorer.py:60-61 | one fitted scale × DEFAULT_WEIGHTS | free | code edit only | 10-29 clips |
 | L2 / optimizer | fusion.py:25, 35 | `l2=1e-3`; init ones; L-BFGS-B | free | code edit only | overfit at small n |
 | Objective | fusion.py:28-33; scorer.py:88 | NLL of the exact-match label index (∅ on pool miss) | free | code edit only | trains toward ∅ when STT is never in the pool |

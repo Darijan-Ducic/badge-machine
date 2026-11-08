@@ -6,8 +6,12 @@ Implements "Post-processor spec (exact)" in docs/uncertainty-design.md. Inputs p
            like Muse's everywhere except `muse_pick`
   closed   the closed call's output `{"scores": {phrase: s}, "none": s}`, or None if it failed
   gemini   `{phrase: p}` over the phrase list, or None / {} if unavailable
-  bank     `{"phrases": [phrase-list entries], "counts": {past STT text: count}}`
+  bank     `{"phrases": [phrase-list entries], "counts": {past STT text: count}}`, optionally
+           `"picks": {Gemini's top pick on an earlier take: {that take's label: count}}` (`pick_label`)
   stt      the STT transcript when STT is on (gives the label), else None
+
+`pick_history` (the user's own takes correcting Gemini): of the earlier labeled takes on which Gemini's top pick was
+this clip's Gemini top pick, the share labeled as the candidate; its top 3 are reserved pool slots like Gemini's.
 
 Readings chosen where the spec leaves room (simplest one each time):
   - The pool cap of 24 includes ∅, so at most 23 real candidates, kept in source order: hypotheses, slot
@@ -37,7 +41,7 @@ from preheat import _normalize
 from sentence import read as read_sentence
 
 FEATURES = ["vote", "top_vote", "mean_score", "slot_support", "viseme_sim", "closed", "gemini", "prior", "in_bank",
-            "is_none", "none_closed", "bad_quality", "no_speech"]
+            "pick_history", "is_none", "none_closed", "bad_quality", "no_speech"]
 NONE = "∅"
 POOL_CAP = 24
 
@@ -66,6 +70,25 @@ def match(text: str, options: list[str]) -> int | None:
 
 def _top(scores: dict, n: int) -> list[str]:
     return [text for text, _ in sorted(scores.items(), key=lambda item: -item[1])[:n]]
+
+
+def pick_label(gemini: dict | None) -> str | None:
+    """Gemini's top pick, the key a take's label is counted under in a bank's `picks`."""
+    return _top(gemini, 1)[0] if gemini else None
+
+
+def pick_history(bank: dict, gemini: dict | None) -> dict[str, int]:
+    """Label -> count over the earlier takes in `bank["picks"]` on which Gemini's top pick was this read's top pick;
+    labels that normalize alike are merged under the first one seen."""
+    pick, history, first = pick_label(gemini), {}, {}
+    for picked, labels in (bank.get("picks") or {}).items():
+        if pick is None or _normalize(picked) != _normalize(pick):
+            continue
+        for text, n in labels.items():
+            if _normalize(text):
+                text = first.setdefault(_normalize(text), text)
+                history[text] = history.get(text, 0) + n
+    return history
 
 
 def _recombinations(output: dict) -> list[str]:
@@ -136,6 +159,8 @@ def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, ban
     for text in phrases + list((bank.get("counts") or {})):
         entries.setdefault(_normalize(text), text)
     entries.pop("", None)
+    history = pick_history(bank, gemini)
+    seen = sum(history.values())
     observed = [_observed_or_read(o, to_visemes) for o in outputs]
     hypotheses = [[h["text"] for h in o.get("hypotheses") or []] for o in outputs]
     alt_words = [_alt_words(o) for o in outputs]
@@ -146,7 +171,8 @@ def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, ban
 
     pool: dict[str, str] = {}  # normalized -> first-seen text
     opened = [h for hs in hypotheses for h in hs] + [r for o in outputs for r in _recombinations(o)]
-    listed = _top(closed_scores, 3) + _top(gemini, 3) + sorted(entries.values(), key=nearness)[:3]
+    listed = (_top(closed_scores, 3) + _top(gemini, 3) + sorted(entries.values(), key=nearness)[:3]
+              + _top(history, 3))
     reserved = {_normalize(text) for text in listed} - {""}  # phrase-list candidates always get a slot
     room = POOL_CAP - 1 - len(reserved)  # slots left for open candidates that are not reserved
     for text in opened + listed:
@@ -179,10 +205,11 @@ def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, ban
             lookup(text, gemini),
             log(lookup(text, counts) + 1) - log_denominator,
             float(match(text, phrases) is not None),
+            lookup(text, history) / seen if seen else 0.0,
             0.0, 0.0, 0.0, 0.0,
         ]
 
-    none_row = [0.0] * 9 + [
+    none_row = [0.0] * 10 + [
         1.0,
         float((closed or {}).get("none") or 0.0),
         mean(_bad_quality(o) for o in outputs),
@@ -200,6 +227,5 @@ def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, ban
     named = [t for t in map(_top_hypothesis, muse) if t is not None]  # VTT · Muse counts Muse's samples only
     votes = Counter(map(_normalize, named))
     muse_pick = max(named, key=lambda t: votes[_normalize(t)]) if named else None  # ties: first seen
-    gemini_pick = _top(gemini, 1)[0] if gemini else None
     read = read_sentence(outputs, phrases)
-    return Clip(texts, features, label, stt, gemini_pick, muse_pick, *(read or (None, 0.0)))
+    return Clip(texts, features, label, stt, pick_label(gemini), muse_pick, *(read or (None, 0.0)))

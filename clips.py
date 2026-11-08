@@ -29,7 +29,7 @@ import muse_sampler
 import scorers
 import visemes
 from preheat import _normalize as preheat_normalize
-from candidates import FEATURES, NONE, featurize, match
+from candidates import FEATURES, NONE, featurize, match, pick_label
 from readiness import readiness
 from scorer import STAGES, auto_send, predict, prequential, stage_for, train
 
@@ -289,15 +289,22 @@ def _replayed(records: list[dict], user: str | None, vocab: str) -> list[dict]:
 def _featurized(records: list[dict]) -> list:
     """Each record as a candidates.Clip; its bank counts only the labels of the records before it."""
     distance = functools.partial(visemes.viseme_distance, costs=visemes.load_costs(COSTS))
-    counts, clips = Counter(), []
+    return [featurize(r["samples"] + (r.get("gemini_open") or []), r["closed"]["output"], r["gemini"]["output"],
+                      bank, _label_text(r), viseme_distance=distance) for r, bank in zip(records, banks(records))]
+
+
+def banks(records: list[dict]) -> list[dict]:
+    """Each record's bank: its phrase list, plus the labels of the records before it only (else `prior` and
+    `pick_history` would leak the label), counted by text and by Gemini's top pick on that earlier take."""
+    counts, picks, out = Counter(), {}, []
     for r in records:
-        text = _label_text(r)
-        bank = {"phrases": r["phrases"], "counts": dict(counts)}
-        clips.append(featurize(r["samples"] + (r.get("gemini_open") or []), r["closed"]["output"],
-                               r["gemini"]["output"], bank, text, viseme_distance=distance))
-        if text is not None:
+        out.append({"phrases": r["phrases"], "counts": dict(counts),
+                    "picks": {pick: dict(labels) for pick, labels in picks.items()}})
+        if (text := _label_text(r)) is not None:
             counts[text] += 1
-    return clips
+            if (pick := pick_label(((r.get("gemini") or {}).get("output")))) is not None:
+                picks.setdefault(pick, Counter())[text] += 1
+    return out
 
 
 def _trained_before(clips: list, i: int):

@@ -31,7 +31,6 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections import Counter
 from fractions import Fraction
 from math import comb
 from pathlib import Path
@@ -139,14 +138,9 @@ def store_records(store: Path | None, user: str) -> tuple[list[dict], str]:
     if not v1:
         raise SystemExit(f"no v1 clips for user {user!r} in the clip store")
     vocab = v1[-1]["vocab"]
-    counts, records = Counter(), []
-    for r in clips._replayed(stored, user, vocab):
-        text = clips._label_text(r)
-        records.append({"id": r["id"], "t": r.get("t"), "samples": r["samples"], "closed": r["closed"],
-                        "gemini": r["gemini"], "bank": {"phrases": r["phrases"], "counts": dict(counts)},
-                        "stt": text})
-        if text is not None:
-            counts[text] += 1
+    replayed = clips._replayed(stored, user, vocab)
+    records = [{"id": r["id"], "t": r.get("t"), "samples": r["samples"], "closed": r["closed"], "gemini": r["gemini"],
+                "bank": bank, "stt": clips._label_text(r)} for r, bank in zip(replayed, clips.banks(replayed))]
     return records, (f"user {user}: {len(records)} v1 clips under phrase list {vocab} "
                      f"({len(v1) - len(records)} under other lists skipped)")
 

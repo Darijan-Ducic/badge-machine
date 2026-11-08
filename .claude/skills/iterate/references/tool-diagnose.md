@@ -145,9 +145,10 @@ probabilities match `GET /clips/<id>`. In reading order:
    | `closed` | the closed call's top 3 |
    | `gemini` | Gemini's top 3 |
    | `bank` | the 3 bank entries nearest in visemes |
+   | `history` | the 3 labels most often given to the user's earlier takes with the same Gemini top pick (`pick_history`) |
 
    A `slots`-only candidate is a recombination nobody said. A `bank`-only candidate came from visemes alone.
-4. **Features.** All 13 per candidate, ∅ included.
+4. **Features.** All 14 per candidate, ∅ included.
 5. **Contributions.**
    - A row per feature for the winner and the runner-up: weight × value, and the gap between them.
    - The `score` row is the sum of contributions. The difference of two scores is the log of their p ratio
