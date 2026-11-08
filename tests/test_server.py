@@ -31,7 +31,7 @@ LIST_KEYS = {"id", "t", "user_id", "mode", "stt", "top", "action", "correct", "p
 DETAIL_KEYS = {"id", "t", "user_id", "mode", "stt", "config", "video", "frames", "stage", "action", "threshold", "pool",
                "samples", "closed", "gemini", "vtt_muse"}
 CLIP_KEYS = {"clip", "stt", "label", "label_phrase", "read", "correct", "stats"}
-VTT_KEYS = {"clip", "vtt", "action", "alternatives", "latency_ms"}
+VTT_KEYS = {"clip", "vtt", "action", "alternatives", "lines", "latency_ms"}
 NONE_WIN = dict(sample_open=SampleOpen(v1_output(present=False)), score_closed=ScoreClosed(none=0.95, default=0.01),
                 gemini=Gemini(probs=dict.fromkeys(PHRASES, 0.25)))
 
@@ -573,3 +573,16 @@ def test_readiness_of_a_user_without_clips_is_empty(api, store, recording):
     add(store, recording, "yes", "yes", gemini="yes", user="bob")
 
     assert get(api, "/readiness?user=ann") == {"phrases": []}
+
+
+def test_vtt_lines_are_the_most_probable_phrase_list_lines_only(api, store, muted, monkeypatch):
+    fakes = readers("hi i am steven wang", gemini="yes")
+    monkeypatch.setattr(muse_sampler, "sample_open", fakes["sample_open"])
+    monkeypatch.setattr(muse_sampler, "score_closed", fakes["score_closed"])
+    monkeypatch.setattr(scorers, "gemini_scores", fakes["gemini"])
+
+    body = post_vtt(api, muted)
+
+    assert any(a["text"] == "hi i am steven wang" for a in body["alternatives"])  # open reads still compete there
+    assert 0 < len(body["lines"]) <= 3 and all(line["text"] in PHRASES for line in body["lines"])
+    assert [line["p"] for line in body["lines"]] == sorted((line["p"] for line in body["lines"]), reverse=True)
