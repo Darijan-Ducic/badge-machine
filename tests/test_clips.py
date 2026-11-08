@@ -23,7 +23,7 @@ COSTS = Path(__file__).resolve().parent.parent / "data" / "viseme_costs.json"
 
 
 def run(store, recording, said, *tops, phrases=PHRASES, fps=30.0, user="local", **kw):
-    return process_clip(recording, fps, 0, transcribe=lambda _: said, phrases=phrases, store=store, user_id=user,
+    return process_clip(recording, fps, None, transcribe=lambda _: said, phrases=phrases, store=store, user_id=user,
                         **readers(*tops, **kw))
 
 

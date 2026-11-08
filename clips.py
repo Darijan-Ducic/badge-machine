@@ -270,21 +270,16 @@ def record_clip(recording: bytes, *, store=None, **options) -> dict:
 # ---------------------------------------------------------------- replay: features recomputed from raw outputs
 
 
-PROMPTED_MIN_RATIO = 0.6  # STT this close to the line on screen means the user said that line, misheard
-
-
 def _label_text(record: dict) -> str | None:
-    """The clip's training label: the user's edit, else for a prompted preheat take the line on screen when STT is
-    close to it (STT mishears "lip reading" as "sleep reading"), else the STT text."""
+    """The clip's training label: the user's edit, else for a prompted preheat take the line on screen (the user
+    read it; in a noisy room STT hears other voices, and silent mouthing gives STT nothing), else the STT text."""
     label = record["label"]
     if label.get("user_edit") is not None:
         return label["user_edit"]
-    stt, prompted, phrases = label.get("stt_text"), record.get("prompted"), record.get("phrases") or []
-    if stt and isinstance(prompted, int) and 0 <= prompted < len(phrases):
-        shown = phrases[prompted]
-        if difflib.SequenceMatcher(None, preheat_normalize(stt), preheat_normalize(shown)).ratio() >= PROMPTED_MIN_RATIO:
-            return shown
-    return stt
+    prompted, phrases = record.get("prompted"), record.get("phrases") or []
+    if isinstance(prompted, int) and 0 <= prompted < len(phrases):
+        return phrases[prompted]
+    return label.get("stt_text")
 
 
 def _replayed(records: list[dict], user: str | None, vocab: str) -> list[dict]:
