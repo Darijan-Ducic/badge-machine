@@ -40,7 +40,7 @@ PREHEAT_K = 5
 RUNTIME_K = 3  # lip mode answers while the user waits; K=5 is for dictation and practice
 # Lip mode's readers: "gemini_list" = Gemini's list score + the post-processing only; "all" = every reader. On the
 # presenter's 22 labeled silent takes (9 lines) both gave top-1 9/22, top-3 15/22 vs 14/22, in ~11 s vs ~18 s.
-LIP_READERS = "gemini_list"
+LIP_READERS = "all"  # one process: reads use every reader, like the preheat takes they are trained on
 LABEL_SOURCES = ("undo", "confirm", "edit")  # how the user gave a lip-mode clip its label
 NONE_TEXT = "∅ none of these"
 V1 = "v1"  # record format marker; older records (fixed-vocabulary scores) are kept but not replayed
