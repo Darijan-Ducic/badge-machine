@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { boxesOnMouth, fakeCamera, launch, probeTake, readBody, sendJSON, serveStatic } from './e2e-kit.mjs';
+import { TRACKER, trackerFlags } from './e2e-kit.mjs';
+import { DEFAULT_TRACKER } from '../static/capture.js';
 
 const SAM_DELAY_MS = Number(process.env.SAM_DELAY_MS ?? 300); // the hosted SAM call's latency
 const work = await mkdtemp(join(tmpdir(), 'lipmode-e2e-'));
@@ -39,7 +41,7 @@ const server = createServer(async (req, res) => {
     const jpeg = await readBody(req);
     if (stub.sam === 'empty') return sendJSON(res, { objects: [] });
     await sleep(SAM_DELAY_MS); // frames arriving meanwhile must still be recorded
-    return sendJSON(res, { objects: [{ id: 1, box: await cam.samBox(jpeg) }] });
+    return sendJSON(res, { objects: await cam.samObjects(jpeg, url.searchParams.get('prompt')) });
   }
   if (req.method === 'POST' && path === '/vtt') {
     const data = await readBody(req), clip = `clip-${++stub.n}`, file = join(OUT, `${clip}.webm`);
@@ -94,7 +96,8 @@ async function main() {
   const heldMs = Date.now() - t0;
   const gotAuto = await waitFor(`${cards} === 1 && ${top}.querySelector('.chip').textContent === 'Sent' && !!${top}.querySelector('h2')`, 10000);
   const up = stub.vtt.at(-1);
-  const flags = JSON.parse(up?.flags ?? 'null'), boxes = JSON.parse(up?.boxes ?? 'null');
+  const { version, frames: flags } = trackerFlags(up?.flags), boxes = JSON.parse(up?.boxes ?? 'null');
+  check('trackerVersion', version === (TRACKER ?? DEFAULT_TRACKER), { version, expected: TRACKER ?? DEFAULT_TRACKER });
   const take = await probeTake(up.file), pts = take.pts, duration = take.duration;
   const vstreams = take.video, astreams = take.audio;
   check('autoUpload', gotAuto && stub.vtt.length === 1 && up.user === 'e2e' && Array.isArray(flags) && Array.isArray(boxes)
@@ -172,7 +175,7 @@ async function main() {
   const capHeldMs = Date.now() - tc;
   const gotCap = await waitFor(`${cards} === 5 && ${top}.querySelector('.chip').textContent === 'Sent'`, 10000);
   await sleep(1000); // the release after the cap must not send a second take
-  const capUp = stub.vtt.at(-1), capFlags = JSON.parse(capUp?.flags ?? '[]'), capBoxes = JSON.parse(capUp?.boxes ?? '[]');
+  const capUp = stub.vtt.at(-1), capFlags = trackerFlags(capUp?.flags ?? '[]').frames, capBoxes = JSON.parse(capUp?.boxes ?? '[]');
   const capTake = await probeTake(capUp.file), capPts = capTake.pts;
   const capNote = await evaluate(`(() => { const n = [...${top}.querySelectorAll('*')].find((e) => !e.children.length && /capped at 8 s/i.test(e.textContent));
     return n ? { text: n.textContent, visible: n.checkVisibility() && n.getBoundingClientRect().height > 0 } : null; })()`);

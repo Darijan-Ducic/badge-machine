@@ -1,6 +1,7 @@
 // Headless-Chrome check of static/track.html: the fake camera plays a synthetic talking face sitting exactly
-// in the box that the /sam stub always returns. Passes when overlays render, the tracker holds the face
-// confidently, a forced re-anchor increments the SAM counter (reason 'forced'), and the console stays clean.
+// in the box that the /sam stub returns for 'face' (and its mouth for 'lips'). Passes when overlays render, the
+// tracker holds the face confidently, a forced re-anchor increments the SAM counter (reason 'forced'), and the
+// console stays clean. TRACKER=v1|v2|both opens track.html?tracker=<that> (unset = the page's default).
 //   node tests/track-page.e2e.mjs [screenshot.png]      (CHROME=/path/to/chrome to override the binary)
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
@@ -8,12 +9,14 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { rng, makeFace, makeBackground, render } from './synth.mjs';
+import { rng, makeFace, makeBackground, render, mouthBox } from './synth.mjs';
 
 const OUT = process.argv[2] ?? join(tmpdir(), 'track-page.png');
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const STATIC = new URL('../static/', import.meta.url);
 const FACE = [200, 100, 240, 280]; // the stub's face box, in the page's 640x480 frame
+const LIPS = mouthBox({ face: { w: FACE[2], h: FACE[3] }, x: FACE[0], y: FACE[1], mouthOpen: 0.5 }).map(Math.round); // its mouth, half open
+const TRACKER = process.env.TRACKER || null;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
 
 let samHits = 0;
@@ -21,9 +24,10 @@ const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://localhost').pathname;
   if (req.method === 'POST' && path === '/sam') {
     samHits++;
+    const prompt = new URL(req.url, 'http://localhost').searchParams.get('prompt');
     req.resume().on('end', () => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ objects: [{ id: 1, box: FACE }] }));
+      res.end(JSON.stringify({ objects: [{ id: 1, box: prompt === 'lips' || prompt === 'mouth' ? LIPS : FACE }] }));
     });
     return;
   }
@@ -95,7 +99,7 @@ async function main() {
   await send('Runtime.enable');
   await send('Log.enable');
   await send('Page.enable');
-  await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/track.html` });
+  await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/track.html${TRACKER ? `?tracker=${TRACKER}` : ''}` });
   const tracking = await waitFor('(window.__track?.frames ?? 0) > 30 && !!window.__track.last?.crop', 20000);
   const before = await evaluate('window.__track.samCalls');
   await evaluate('document.getElementById("reanchor").click()');
@@ -107,7 +111,9 @@ async function main() {
     const t = window.__track;
     return { samCalls: t.samCalls, counter: document.getElementById('sam').textContent, reasons: document.getElementById('sam-why').textContent,
       overlayPixels: ink('overlay'), mouthPixels: ink('mouth'), conf: t.last.conf, face: t.last.face, crop: t.last.crop,
-      status: document.getElementById('status').textContent };
+      status: document.getElementById('status').textContent, mode: t.mode, primary: t.version,
+      runs: Object.fromEntries(Object.entries(t.runs).map(([v, r]) => [v, { frames: r.frames, samCalls: r.samCalls, conf: +r.last.conf.toFixed(2), crop: r.last.crop, flags: r.last.flags }])),
+      compareRows: document.querySelectorAll('#cmp tbody tr').length };
   })()`);
   const { cssContentSize: size } = await send('Page.getLayoutMetrics');
   const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale: 1 } });
@@ -117,7 +123,9 @@ async function main() {
   const result = { tracking, samCallsBefore: before, incremented, serverSamHits: samHits, ...check, consoleErrors: errors, screenshot: OUT };
   console.log(JSON.stringify(result, null, 2));
   return tracking && incremented && check.counter === String(check.samCalls) && samHits >= check.samCalls
-    && check.conf >= 0.5 && check.overlayPixels > 0 && check.mouthPixels > 0 && errors.length === 0;
+    && check.conf >= 0.5 && check.overlayPixels > 0 && check.mouthPixels > 0 && errors.length === 0
+    && Object.values(check.runs).every((r) => r.conf >= 0.5 && r.crop) // every tracker on the page holds the face
+    && (check.mode !== 'both' || (Object.keys(check.runs).length === 2 && check.compareRows === 2));
 }
 
 let ok = false;
