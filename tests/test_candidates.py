@@ -222,3 +222,26 @@ def test_pool_is_capped_at_24_with_none_kept_last():
     assert len(result.pool) == 24
     assert result.pool[-1] == NONE
     assert result.pool[:3] == ["phrase number 0", "phrase number 1", "phrase number 2"]
+
+
+def test_phrase_list_candidates_keep_their_pool_slots_when_open_hypotheses_overflow_the_cap():
+    # 40 distinct open hypotheses alone would take all 23 real slots. Closed top 3: go on, go up, stop; Gemini top 3:
+    # go on, stop, no. Those 4 (plus the 3 bank neighbours) are reserved; open hypotheses fill the other slots.
+    many = record(0, {**S0["output"], "hypotheses": hyps(*[(f"phrase number {i}", 0.01) for i in range(40)])})
+
+    result = clip([many], stt="stop")
+
+    assert len(result.pool) == 24 and result.pool[-1] == NONE
+    assert {"go on", "go up", "stop", "no"} <= set(result.pool)
+    assert result.pool[result.label] == "stop"
+    assert result.pool[0] == "phrase number 0"
+
+
+def test_an_open_hypothesis_that_is_also_reserved_does_not_use_up_an_open_slot():
+    many = record(0, {**S0["output"], "hypotheses": hyps(("go on", 0.5),
+                                                          *[(f"phrase number {i}", 0.01) for i in range(40)])})
+
+    result = clip([many])
+
+    assert len(result.pool) == 24
+    assert result.pool[0] == "go on"
