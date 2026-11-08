@@ -603,8 +603,11 @@ def vtt_clip(recording: bytes, phrases: list[str], store=None, *, user_id: str =
     probs = predict(model, [clip])[0]
     best = sorted(range(len(clip.pool) - 1), key=lambda j: -probs[j])[:3]  # ∅ is last
     alternatives = [{"text": clip.pool[j], "p": float(probs[j])} for j in best]
+    listed = {preheat_normalize(p) for p in phrases}  # `lines`: the same ranking, phrase-list lines only (?top3)
+    ranked = sorted(range(len(clip.pool) - 1), key=lambda j: -probs[j])
+    lines = [{"text": clip.pool[j], "p": float(probs[j])} for j in ranked if preheat_normalize(clip.pool[j]) in listed][:3]
     return {"clip": record["id"], "vtt": alternatives[0], "action": _action(model, probs),
-            "alternatives": alternatives, "latency_ms": round((time.perf_counter() - start) * 1000)}
+            "alternatives": alternatives, "lines": lines, "latency_ms": round((time.perf_counter() - start) * 1000)}
 
 
 def label_clip(store, clip_id: str, text, source) -> bool:

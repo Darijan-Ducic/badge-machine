@@ -190,9 +190,9 @@
         pending.remove();
         head.insertBefore(document.createTextNode(` · ${data.latency_ms} ms`), chip);
         const view = { c, chip, clip: data.clip };
-        if (TOP3 && data.alternatives?.length) {  // ?top3: always offer the 3 most probable lines to pick from
+        if (TOP3 && data.lines?.length) {  // ?top3: always offer the 3 most probable phrase-list lines to pick from
           setChip(chip, data.action === "auto" ? "onplan" : "near", data.action === "auto" ? "Sure" : "Pick one");
-          ask(view, data.alternatives, "You said one of these");
+          ask(view, data.lines, "You said one of these");
         } else if (data.action === "auto") sent(view, data);
         else if (data.action === "confirm") {
           setChip(chip, "near", "Confirm");
