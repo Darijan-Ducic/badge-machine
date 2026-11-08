@@ -40,7 +40,11 @@ PREHEAT_K = 5
 RUNTIME_K = 3  # lip mode answers while the user waits; K=5 is for dictation and practice
 # Lip mode's readers: "gemini_list" = Gemini's list score + the post-processing only; "all" = every reader. On the
 # presenter's 22 labeled silent takes (9 lines) both gave top-1 9/22, top-3 15/22 vs 14/22, in ~11 s vs ~18 s.
-LIP_READERS = "all"  # one process: reads use every reader, like the preheat takes they are trained on
+# One process for training and reading: Preheat takes, Lip mode / app reads and the training replay all use it.
+# "gemini_rich" = Gemini's (best model) rich v1 output + the post-processing, nothing else. On the presenter's 24
+# labeled takes it was the best input: top-1 10/24, top-3 15/24 vs every reader together 9/24, 16/24 (Muse's rich
+# output alone 6/24, 11/24). "gemini_list" = Gemini's list score only; "all" = every reader.
+LIP_READERS = "gemini_rich"
 LABEL_SOURCES = ("undo", "confirm", "edit")  # how the user gave a lip-mode clip its label
 NONE_TEXT = "∅ none of these"
 V1 = "v1"  # record format marker; older records (fixed-vocabulary scores) are kept but not replayed
@@ -239,8 +243,13 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
         frames = crop.count_frames(clip)
         with ThreadPoolExecutor(5) as pool:
             heard = pool.submit(transcribe, recording) if transcript is None and transcribe else None
-            gemini_item = pool.submit(_gemini_call, gemini, clip, phrases)
-            if readers == "gemini_list":  # the fast lip path: no open readings, no Muse list score
+            skipped = lambda call: {"call": call, "sample": 0, "output": None, "latency_ms": 0,
+                                    "error": f"skipped: readers={readers}"}
+            gemini_item = None if readers == "gemini_rich" else pool.submit(_gemini_call, gemini, clip, phrases)
+            if readers == "gemini_rich":  # Gemini's rich v1 output is the only reader
+                samples, closed = [], skipped("closed")
+                gemini_samples = _gemini_open_call(gemini_open, clip, max(gemini_open_k, 1))
+            elif readers == "gemini_list":  # the fast lip path: no open readings, no Muse list score
                 samples, gemini_samples = [], []
                 closed = {"call": "closed", "sample": 0, "output": None, "latency_ms": 0,
                           "error": "skipped: readers=gemini_list"}
@@ -250,7 +259,7 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
                 gemini_samples = pool.submit(_gemini_open_call, gemini_open, clip, gemini_open_k)
                 samples, closed, gemini_samples = samples.result(), closed.result(), gemini_samples.result()
             stt = heard.result() if heard else transcript
-            gemini_item = gemini_item.result()
+            gemini_item = gemini_item.result() if gemini_item else skipped("gemini")
         video = clip.read_bytes()
     record = {
         "record": V1, "id": str(time.time_ns()), "t": started, "user_id": user_id, "mode": mode, "fps": fps,
@@ -298,8 +307,15 @@ def _replayed(records: list[dict], user: str | None, vocab: str) -> list[dict]:
 def _featurized(records: list[dict]) -> list:
     """Each record as a candidates.Clip; its bank counts only the labels of the records before it."""
     distance = functools.partial(visemes.viseme_distance, costs=visemes.load_costs(COSTS))
-    return [featurize(r["samples"] + (r.get("gemini_open") or []), r["closed"]["output"], r["gemini"]["output"],
-                      bank, _label_text(r), viseme_distance=distance) for r, bank in zip(records, banks(records))]
+    def inputs(r):  # train on exactly the inputs a read gets under LIP_READERS
+        if LIP_READERS == "gemini_rich":
+            return r.get("gemini_open") or [], None, None
+        if LIP_READERS == "gemini_list":
+            return [], None, r["gemini"]["output"]
+        return r["samples"] + (r.get("gemini_open") or []), r["closed"]["output"], r["gemini"]["output"]
+
+    return [featurize(*inputs(r), bank, _label_text(r), viseme_distance=distance)
+            for r, bank in zip(records, banks(records))]
 
 
 def banks(records: list[dict]) -> list[dict]:
@@ -575,7 +591,8 @@ def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=Non
     """Preheat: STT-label one recording, crop it with the browser tracker's boxes (`mouths`; full frame without),
     read it with every model, store it, and read it back like the runtime would (a model trained on this user's
     earlier clips only)."""
-    record = record_clip(recording, phrases=phrases, user_id=user_id, mode="stt_on", k=k, transcribe=transcribe,
+    record = record_clip(recording, phrases=phrases, user_id=user_id, mode="stt_on", k=k, readers=LIP_READERS,
+                         transcribe=transcribe,
                          mouths=mouths, tracker_flags=tracker_flags, fps=fps, prompted=prompted, store=store,
                          sample_open=sample_open, score_closed=score_closed, gemini=gemini, gemini_open=gemini_open)
     records, read, correct = _read_back(record, store)

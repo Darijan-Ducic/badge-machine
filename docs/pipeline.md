@@ -1,6 +1,6 @@
 # Pipeline
 
-Green = built and verified · amber = being built · grey dashed = planned. The app's Pipeline page (`/pipeline.html`) renders this file live; edit it and reload.
+Green = built and verified · amber = being built · grey dashed = planned or switched off. The app's Pipeline page (`/pipeline.html`) renders this file live; edit it and reload.
 
 **Who updates:** every iteration, system and personal, is run by a local Claude Code session following the skill book. Scripts are its instruments and report evidence; the session decides and versions each change. Nothing learns by itself in code. Muse agents are reserved for the product, later.
 
@@ -17,7 +17,7 @@ flowchart TD
   REPEAT["Ask user to repeat<br/>free, before any model spend"]
   GEM["Gemini 4 Argon @ 24 fps, its max<br/>enum + logprobs → P(phrase)"]
   MUSEK["Muse Spark ×K open samples, temp 1.0<br/>schema v1: quality → visemes → word slots → hypotheses<br/>frame-numbered grids @ 24 fps · K=3 runtime, 5 preheat"]
-  GEMK["Gemini 4 Argon ×2 open samples<br/>Muse's grids, prompt and schema v1, JSON output<br/>pooled like Muse's; VTT · Muse stays Muse-only"]
+  GEMK["Gemini 4 Argon ×2 rich v1 samples: the live reader<br/>Muse's grids, prompt and schema v1, JSON output<br/>LIP_READERS = gemini_rich: Preheat, Lip mode, app, training"]
   MUSEC["Muse Spark closed call<br/>score phrase bank + 'none of these'"]
   POOL["Candidate pool<br/>hypotheses, slot recombinations, closed + Gemini top,<br/>viseme neighbours from the bank, ∅<br/>closed, Gemini and bank slots reserved"]
   SENT["Sentence path → VTT, dictation turns<br/>reading longer than every phrase:<br/>ROVER word vote over the K top hypotheses"]
@@ -31,8 +31,10 @@ flowchart TD
   TRIG -- yes --> SAM -- new anchor --> TRK
   TRIG -- no --> CROP --> QG
   QG -- bad clip --> REPEAT
-  QG -- ok --> GEM & GEMK & MUSEK & MUSEC
-  GEM & GEMK & MUSEK & MUSEC --> POOL --> FEAT --> FUSE --> GATE
+  QG -- ok --> GEMK
+  QG -. off .-> GEM & MUSEK & MUSEC
+  GEM & MUSEK & MUSEC -.-> POOL
+  GEMK --> POOL --> FEAT --> FUSE --> GATE
   MUSEK & GEMK -- sentence turn --> SENT
   GATE -- high --> SEND
   GATE -- low --> CONFIRM
@@ -40,7 +42,8 @@ flowchart TD
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class CAM,GEM,GEMK,GATE,SAM,TRK,TRIG,QG,REPEAT,CROP,MUSEK,MUSEC,POOL,FEAT,FUSE,SEND,CONFIRM,SENT built
+  class CAM,GEMK,GATE,SAM,TRK,TRIG,QG,REPEAT,CROP,POOL,FEAT,FUSE,SEND,CONFIRM,SENT built
+  class GEM,MUSEK,MUSEC planned
 ```
 
 ## Learning: how it gets better
