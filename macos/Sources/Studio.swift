@@ -46,6 +46,7 @@ final class Studio: ObservableObject {
     private var fnArmed = false
     @Published private(set) var fnInputMonitoringMissing = false
     private let reader = LipReader()
+    private let lips = LipWindow()
     private var target: CursorTarget?
     private let hud = ProcessingHUD()
 
@@ -57,6 +58,9 @@ final class Studio: ObservableObject {
             self.activate(mode)
         }
         fnMonitor.onChange = { [weak self] pressed in self?.handleFn(pressed: pressed) }
+        if AVCaptureDevice.authorizationStatus(for: .video) == .authorized {
+            lips.show()  // the camera window opens with the app, so the tracker is running before the first take
+        }
         for mode in Mode.allCases {
             hotkeys[mode]?.onRelease = { [weak self] in self?.activate(mode) }
             guard let data = UserDefaults.standard.data(forKey: mode.preferenceKey),
@@ -284,12 +288,11 @@ final class Studio: ObservableObject {
         guard !choosing else { return }
         switch phase {
         case .starting, .recording:
-            let cameraStarted = phase == .recording
             target = CursorTarget.current()
             phase = .processing
-            status = "Finding your lips…"
+            status = "Reading lips…"
             hud.show(.reading)
-            if cameraStarted { camera.stop() }
+            Task { await read() }
         case .ready:
             guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
                 status = "Allow Camera access in System Settings."
@@ -298,20 +301,47 @@ final class Studio: ObservableObject {
             guard AXIsProcessTrusted() else { requestInsertionAccess(); return }
             phase = .starting
             status = "Starting camera…"
-            camera.start(onStart: { [weak self] in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if self.phase == .processing { self.camera.stop(); return }
-                    guard self.phase == .starting else { return }
-                    self.phase = .recording
-                    self.status = "Recording…"
-                    self.hud.show(.recording)
+            Task {
+                // The camera window runs the web app's Lip mode page: the same tracker, crop and read as the browser.
+                if await lips.begin() {
+                    phase = .recording
+                    status = "Recording…"
+                    hud.show(.recording)
+                } else {
+                    phase = .ready
+                    status = "The camera window is starting. Press the shortcut again in a moment."
+                    hud.show(.failed(status))
                 }
-            }, onFinish: { [weak self] result in
-                Task { @MainActor in await self?.finish(result) }
-            })
+            }
         case .processing, .handStarting, .handCursor, .handStopping:
             break
+        }
+    }
+
+    private func read() async {
+        var insertedText: String?, copiedText: String?
+        defer {
+            phase = .ready
+            target = nil
+            if let insertedText { hud.show(.done(insertedText)) }
+            else if let copiedText { hud.show(.copied(copiedText)) }
+            else { hud.show(.failed(status)) }
+        }
+        switch await lips.end() {
+        case .failed(let message):
+            status = message
+        case .line(let line):
+            let text = LipReader.sentences([line])
+            switch target?.insert(text) ?? .targetUnavailable {
+            case .inserted: status = "Text inserted."; insertedText = text
+            case .pasteRequested: status = "Paste requested."; insertedText = text
+            case .targetUnavailable:  // no text field to paste into: the line goes on the clipboard instead
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                status = "Copied to clipboard."
+                copiedText = text
+                Notifier.post(title: "Copied to clipboard", body: text)
+            }
         }
     }
 

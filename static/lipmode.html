@@ -71,6 +71,17 @@
     const $ = (id) => document.getElementById(id);
     const USER = new URLSearchParams(location.search).get("user") || "local";  // the Preheat page's user
     const TOP3 = new URLSearchParams(location.search).has("top3");
+    // ?app: the macOS app's camera window runs this exact page; its shortcut calls window.baijiu.begin()/end() and
+    // the read comes back through the "baijiu" message handler to be pasted at the user's cursor.
+    const APP = new URLSearchParams(location.search).has("app");
+    const toApp = (msg) => window.webkit?.messageHandlers?.baijiu?.postMessage(msg);
+    if (APP) {
+      window.baijiu = { begin: () => { begin(); return !!cap?.recording; }, end: () => end(false) };
+      const style = document.createElement("style");
+      style.textContent = "body.app .rail, body.app header.top, body.app #feed, body.app .card, body.app .dock, body.app .status { display: none !important; } body.app .board { display: block; } body.app main.section { padding: 8px; margin: 0; } body.app .col { max-width: none; }";
+      document.head.append(style);
+      document.body.classList.add("app");
+    }
     const DEMO = !new URLSearchParams(location.search).has("full");  // default: the pipeline's top 3, no sources; ?full: the auto-send flow
     const MIN_MS = 500, RECENT = 30; // shortest take sent; frames in the live quality window
     const MAX_MS = 8000; // a take stops itself here: Muse sees at most 192 frames (48 images × 2×2) = 8 s at 24 fps
@@ -145,8 +156,8 @@
       $("hold-label").textContent = "Hold to speak silently";
       const take = await cap.stop();
       take.capped = capped === true;
-      if (take.ms < MIN_MS) return note("Too short: hold for at least half a second while you mouth it.");
-      if (!take.flags.length || (!DEMO && !take.gate.ok)) return repeat(take); // the free check (?full only), before any model spend
+      if (take.ms < MIN_MS) { toApp({ error: "Too short: mouth the whole line." }); return note("Too short: hold for at least half a second while you mouth it."); }
+      if (!take.flags.length || (!DEMO && !take.gate.ok)) { toApp({ error: "Couldn't track your lips. Try again." }); return repeat(take); } // the free check (?full only), before any model spend
       note("Reading your lips…");
       read(take);
     }
@@ -193,6 +204,8 @@
           body: take.blob,
         }).then(json);
         pending.remove();
+        const line = data.lines?.[0]?.text || "";  // the app pastes the top line, the same one the demo shows first
+        toApp(line ? { text: line, clip: data.clip } : { error: "No line read. Try again." });
         if (!DEMO) head.insertBefore(document.createTextNode(` · ${data.latency_ms} ms`), chip);
         const view = { c, chip, clip: data.clip };
         if (DEMO && data.lines?.length) {  // demo: the pipeline's top 3 list lines, with no sources on screen
@@ -213,6 +226,7 @@
         note("Camera ready. Hold Space, or the button, and mouth the phrase.");
       } catch (err) {
         setChip(chip, "over", "Failed");
+        toApp({ error: err.message });
         pending.replaceWith(el("p", "msg error", err.message));
         note(`Read failed: ${err.message}`);
       }
