@@ -12,6 +12,7 @@
     ["stats.html", "Stats", '<path d="M5 20V12M12 20V5M19 20v-5"/>'],
     ["training.html", "Training", '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'],
     ["pipeline.html", "Pipeline", '<rect x="3.5" y="3.5" width="7" height="6" rx="2"/><rect x="13.5" y="14.5" width="7" height="6" rx="2"/><path d="M7 9.5V15a2.5 2.5 0 0 0 2.5 2.5h4"/>'],
+    ["progress.html", "Progress", '<path d="M4 17l5-5 4 4 7-8"/><path d="M15 8h5v5"/>'],
     ["track.html", "Tracker", '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3"/>'],
   ];
   const here = location.pathname.split("/").pop() || "index.html";
