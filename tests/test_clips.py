@@ -183,3 +183,24 @@ def test_a_config_override_is_logged_over_the_sampler_defaults(store, recording)
     assert (record["config"]["grid"], record["config"]["fps"]) == ("3x3", 12)
     assert record["config"]["tile_width"] == muse_sampler.CONFIG["tile_width"]
     assert load(store)[0]["config"]["grid"] == "3x3"
+
+
+# ---------------------------------------------------------------- prompted preheat labels
+
+
+import clips  # noqa: E402
+
+
+def _prompted_record(stt, prompted=0, phrases=("this is lip reading", "we built this today"), user_edit=None):
+    return {"label": {"stt_text": stt, "user_edit": user_edit}, "prompted": prompted, "phrases": list(phrases)}
+
+
+def test_a_misheard_prompted_take_is_labeled_with_the_line_on_screen():
+    assert clips._label_text(_prompted_record("This is sleep reading")) == "this is lip reading"
+    assert clips._label_text(_prompted_record("They built this today", prompted=1)) == "we built this today"
+
+
+def test_a_prompted_take_that_says_something_else_keeps_its_stt_and_a_user_edit_still_wins():
+    assert clips._label_text(_prompted_record("like the future of AI is here.")) == "like the future of AI is here."
+    assert clips._label_text(_prompted_record("", prompted=1)) == ""
+    assert clips._label_text(_prompted_record("This is sleep reading", user_edit="no sound at all")) == "no sound at all"
