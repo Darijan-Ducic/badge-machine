@@ -65,9 +65,9 @@
     import { openCapture } from "./capture.js";
 
     const $ = (id) => document.getElementById(id);
-    const USER = new URLSearchParams(location.search).get("user") || "default";
+    const USER = new URLSearchParams(location.search).get("user") || "local";  // the Preheat page's user
     const TOP3 = new URLSearchParams(location.search).has("top3");
-    const DEMO = new URLSearchParams(location.search).has("demo");  // ?demo: the pipeline's top 3, no sources, p or timings
+    const DEMO = !new URLSearchParams(location.search).has("full");  // default: the pipeline's top 3, no sources; ?full: the auto-send flow
     const MIN_MS = 500, RECENT = 30; // shortest take sent; frames in the live quality window
     const MAX_MS = 8000; // a take stops itself here: Muse sees at most 192 frames (48 images × 2×2) = 8 s at 24 fps
     const css = getComputedStyle(document.documentElement), color = (v) => css.getPropertyValue(v).trim();
@@ -142,7 +142,7 @@
       const take = await cap.stop();
       take.capped = capped === true;
       if (take.ms < MIN_MS) return note("Too short: hold for at least half a second while you mouth it.");
-      if (!take.flags.length || !take.gate.ok) return repeat(take); // the free check, before any model spend
+      if (!take.flags.length || (!DEMO && !take.gate.ok)) return repeat(take); // the free check (?full only), before any model spend
       note("Reading your lips…");
       read(take);
     }

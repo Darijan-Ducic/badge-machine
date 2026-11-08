@@ -15,7 +15,7 @@
 import * as V1 from "./tracker.js";
 import * as V2 from "./tracker2.js";
 
-export const DEFAULT_TRACKER = "v2"; // tools/tracker_eval.mjs held-out: lower centre and fast-motion error than v1
+export const DEFAULT_TRACKER = "v1"; // v1 for the demo: every recorded take used it; ?tracker=v2 is the lips-anchored one
 const TRACKERS = { v1: V1, v2: V2 };
 const { qualityGate } = V1;
 
