@@ -1,4 +1,5 @@
 import Foundation
+import Vision
 
 // Run from the project root:
 // swiftc -parse-as-library Sources/HandCursor.swift Tests/HandCursorReplay.swift -o /tmp/baijiu-hand-cursor-replay
@@ -86,8 +87,23 @@ struct HandCursorReplay {
         check("slow frame delivery still scrolls", [
             pose(), pose(spread: 0.70), pose(spread: 0.70, height: 0.41),
             pose(spread: 0.70, height: 0.42), pose(height: 0.42)
-        ], interval: 0.22) { events in
+        ], interval: 0.42) { events in
             events.compactMap(scroll).count == 2 && events.compactMap(click).isEmpty
+        }
+
+        check("pointing catches up after a single uncertain sample", [
+            pose(), .other, pose(x: 0.498)
+        ]) { events in
+            guard let first = move(events[0]), let next = move(events[2]) else { return false }
+            // The physical step maps to 5.6 points. Catch up by at least half of it.
+            return next.x - first.x >= 2.8
+        }
+
+        check("a hidden pinky does not freeze pointing or arm a click", [
+            pose(), partialPose(x: 0.49), partialPose(x: 0.48)
+        ]) { events in
+            events[1...2].allSatisfy { move($0) != nil }
+                && events.compactMap(click).isEmpty && events.compactMap(scroll).isEmpty
         }
 
         check("a large jump between slow frames rebases scrolling", [
@@ -139,7 +155,62 @@ struct HandCursorReplay {
             return events.compactMap(click) == [reacquired] && click(events[13]) == reacquired
         }
 
+        let (firstMinute, lastMinute) = sustainedReplay()
+        if firstMinute.clicks == 60 && firstMinute.clicks == lastMinute.clicks
+            && firstMinute.scrolls > 0 && firstMinute.scrolls == lastMinute.scrolls
+            && firstMinute.scrollPixels > 0 && firstMinute.scrollPixels == lastMinute.scrollPixels
+            && firstMinute.moves > 0 && abs(firstMinute.moves - lastMinute.moves) <= 2 {
+            print("PASS pointing, scrolling, and clicking stay consistent over 20 minutes")
+        } else {
+            failures += 1
+            print("FAIL pointing, scrolling, and clicking stay consistent over 20 minutes")
+            print("  first minute: \(firstMinute)")
+            print("  last minute: \(lastMinute)")
+        }
+
         if failures > 0 { exit(1) }
+    }
+
+    private struct EventTotals {
+        var moves = 0
+        var scrolls = 0
+        var scrollPixels = 0
+        var clicks = 0
+    }
+
+    private static func sustainedReplay() -> (EventTotals, EventTotals) {
+        let pointing = (0...14).map { pose(x: 0.50 - CGFloat($0) * 0.0015) }
+        let scrolling: [HandGesture] = (0...9).map { frame in
+            if frame == 3 { return .other }
+            return pose(spread: 0.70, height: 0.40 + CGFloat(frame) * 0.004, x: 0.48)
+        }
+        let joined = pose(height: 0.436, x: 0.48)
+        let spread = pose(spread: 0.70, height: 0.436, x: 0.48)
+        let thumbNear = pose(height: 0.436, x: 0.48, thumbDistance: 0.20)
+        let cycle = pointing + [pose(x: 0.48)] + scrolling + Array(repeating: joined, count: 5)
+            + [spread, spread, joined, joined, spread, spread, joined, thumbNear, thumbNear]
+            + Array(repeating: pose(), count: 20)
+        let framesPerSecond = 30
+        let framesPerMinute = 60 * framesPerSecond
+        let bounds = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        var pointer = HandPointer()
+        var totals = [EventTotals(), EventTotals()]
+        for frame in 0..<(20 * framesPerMinute) {
+            let event = pointer.event(for: cycle[frame % cycle.count],
+                                      at: Double(frame) / Double(framesPerSecond), in: bounds)
+            let minute = frame / framesPerMinute
+            guard minute == 0 || minute == 19 else { continue }
+            let window = minute == 0 ? 0 : 1
+            switch event {
+            case .move: totals[window].moves += 1
+            case .scroll(let pixels):
+                totals[window].scrolls += 1
+                totals[window].scrollPixels += Int(pixels)
+            case .click: totals[window].clicks += 1
+            case nil: break
+            }
+        }
+        return (totals[0], totals[1])
     }
 
     private static func pose(spread: CGFloat = 0.15, height: CGFloat = 0.40, x: CGFloat = 0.50,
@@ -159,6 +230,16 @@ struct HandCursorReplay {
         return HandGesture.classify(index: finger(baseX: x - 0.025, tip: indexTip),
                                     middle: finger(baseX: x + 0.025, tip: middleTip),
                                     thumb: thumb, palmWidth: palmWidth)
+    }
+
+    private static func partialPose(x: CGFloat) -> HandGesture {
+        let points: [VNHumanHandPoseObservation.JointName: CGPoint] = [
+            .indexMCP: CGPoint(x: x - 0.025, y: 0.40), .indexPIP: CGPoint(x: x - 0.02, y: 0.50),
+            .indexTip: CGPoint(x: x - 0.015, y: 0.60), .middleMCP: CGPoint(x: x + 0.025, y: 0.40),
+            .middlePIP: CGPoint(x: x + 0.02, y: 0.50), .middleTip: CGPoint(x: x + 0.015, y: 0.60),
+            .ringMCP: CGPoint(x: x + 0.075, y: 0.40), .thumbTip: CGPoint(x: x - 0.015, y: 0.61)
+        ]
+        return HandCursor.gesture { points[$0] }
     }
 
     private static func move(_ event: HandPointer.Event?) -> CGPoint? {
