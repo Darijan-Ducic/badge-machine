@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.special import softmax
 
-from preheat import match_phrase, prequential, stage_for, train
+from preheat import _normalize, match_phrase, prequential, stage_for, train
 
 PHRASES = ["yes", "no", "turn on the lights", "turn off the lights", "call mom", "play music"]
 N_PHRASES = 24
@@ -84,3 +84,8 @@ def test_learns_an_auto_send_threshold_once_trained():
     threshold = train(simulated_probs(y, 4, 1, rng), simulated_probs(y, 4, 1, rng), y).threshold
 
     assert 0 < threshold <= 1
+
+
+def test_normalize_collapses_a_phrase_repeated_by_stt():
+    # Measured on Obama Weekly Address labels: half of the STT label errors are repeated phrases ("road to road to").
+    assert _normalize("It was a road to road to socialism") == "it was a road to socialism"

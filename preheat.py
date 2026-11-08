@@ -34,8 +34,17 @@ def stage_for(n_labeled: int) -> str:
 
 def _normalize(text: str) -> str:
     words = re.sub(r"[^a-z0-9' ]", " ", text.lower()).split()
-    # STT occasionally doubles a word ("seven seven"); collapse immediate repeats on both sides of the match.
-    return " ".join(w for i, w in enumerate(words) if i == 0 or w != words[i - 1])
+    # STT repeats words and phrases ("seven seven", "road to road to": a quarter of Obama turns, half the label word
+    # errors; .claude/skills/iterate/references/lab-labels.md); drop the second copy of an immediately repeated
+    # phrase of up to 4 words, longest first, on both sides of the match.
+    out = []
+    for w in words:
+        out.append(w)
+        for n in range(min(4, len(out) // 2), 0, -1):
+            if out[-n:] == out[-2 * n:-n]:
+                del out[-n:]
+                break
+    return " ".join(out)
 
 
 def match_phrase(transcript: str, phrases: list[str], min_ratio: float = 0.8) -> int | None:

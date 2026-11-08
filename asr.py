@@ -15,8 +15,9 @@ from muse_video import BASE_URL
 ASR_REQUEST = {"mode": "ENDPOINTING", "model": "muse-voice-transcribe-1.0", "audioEncoding": "WAV"}
 
 
-def transcribe_turns(recording: bytes) -> dict:
-    """Any ffmpeg-readable media -> {"text": transcript, "turns": [{"start_ms", "end_ms", "text"}]}."""
+def transcribe_turns(recording: bytes, request: dict | None = None) -> dict:
+    """Any ffmpeg-readable media -> {"text": transcript, "turns": [{"start_ms", "end_ms", "text"}]}. `request` fields
+    override ASR_REQUEST's (experiments only)."""
     with tempfile.TemporaryDirectory() as tmp:
         source, wav = Path(tmp, "recording"), Path(tmp, "speech.wav")
         source.write_bytes(recording)
@@ -30,7 +31,7 @@ def transcribe_turns(recording: bytes) -> dict:
             params={"sessionId": str(uuid.uuid4())},
             headers={"Authorization": f"Bearer {os.environ['MODEL_API_KEY']}"},
             files={
-                "request": (None, json.dumps(ASR_REQUEST), "application/json"),
+                "request": (None, json.dumps({**ASR_REQUEST, **(request or {})}), "application/json"),
                 "audio": ("speech.wav", wav.read_bytes(), "audio/wav"),
             },
             timeout=120,
