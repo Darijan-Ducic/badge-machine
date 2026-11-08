@@ -144,11 +144,20 @@ def accuracy_matrix(reads: list[list], saids: list[list]) -> np.ndarray:
     return out
 
 
-def lift(acc: np.ndarray) -> np.ndarray:
-    """Per clip: own accuracy minus the mean accuracy against every other clip's STT."""
+def lift(acc: np.ndarray, impostors: np.ndarray | None = None) -> np.ndarray:
+    """Per clip: own accuracy minus the mean accuracy against the impostor STTs (default every other clip's;
+    `impostors[i, j]` True where clip j's STT is an impostor for clip i; a clip without impostors gets 0)."""
     n = len(acc)
-    own = np.diag(acc)
-    return own - (acc.sum(1) - own) / max(n - 1, 1)
+    impostors = ~np.eye(n, dtype=bool) if impostors is None else impostors
+    counts = impostors.sum(1)
+    mean = np.where(counts > 0, (acc * impostors).sum(1) / np.maximum(counts, 1), np.diag(acc))
+    return np.diag(acc) - mean
+
+
+def length_matched(stts: list[str], tolerance: float = 0.25) -> np.ndarray:
+    """Impostors whose STT word count is within ±tolerance of the clip's own: lift then can't reward length."""
+    lens = np.array([len(sentence.words(s)) for s in stts])
+    return (np.abs(lens[None, :] - lens[:, None]) <= tolerance * lens[:, None]) & ~np.eye(len(stts), dtype=bool)
 
 
 def paired(mine: np.ndarray, base: np.ndarray) -> dict:
@@ -186,17 +195,21 @@ def lab(records: list[dict], baseline: str = "vtt_main") -> dict:
         texts.setdefault("oracle_all", []).append(best([h["text"] for o in outputs for h in _hyps(o)]))
     said_words = [sentence.words(s) for s in stts]
     said_visemes = [visemes.to_visemes(s) for s in stts]
-    lifts = {}
+    lifts, matched = {}, length_matched(stts)
     for name, arm in texts.items():
-        lifts[name] = {"word": lift(accuracy_matrix([sentence.words(t) for t in arm], said_words)),
-                       "viseme": lift(accuracy_matrix([visemes.to_visemes(t) for t in arm], said_visemes))}
+        word = accuracy_matrix([sentence.words(t) for t in arm], said_words)
+        vis = accuracy_matrix([visemes.to_visemes(t) for t in arm], said_visemes)
+        lifts[name] = {"word": lift(word), "viseme": lift(vis), "word_matched": lift(word, matched),
+                       "viseme_matched": lift(vis, matched)}
     rows = {}
     for name, arm in texts.items():
         rows[name] = {
             "word": experiment.word_acc(arm, stts), "viseme": experiment.viseme_acc(arm, stts),
             "word_lift": float(lifts[name]["word"].mean()), "viseme_lift": float(lifts[name]["viseme"].mean()),
+            "word_lift_matched": float(lifts[name]["word_matched"].mean()),
+            "viseme_lift_matched": float(lifts[name]["viseme_matched"].mean()),
             "mean_words": float(np.mean([len(sentence.words(t)) for t in arm])),
-            "vs_baseline": {m: paired(lifts[name][m], lifts[baseline][m]) for m in ("word", "viseme")},
+            "vs_baseline": {m: paired(lifts[name][m], lifts[baseline][m]) for m in lifts[name]},
             "per_clip_word_lift": lifts[name]["word"].tolist(),
         }
     return {"baseline": baseline, "clips": len(stts), "ids": [str(r.get("id")) for r in labeled], "stts": stts,
@@ -207,13 +220,14 @@ def table(report: dict) -> str:
     lines = [f"{report['clips']} labeled clips, STT mean {report['stt_mean_words']:.1f} words; paired vs "
              f"{report['baseline']} on per-clip lift",
              f"{'arm':19} {'word':>6} {'vis':>6} {'w.lift':>7} {'v.lift':>7} {'len':>5}  {'word lift up/dn p':>18} "
-             f"{'Δ [95% CI]':>24}  {'vis lift up/dn p':>17}"]
+             f"{'Δ [95% CI]':>24}  {'vis lift up/dn p':>17}  {'w.lift≈len up/dn p':>24}"]
     for name, r in report["arms"].items():
-        w, v = r["vs_baseline"]["word"], r["vs_baseline"]["viseme"]
+        w, v, m = (r["vs_baseline"][k] for k in ("word", "viseme", "word_matched"))
         lines.append(f"{name:19} {r['word']:6.3f} {r['viseme']:6.3f} {r['word_lift']:+7.3f} {r['viseme_lift']:+7.3f} "
                      f"{r['mean_words']:5.1f}  {w['up']:4d}/{w['down']:<4d} {w['p']:8.4f} "
                      f"{w['delta']:+.3f} [{w['ci95'][0]:+.3f},{w['ci95'][1]:+.3f}]  "
-                     f"{v['up']:4d}/{v['down']:<4d} {v['p']:7.4f}")
+                     f"{v['up']:4d}/{v['down']:<4d} {v['p']:7.4f}  "
+                     f"{r['word_lift_matched']:+.3f} {m['up']:4d}/{m['down']:<4d} {m['p']:7.4f}")
     return "\n".join(lines)
 
 
