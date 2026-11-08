@@ -38,6 +38,9 @@ COSTS = Path(__file__).parent / "data" / "viseme_costs.json"
 DEFAULT_USER = "local"  # who preheat clips belong to when the page sends no ?user=
 PREHEAT_K = 5
 RUNTIME_K = 3  # lip mode answers while the user waits; K=5 is for dictation and practice
+# Lip mode's readers: "gemini_list" = Gemini's list score + the post-processing only; "all" = every reader. On the
+# presenter's 22 labeled silent takes (9 lines) both gave top-1 9/22, top-3 15/22 vs 14/22, in ~11 s vs ~18 s.
+LIP_READERS = "gemini_list"
 LABEL_SOURCES = ("undo", "confirm", "edit")  # how the user gave a lip-mode clip its label
 NONE_TEXT = "∅ none of these"
 V1 = "v1"  # record format marker; older records (fixed-vocabulary scores) are kept but not replayed
@@ -211,7 +214,8 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
               transcript: str | None = None, faces: list | None = None, mouths: list | None = None,
               tracker_flags=(), fps: float | None = None, prompted: int | None = None, extra: dict | None = None,
               sample_open=None, score_closed=None, gemini=None, gemini_open=None, gemini_open_k: int = GEMINI_OPEN_K,
-              config: dict | None = None, crop_width: int | None = None, crop_fn=None) -> tuple[dict, bytes]:
+              config: dict | None = None, crop_width: int | None = None, crop_fn=None,
+              readers: str = "all") -> tuple[dict, bytes]:
     """Crop one recording and run every call on it in parallel; returns (record, crop bytes), not stored yet.
 
     Crop boxes: browser-tracker `mouths` [[t_ms, x, y, w, h]] or SAM `faces` [[x, y, w, h]] (see crop.crop). The
@@ -235,13 +239,18 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
         frames = crop.count_frames(clip)
         with ThreadPoolExecutor(5) as pool:
             heard = pool.submit(transcribe, recording) if transcript is None and transcribe else None
-            samples = pool.submit(sample_open, clip, k)
-            closed = pool.submit(score_closed, clip, phrases)
             gemini_item = pool.submit(_gemini_call, gemini, clip, phrases)
-            gemini_samples = pool.submit(_gemini_open_call, gemini_open, clip, gemini_open_k)
+            if readers == "gemini_list":  # the fast lip path: no open readings, no Muse list score
+                samples, gemini_samples = [], []
+                closed = {"call": "closed", "sample": 0, "output": None, "latency_ms": 0,
+                          "error": "skipped: readers=gemini_list"}
+            else:
+                samples = pool.submit(sample_open, clip, k)
+                closed = pool.submit(score_closed, clip, phrases)
+                gemini_samples = pool.submit(_gemini_open_call, gemini_open, clip, gemini_open_k)
+                samples, closed, gemini_samples = samples.result(), closed.result(), gemini_samples.result()
             stt = heard.result() if heard else transcript
-            samples, closed, gemini_item = samples.result(), closed.result(), gemini_item.result()
-            gemini_samples = gemini_samples.result()
+            gemini_item = gemini_item.result()
         video = clip.read_bytes()
     record = {
         "record": V1, "id": str(time.time_ns()), "t": started, "user_id": user_id, "mode": mode, "fps": fps,
@@ -609,7 +618,8 @@ def vtt_clip(recording: bytes, phrases: list[str], store=None, *, user_id: str =
     labeled clips only. `vtt` and `alternatives` are the most probable real candidates: ∅ is never offered, and a ∅
     top pick makes the action "none"."""
     start = time.perf_counter()
-    record = record_clip(recording, phrases=phrases, user_id=user_id, mode="lip", k=RUNTIME_K, mouths=mouths,
+    record = record_clip(recording, phrases=phrases, user_id=user_id, mode="lip", k=RUNTIME_K, readers=LIP_READERS,
+                         mouths=mouths,
                          tracker_flags=tracker_flags, store=store, sample_open=sample_open,
                          score_closed=score_closed, gemini=gemini, gemini_open=gemini_open)
     replay = _replayed(load(store, user_id), user_id, record["vocab"])
