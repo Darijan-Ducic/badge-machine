@@ -192,20 +192,37 @@ def _gemini_call(gemini, clip: Path, phrases: list[str]) -> dict:
     return {**item, "usage": usage} if usage else item
 
 
+GEMINI_OPEN_K = 2  # Gemini open samples per read (muse_sampler.sample_gemini_open); 0 turns them off
+
+
+def _gemini_open_call(gemini_open, clip: Path, k: int) -> list[dict]:
+    """Gemini open samples; a reader that raises becomes one error item instead of sinking the clip."""
+    if k <= 0:
+        return []
+    start = time.perf_counter()
+    try:
+        return gemini_open(clip, k)
+    except Exception as e:
+        return [{"call": "gemini_open", "sample_idx": 0, "latency_ms": round((time.perf_counter() - start) * 1000),
+                 "output": None, "error": f"{type(e).__name__}: {e}"}]
+
+
 def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, k: int, transcribe=None,
               transcript: str | None = None, faces: list | None = None, mouths: list | None = None,
               tracker_flags=(), fps: float | None = None, prompted: int | None = None, extra: dict | None = None,
-              sample_open=None, score_closed=None, gemini=None, config: dict | None = None,
-              crop_width: int | None = None, crop_fn=None) -> tuple[dict, bytes]:
+              sample_open=None, score_closed=None, gemini=None, gemini_open=None, gemini_open_k: int = GEMINI_OPEN_K,
+              config: dict | None = None, crop_width: int | None = None, crop_fn=None) -> tuple[dict, bytes]:
     """Crop one recording and run every call on it in parallel; returns (record, crop bytes), not stored yet.
 
     Crop boxes: browser-tracker `mouths` [[t_ms, x, y, w, h]] or SAM `faces` [[x, y, w, h]] (see crop.crop). The
     label is `transcript` when given, else STT of the original recording (with audio) when `transcribe` is given,
-    else none. Readers default to the real calls, looked up at call time. Experiment overrides: `crop_width` sets the
+    else none. Readers default to the real calls, looked up at call time. `samples` holds Muse's K open samples,
+    `gemini_open` Gemini's `gemini_open_k` (same prompt and schema). Experiment overrides: `crop_width` sets the
     crop's output width (crop.WIDTH); `crop_fn` (crop.crop's signature, without width) replaces crop.crop."""
     sample_open = sample_open or muse_sampler.sample_open
     score_closed = score_closed or muse_sampler.score_closed
     gemini = gemini or scorers.gemini_scores
+    gemini_open = gemini_open or muse_sampler.sample_gemini_open
     started = time.time()
     with tempfile.TemporaryDirectory() as tmp:
         source, clip = Path(tmp, "recording"), Path(tmp, "clip.mp4")
@@ -216,13 +233,15 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
         else:
             crop_id = crop.crop(source, clip, faces=faces, mouths=mouths, width=crop_width or crop.WIDTH)
         frames = crop.count_frames(clip)
-        with ThreadPoolExecutor(4) as pool:
+        with ThreadPoolExecutor(5) as pool:
             heard = pool.submit(transcribe, recording) if transcript is None and transcribe else None
             samples = pool.submit(sample_open, clip, k)
             closed = pool.submit(score_closed, clip, phrases)
             gemini_item = pool.submit(_gemini_call, gemini, clip, phrases)
+            gemini_samples = pool.submit(_gemini_open_call, gemini_open, clip, gemini_open_k)
             stt = heard.result() if heard else transcript
             samples, closed, gemini_item = samples.result(), closed.result(), gemini_item.result()
+            gemini_samples = gemini_samples.result()
         video = clip.read_bytes()
     record = {
         "record": V1, "id": str(time.time_ns()), "t": started, "user_id": user_id, "mode": mode, "fps": fps,
@@ -231,7 +250,7 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
                    "viseme_costs": costs_hash(), **(config or {})},
         "tracker_flags": list(tracker_flags), "frames": frames, "crop_rect": crop_rect,
         "label": {"stt_text": stt, "user_edit": None},
-        "samples": samples, "closed": closed, "gemini": gemini_item, **(extra or {}),
+        "samples": samples, "closed": closed, "gemini": gemini_item, "gemini_open": gemini_samples, **(extra or {}),
     }
     return record, video
 
@@ -279,8 +298,8 @@ def _featurized(records: list[dict]) -> list:
     for r in records:
         text = _label_text(r)
         bank = {"phrases": r["phrases"], "counts": dict(counts)}
-        clips.append(featurize(r["samples"], r["closed"]["output"], r["gemini"]["output"], bank, text,
-                               viseme_distance=distance))
+        clips.append(featurize(r["samples"] + (r.get("gemini_open") or []), r["closed"]["output"],
+                               r["gemini"]["output"], bank, text, viseme_distance=distance))
         if text is not None:
             counts[text] += 1
     return clips
@@ -541,13 +560,13 @@ def _read_back(record: dict, store) -> tuple[list[dict], dict, dict | None]:
 
 def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=None, *, user_id: str = DEFAULT_USER,
                  k: int = PREHEAT_K, mouths: list | None = None, tracker_flags=(), sample_open=None,
-                 score_closed=None, gemini=None) -> dict:
+                 score_closed=None, gemini=None, gemini_open=None) -> dict:
     """Preheat: STT-label one recording, crop it with the browser tracker's boxes (`mouths`; full frame without),
     read it with every model, store it, and read it back like the runtime would (a model trained on this user's
     earlier clips only)."""
     record = record_clip(recording, phrases=phrases, user_id=user_id, mode="stt_on", k=k, transcribe=transcribe,
                          mouths=mouths, tracker_flags=tracker_flags, fps=fps, prompted=prompted, store=store,
-                         sample_open=sample_open, score_closed=score_closed, gemini=gemini)
+                         sample_open=sample_open, score_closed=score_closed, gemini=gemini, gemini_open=gemini_open)
     records, read, correct = _read_back(record, store)
     heard = record["label"]["stt_text"]
     label = match(heard, phrases) if heard is not None else None
@@ -564,13 +583,14 @@ def process_clip(recording: bytes, fps, prompted, transcribe, phrases, store=Non
 
 def process_turn(segment: Path, *, transcript: str | None, boxes: list | None, user_id: str, session_id: str,
                  turn: int, mode: str, phrases: list[str], store=None, sample_open=None, score_closed=None,
-                 gemini=None) -> dict:
+                 gemini=None, gemini_open=None) -> dict:
     """Dictation: one session turn (sessions.start_session's `process_turn`) as a clip labeled by the turn's own STT,
     cropped with the turn's boxes and read back like process_clip; returns the fields sessions.TURN_RESULT keeps.
     A ∅ VTT pick is "∅" (candidates.NONE), which static/vtt.js shows as none of these."""
     record = record_clip(Path(segment).read_bytes(), phrases=phrases, user_id=user_id, mode=mode, k=PREHEAT_K,
                          transcript=transcript, mouths=boxes, extra={"session_id": session_id, "turn": turn},
-                         store=store, sample_open=sample_open, score_closed=score_closed, gemini=gemini)
+                         store=store, sample_open=sample_open, score_closed=score_closed, gemini=gemini,
+                         gemini_open=gemini_open)
     _, read, correct = _read_back(record, store)
     vtt, gemini_read, muse = read["fused"], read["gemini"], read["muse"]
     return {
@@ -587,7 +607,8 @@ def process_turn(segment: Path, *, transcript: str | None, boxes: list | None, u
 
 
 def vtt_clip(recording: bytes, phrases: list[str], store=None, *, user_id: str = DEFAULT_USER,
-             mouths: list | None = None, tracker_flags=(), sample_open=None, score_closed=None, gemini=None) -> dict:
+             mouths: list | None = None, tracker_flags=(), sample_open=None, score_closed=None, gemini=None,
+             gemini_open=None) -> dict:
     """Lip mode: crop one muted recording with the browser tracker's boxes, read it with every model (K=3), store it
     unlabeled (the user labels it later, `label_clip`) and score it with a model trained on this user's earlier
     labeled clips only. `vtt` and `alternatives` are the most probable real candidates: ∅ is never offered, and a ∅
@@ -595,7 +616,7 @@ def vtt_clip(recording: bytes, phrases: list[str], store=None, *, user_id: str =
     start = time.perf_counter()
     record = record_clip(recording, phrases=phrases, user_id=user_id, mode="lip", k=RUNTIME_K, mouths=mouths,
                          tracker_flags=tracker_flags, store=store, sample_open=sample_open,
-                         score_closed=score_closed, gemini=gemini)
+                         score_closed=score_closed, gemini=gemini, gemini_open=gemini_open)
     replay = _replayed(load(store, user_id), user_id, record["vocab"])
     i = [r["id"] for r in replay].index(record["id"])
     clips = _featurized(replay[:i + 1])  # clips stored after this one can't reach its bank or model

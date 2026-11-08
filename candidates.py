@@ -2,7 +2,8 @@
 
 Implements "Post-processor spec (exact)" in docs/uncertainty-design.md. Inputs per clip:
   samples  muse_sampler open-call records `{"call", "sample_idx", "latency_ms", "output", "error"}`; `output` is a
-           schema-v1 dict, or None for a failed call (skipped)
+           schema-v1 dict, or None for a failed call (skipped); Gemini's open samples ("call": "gemini_open") count
+           like Muse's everywhere except `muse_pick`
   closed   the closed call's output `{"scores": {phrase: s}, "none": s}`, or None if it failed
   gemini   `{phrase: p}` over the phrase list, or None / {} if unavailable
   bank     `{"phrases": [phrase-list entries], "counts": {past STT text: count}}`
@@ -195,7 +196,8 @@ def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, ban
     if stt is not None:
         hit = match(stt, texts[:-1])
         label = hit if hit is not None else len(texts) - 1
-    named = [t for t in tops if t is not None]
+    muse = [s["output"] for s in samples if s.get("output") is not None and s.get("call") != "gemini_open"]
+    named = [t for t in map(_top_hypothesis, muse) if t is not None]  # VTT · Muse counts Muse's samples only
     votes = Counter(map(_normalize, named))
     muse_pick = max(named, key=lambda t: votes[_normalize(t)]) if named else None  # ties: first seen
     gemini_pick = _top(gemini, 1)[0] if gemini else None
