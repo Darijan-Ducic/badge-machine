@@ -72,6 +72,13 @@ def test_reading_the_own_turn_right_lifts_above_reading_another_turn():
     assert min(right) > 0 > max(shifted)
 
 
+def test_length_matched_lift_gives_a_filler_of_the_right_length_no_credit():
+    stts = ["a b", "c d", "e f g h i j", "k l m n o p"]
+    filler = [" ".join(f"q{c}" for c in "uvwxyz"[:len(s.split())]) for s in stts]  # distinct: no doubling collapse
+    assert max(personal.lift(filler, stts, "word")) > 1  # plain lift pays for matching the turn's length
+    assert personal.lift(filler, stts, "word", nearest=1) == [0.0, 0.0, 0.0, 0.0]
+
+
 # ---------------------------------------------------------------- personal language prior
 
 
