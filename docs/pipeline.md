@@ -18,7 +18,8 @@ flowchart TD
   GEM["Gemini 4 Argon @ 24 fps, its max<br/>enum + logprobs → P(phrase)"]
   MUSEK["Muse Spark ×K open samples, temp 1.0<br/>schema v1: quality → visemes → word slots → hypotheses<br/>frame-numbered grids @ 24 fps · K=3 runtime, 5 preheat"]
   MUSEC["Muse Spark closed call<br/>score phrase bank + 'none of these'"]
-  POOL["Candidate pool<br/>hypotheses, slot recombinations, closed + Gemini top,<br/>viseme neighbours from the bank, ∅"]
+  POOL["Candidate pool<br/>hypotheses, slot recombinations, closed + Gemini top,<br/>viseme neighbours from the bank, ∅<br/>closed, Gemini and bank slots reserved"]
+  SENT["Sentence path → VTT, dictation turns<br/>reading longer than every phrase:<br/>ROVER word vote over the K top hypotheses"]
   FEAT["Features per candidate<br/>votes across K, self-scores, slot support, viseme distance,<br/>closed, Gemini, user prior, quality → ∅"]
   FUSE["Trainable scorer → VTT<br/>staged conditional logit → P(candidate)"]
   GATE{"P(top) ≥ learned threshold?"}
@@ -31,13 +32,14 @@ flowchart TD
   QG -- bad clip --> REPEAT
   QG -- ok --> GEM & MUSEK & MUSEC
   GEM & MUSEK & MUSEC --> POOL --> FEAT --> FUSE --> GATE
+  MUSEK -- sentence turn --> SENT
   GATE -- high --> SEND
   GATE -- low --> CONFIRM
 
   classDef built fill:#d1fae5,stroke:#059669,color:#064e3b
   classDef building fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef planned fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray:4 3
-  class CAM,GEM,GATE,SAM,TRK,TRIG,QG,REPEAT,CROP,MUSEK,MUSEC,POOL,FEAT,FUSE,SEND,CONFIRM built
+  class CAM,GEM,GATE,SAM,TRK,TRIG,QG,REPEAT,CROP,MUSEK,MUSEC,POOL,FEAT,FUSE,SEND,CONFIRM,SENT built
 ```
 
 ## Learning: how it gets better
