@@ -22,6 +22,13 @@
     .key::before { content: ""; width: 12px; height: 3px; border-radius: 2px; background: var(--c); }
     #mouth { display: block; width: 100%; margin-top: 14px; border-radius: var(--r-inner); background: var(--well); }
     .dock .ring { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--coach); }
+    .seg { display: inline-flex; gap: 4px; padding: 3px; border-radius: 999px; background: var(--well); }
+    .seg a { padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--ink-2); text-decoration: none; }
+    .seg a[aria-current="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+    table.cmp { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 13px; }
+    table.cmp th { text-align: left; font-weight: 500; color: var(--ink-3); padding: 4px 6px; }
+    table.cmp td { padding: 6px; border-top: 1px solid var(--hair); }
+    table.cmp td:first-child { font-weight: 600; }
   </style>
 </head>
 <body>
@@ -35,11 +42,19 @@
         <p class="note" id="status">Requesting camera…</p>
       </section>
       <article class="card">
-        <p class="eyebrow"><b>Live</b>
+        <p class="eyebrow"><b>Tracker</b>
+          <span class="seg" id="modes"><a href="?tracker=v1">v1 face</a><a href="?tracker=v2">v2 lips</a><a href="?tracker=both">compare</a></span></p>
+        <p class="eyebrow" style="margin-top: 10px">
           <span class="key" style="--c: var(--coach)">face</span>
-          <span class="key" style="--c: var(--near)">anchor</span>
-          <span class="key" style="--c: var(--onplan)">mouth crop</span>
+          <span class="key" style="--c: var(--ink-4)">anchor</span>
+          <span class="key" style="--c: var(--near)">v1 crop</span>
+          <span class="key" style="--c: var(--onplan)">v2 crop</span>
           <span class="key" style="--c: var(--over)">flagged</span></p>
+        <table class="cmp" id="cmp" hidden>
+          <thead><tr><th></th><th>conf</th><th>SAM calls</th><th>flagged</th><th>step</th><th>last SAM</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="eyebrow" id="apart" hidden style="margin-top: 8px"></p>
         <div class="stats">
           <div class="stat"><p class="eyebrow">Confidence</p><div class="v" id="conf">–</div><div class="meter" id="conf-meter"><i id="conf-bar"></i></div></div>
           <div class="stat"><p class="eyebrow">SAM calls</p><div class="v" id="sam">0</div><p class="sub" id="sam-why">–</p></div>
@@ -50,14 +65,14 @@
         </div>
       </article>
       <article class="card">
-        <p class="eyebrow"><b>Mouth crop</b> smoothed, unmirrored, as the lip-reading models get it</p>
+        <p class="eyebrow"><b>Mouth crop</b> <span id="crop-of">smoothed, unmirrored, as the lip-reading models get it</span></p>
         <canvas id="mouth" width="480" height="240"></canvas>
       </article>
     </div>
   </main>
   <nav class="dock"><button class="go" id="reanchor" disabled><span class="ring"></span><span>Re-anchor now</span></button></nav>
   <script type="module">
-    import { createTracker, CONFIG } from "./tracker.js";
+    import { makeTracker, DEFAULT_TRACKER } from "./capture.js";
 
     const $ = (id) => document.getElementById(id);
     const video = $("preview"), overlay = $("overlay"), mouth = $("mouth"), statusEl = $("status");
@@ -65,23 +80,33 @@
     const work = document.createElement("canvas"); // the frame the tracker and SAM see (max 640 wide)
     const wctx = work.getContext("2d", { willReadFrequently: true });
     const octx = overlay.getContext("2d"), mctx = mouth.getContext("2d");
-    const state = { frames: 0, flagged: 0, samCalls: 0, last: null };
-    window.__track = state; // read by tests/track-page.e2e.mjs
-    let force = false, busy = false, lastTick = 0, fps = 0;
 
-    async function samFace() {
+    // ?tracker=v1 | v2 | both (compare: both run on every frame, each with its own SAM calls)
+    const asked = new URLSearchParams(location.search).get("tracker");
+    const mode = ["v1", "v2", "both"].includes(asked) ? asked : "both";
+    const versions = mode === "both" ? ["v1", "v2"] : [mode];
+    for (const a of $("modes").children) a.setAttribute("aria-current", String(a.getAttribute("href") === `?tracker=${mode}`));
+    const CROP = { v1: "--near", v2: "--onplan" };
+
+    async function askSam(prompt) {
       const blob = await new Promise((resolve) => work.toBlob(resolve, "image/jpeg", 0.85));
-      const res = await fetch("/sam?prompt=face", { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: blob });
+      const res = await fetch(`/sam?prompt=${encodeURIComponent(prompt)}`, { method: "POST", headers: { "Content-Type": "image/jpeg" }, body: blob });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       return (data.objects || []).map((o) => o.box);
     }
-    const tracker = createTracker({ samFace });
+    const runs = versions.map((version) => ({ version, tracker: makeTracker(version, (_f, prompt) => askSam(prompt)),
+      frames: 0, flagged: 0, samCalls: 0, ms: 0, last: null, why: "–" }));
+    const primary = runs.find((r) => r.version === (mode === "both" ? DEFAULT_TRACKER : mode)) ?? runs[0];
+    // read by tests/track-page.e2e.mjs: the primary tracker's counters, plus every tracker's
+    const state = { mode, version: primary.version, frames: 0, flagged: 0, samCalls: 0, last: null, runs: {} };
+    window.__track = state;
+    let force = false, busy = false, lastTick = 0, fps = 0;
 
     function grayFrame() {
       const { width: w, height: h } = work, rgba = wctx.getImageData(0, 0, w, h).data, data = new Uint8ClampedArray(w * h);
       for (let k = 0, p = 0; k < data.length; k++, p += 4) data[k] = (rgba[p] * 77 + rgba[p + 1] * 150 + rgba[p + 2] * 29) >> 8;
-      return { data, width: w, height: h, t: performance.now() / 1000 };
+      return { data, rgba, width: w, height: h, t: performance.now() / 1000 };
     }
 
     function stroke(box, c, width, dash = []) {
@@ -89,47 +114,67 @@
       octx.strokeStyle = c; octx.lineWidth = width; octx.setLineDash(dash);
       octx.strokeRect(box[0], box[1], box[2], box[3]);
     }
+    const mid = (b) => [b[0] + b[2] / 2, b[1] + b[3] / 2];
 
-    function render(r, ms) {
-      const lw = Math.max(2, work.width / 280);
+    function render() {
+      const lw = Math.max(2, work.width / 280), r = primary.last;
       octx.clearRect(0, 0, overlay.width, overlay.height);
       stroke(r.face, color("--coach"), lw, [3 * lw, 2 * lw]);
-      stroke(r.anchor, color("--near"), lw);
-      stroke(r.crop, color(r.flags.length ? "--over" : "--onplan"), 1.5 * lw);
+      stroke(r.anchor, color("--ink-4"), lw);
+      for (const run of runs) if (run.last) stroke(run.last.crop, color(run.last.flags.length ? "--over" : CROP[run.version]), 1.5 * lw, run.version === "v1" && runs.length > 1 ? [2 * lw, lw] : []);
       if (r.crop) {
         const [x, y, w, h] = r.crop;
         mouth.height = Math.round(mouth.width * h / w);
         mctx.drawImage(work, x, y, w, h, 0, 0, mouth.width, mouth.height);
       }
+      $("crop-of").textContent = `${primary.version}, smoothed, unmirrored, as the lip-reading models get it`;
       $("conf").textContent = r.conf.toFixed(2);
       $("conf-bar").style.width = `${Math.max(0, r.conf) * 100}%`;
-      $("conf-meter").classList.toggle("low", r.conf < CONFIG.T_CONF);
-      $("sam").textContent = String(state.samCalls);
-      if (r.sam) $("sam-why").textContent = `last: ${r.sam.reasons.join(" + ")}${r.sam.error ? " (error)" : ""}`;
-      $("flagged").textContent = `${(100 * state.flagged / state.frames).toFixed(1)}%`;
+      $("conf-meter").classList.toggle("low", r.conf < primary.tracker.config.T_CONF);
+      $("sam").textContent = String(primary.samCalls);
+      $("sam-why").textContent = primary.why;
+      $("flagged").textContent = `${(100 * primary.flagged / primary.frames).toFixed(1)}%`;
       $("flag-now").textContent = r.flags.length ? `now: ${r.flags.join(", ")}` : "now: clear";
       $("motion").textContent = `${(100 * r.motion).toFixed(1)}%`;
-      $("outside").textContent = `outside face ${(100 * r.outside).toFixed(1)}%`;
-      if (!r.sam) $("step").textContent = `${ms.toFixed(1)} ms`;
+      $("outside").textContent = r.lipMass != null ? `lip colour ${(100 * r.lipMass).toFixed(0)}% of keyframe` : `outside face ${(100 * r.outside).toFixed(1)}%`;
+      $("step").textContent = `${primary.ms.toFixed(1)} ms`;
       $("fps").textContent = `${fps.toFixed(0)} fps`;
-      $("frames").textContent = String(state.frames);
+      $("frames").textContent = String(primary.frames);
       statusEl.textContent = r.sam?.error ? `SAM failed: ${r.sam.error}`
         : !r.anchor ? "Looking for a face…"
         : r.flags.length ? `Tracking, frame flagged: ${r.flags.join(", ")}`
         : r.sam ? `Re-anchored (${r.sam.reasons.join(" + ")})` : "Tracking";
+      if (runs.length > 1) {
+        $("cmp").hidden = false;
+        $("cmp").tBodies[0].innerHTML = runs.map((x) => `<tr><td style="color: var(${CROP[x.version]})">${x.version}</td><td>${x.last ? x.last.conf.toFixed(2) : "–"}</td>`
+          + `<td>${x.samCalls}</td><td>${x.frames ? (100 * x.flagged / x.frames).toFixed(1) : 0}%</td><td>${x.ms.toFixed(1)} ms</td><td>${x.why}</td></tr>`).join("");
+        const [a, b] = runs.map((x) => x.last?.crop);
+        if (a && b) {
+          const [ax, ay] = mid(a), [bx, by] = mid(b), mw = b[2] / primary.tracker.config.CROP_PAD;
+          $("apart").hidden = false;
+          $("apart").textContent = `crop centres ${Math.hypot(ax - bx, ay - by).toFixed(0)} px apart (${(Math.hypot(ax - bx, ay - by) / mw).toFixed(2)} mouth widths)`;
+        }
+      }
     }
 
     async function process() {
       wctx.drawImage(video, 0, 0, work.width, work.height);
-      const frame = grayFrame(), t0 = performance.now();
-      const r = await tracker.step(frame, { force });
-      const ms = performance.now() - t0;
+      const frame = grayFrame(), forced = force;
       force = false;
-      state.frames++;
-      if (r.flags.length) state.flagged++;
-      state.samCalls = tracker.samCalls;
-      state.last = r;
-      render(r, ms);
+      for (const run of runs) {
+        const t0 = performance.now(), before = run.tracker.samCalls;
+        const r = await run.tracker.step({ ...frame }, { force: forced });
+        const ms = performance.now() - t0;
+        if (!r.sam) run.ms = run.ms ? 0.9 * run.ms + 0.1 * ms : ms; // the classical step only, SAM waits excluded
+        else run.why = `last: ${r.sam.reasons.join(" + ")}${r.sam.prompts ? ` (${r.sam.prompts.join(", ")})` : ""}${r.sam.error ? " (error)" : ""}`;
+        run.frames++;
+        if (r.flags.length) run.flagged++;
+        run.samCalls = run.tracker.samCalls;
+        run.last = r;
+        state.runs[run.version] = { frames: run.frames, flagged: run.flagged, samCalls: run.samCalls, last: r, newSam: run.samCalls - before };
+      }
+      Object.assign(state, { frames: primary.frames, flagged: primary.flagged, samCalls: primary.samCalls, last: primary.last });
+      render();
     }
 
     function tick(now) {
