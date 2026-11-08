@@ -10,7 +10,10 @@ Implements "Post-processor spec (exact)" in docs/uncertainty-design.md. Inputs p
 
 Readings chosen where the spec leaves room (simplest one each time):
   - The pool cap of 24 includes ∅, so at most 23 real candidates, kept in source order: hypotheses, slot
-    recombinations, closed top 3, Gemini top 3, bank nearest 3. Empty texts (after normalizing) are not candidates.
+    recombinations, closed top 3, Gemini top 3, bank nearest 3. The phrase-list ones (closed, Gemini, bank) are
+    reserved: they always get a slot, and open candidates fill only the slots left. Empty texts are not candidates.
+  - `sentence` / `sentence_p`: the sentence path (sentence.read) when the samples read a sentence longer than every
+    phrase, else None / 0.
   - "Matches" is exact normalized text equality (no fuzzy fallback; see `match`) for votes, the closed/Gemini
     lookups, phrase-list membership, the user count and the label. For `mean_score` the matched hypothesis's `s` is
     used (the first exact match when a sample repeats a phrase). `slot_support` compares single words exactly.
@@ -115,12 +118,15 @@ def featurize(samples: list[dict], closed: dict | None, gemini: dict | None, ban
         return min((viseme_distance(codes, seen) for seen in observed), default=np.inf)  # stable sort keeps ties
 
     pool: dict[str, str] = {}  # normalized -> first-seen text
-    sources = ([h for hs in hypotheses for h in hs] + [r for o in outputs for r in _recombinations(o)]
-               + _top(closed_scores, 3) + _top(gemini, 3) + sorted(entries.values(), key=nearness)[:3])
-    for text in sources:
+    opened = [h for hs in hypotheses for h in hs] + [r for o in outputs for r in _recombinations(o)]
+    listed = _top(closed_scores, 3) + _top(gemini, 3) + sorted(entries.values(), key=nearness)[:3]
+    reserved = {_normalize(text) for text in listed} - {""}  # phrase-list candidates always get a slot
+    room = POOL_CAP - 1 - len(reserved)  # slots left for open candidates that are not reserved
+    for text in opened + listed:
         key = _normalize(text)
-        if key and key not in pool and len(pool) < POOL_CAP - 1:
+        if key and key not in pool and (key in reserved or room > 0):
             pool[key] = text.strip()
+            room -= key not in reserved
 
     k = len(outputs)
     tops = [_top_hypothesis(o) for o in outputs]

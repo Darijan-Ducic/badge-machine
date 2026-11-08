@@ -235,3 +235,13 @@ def test_phrase_list_candidates_keep_their_pool_slots_when_open_hypotheses_overf
     assert {"go on", "go up", "stop", "no"} <= set(result.pool)
     assert result.pool[result.label] == "stop"
     assert result.pool[0] == "phrase number 0"
+
+
+def test_an_open_hypothesis_that_is_also_reserved_does_not_use_up_an_open_slot():
+    many = record(0, {**S0["output"], "hypotheses": hyps(("go on", 0.5),
+                                                          *[(f"phrase number {i}", 0.01) for i in range(40)])})
+
+    result = clip([many])
+
+    assert len(result.pool) == 24
+    assert result.pool[0] == "go on"

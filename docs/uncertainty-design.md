@@ -106,7 +106,13 @@ then **exact** equality. No fuzzy fallback: at ratio ≥ 0.85 it merged opposite
 
 **Pool** (deduped by normalized text, capped at 24, ∅ always last): every hypothesis from every sample; per sample
 the top 3 slot recombinations (top 2 alts per slot, ranked by product of scores); top 3 closed-call phrases; top 3
-Gemini phrases; the 3 bank entries nearest in viseme distance to the observed visemes (min over samples).
+Gemini phrases; the 3 bank entries nearest in viseme distance to the observed visemes (min over samples). The
+closed, Gemini and bank entries are reserved: they always get a slot, and open candidates fill the rest.
+
+**Sentence path** (`sentence.read`): when the median word count of the samples' top hypotheses exceeds the longest
+phrase, the clip is a sentence turn. Its VTT is the ROVER of the top hypotheses (highest `s` first; per aligned
+column the word or gap with the most votes), not the scorer's pick, and a sentence turn whose STT misses the pool
+does not train the scorer. The temperature stage's scale is bounded below by 0.01, so it never reverses the ranking.
 
 **Features** (order fixed; name list exported as `candidates.FEATURES`):
 
