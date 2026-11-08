@@ -5,7 +5,7 @@ import SwiftUI
 /// working while their cursor sits in another app's text field. It never takes focus, so the paste lands in that field.
 @MainActor
 final class ProcessingHUD {
-    enum State: Equatable { case recording, reading, done(String), failed(String) }
+    enum State: Equatable { case recording, reading, done(String), copied(String), failed(String) }
 
     private var panel: NSPanel?
     private var hideTask: Task<Void, Never>?
@@ -20,7 +20,7 @@ final class ProcessingHUD {
         Self.place(panel)
         panel.orderFrontRegardless()
         switch state {
-        case .done, .failed:
+        case .done, .copied, .failed:
             hideTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(2.5))
                 guard !Task.isCancelled else { return }
@@ -78,6 +78,9 @@ private struct HUDView: View {
             case .done(let text):
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Text(text).lineLimit(1)
+            case .copied(let text):
+                Image(systemName: "doc.on.clipboard.fill").foregroundStyle(.blue)
+                Text("Copied to clipboard: \(text)").lineLimit(1)
             case .failed(let message):
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(message).lineLimit(2)

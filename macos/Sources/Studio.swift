@@ -316,16 +316,17 @@ final class Studio: ObservableObject {
     }
 
     private func finish(_ result: Result<URL, Error>) async {
-        var insertedText: String?
+        var insertedText: String?, copiedText: String?
         defer {
             phase = .ready
             target = nil
-            if let insertedText { hud.show(.done(insertedText)) } else { hud.show(.failed(status)) }
+            if let insertedText { hud.show(.done(insertedText)) }
+            else if let copiedText { hud.show(.copied(copiedText)) }
+            else { hud.show(.failed(status)) }
         }
         do {
             let file = try result.get()
             defer { try? FileManager.default.removeItem(at: file) }
-            guard let target else { status = "Place the cursor in a text field before stopping."; return }
             let boxes = try await LipBoxes.scan(file)
             guard !boxes.isEmpty else {
                 status = "No lips found in the recording. Face the camera and try again."
@@ -337,10 +338,15 @@ final class Studio: ObservableObject {
                 status = "The lip reader returned no line. Try again."
                 return
             }
-            switch target.insert(text) {
+            switch target?.insert(text) ?? .targetUnavailable {
             case .inserted: status = "Text inserted."; insertedText = text
             case .pasteRequested: status = "Paste requested."; insertedText = text
-            case .targetUnavailable: status = "Could not insert text in the original field."
+            case .targetUnavailable:  // no text field to paste into: the line goes on the clipboard instead
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                status = "Copied to clipboard."
+                copiedText = text
+                Notifier.post(title: "Copied to clipboard", body: text)
             }
         } catch {
             status = error.localizedDescription
