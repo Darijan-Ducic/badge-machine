@@ -149,3 +149,15 @@ def test_frame_count_matches_the_frame_numbers_the_sampler_stamps(tmp_path):
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", clip], check=True)
 
     assert crop.count_frames(clip) == labeled_grids(clip).n_frames == 24
+
+
+def test_crop_width_sets_the_output_width_and_keeps_the_box(mouth_video, tmp_path):
+    out = tmp_path / "wide.mp4"
+
+    crop.crop(mouth_video, out, mouths=TRACKER, width=384)
+
+    assert probe(out)[0]["width"] == 384
+    frame = first_frame(out)
+    left, right = frame[frame.shape[0] // 2, 96], frame[frame.shape[0] // 2, 288]
+    assert left[0] > 200 and left[2] < 60, f"left of the crop should be red, got {left}"
+    assert right[2] > 200 and right[0] < 60, f"right of the crop should be blue, got {right}"

@@ -80,14 +80,14 @@ def rectangle(source: Path, faces: list[list[float]] | None = None,
 
 
 def crop(source: Path, target: Path, faces: list[list[float]] | None = None,
-         mouths: list[list[float]] | None = None) -> str:
+         mouths: list[list[float]] | None = None, width: int = WIDTH) -> str:
     """Write the muted crop of `source` to `target` (mp4), cut at rectangle(); returns the crop id recorded with the
     clip."""
     (x, y, w, h), crop_id = rectangle(source, faces, mouths)
     if crop_id == FULL_FRAME:
         video_filter = "scale=trunc(iw/2)*2:trunc(ih/2)*2"  # H.264 4:2:0 needs even sides
     else:
-        video_filter = f"crop={w}:{h}:{x}:{y},scale={WIDTH}:-2,setsar=1"
+        video_filter = f"crop={w}:{h}:{x}:{y},scale={width}:-2,setsar=1"
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", source, "-map", "0:v:0", "-an",
                     "-vf", video_filter, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-fps_mode", "passthrough",
                     "-movflags", "+faststart", target], check=True)

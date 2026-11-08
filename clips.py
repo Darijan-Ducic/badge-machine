@@ -193,12 +193,14 @@ def _gemini_call(gemini, clip: Path, phrases: list[str]) -> dict:
 def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, k: int, transcribe=None,
               transcript: str | None = None, faces: list | None = None, mouths: list | None = None,
               tracker_flags=(), fps: float | None = None, prompted: int | None = None, extra: dict | None = None,
-              sample_open=None, score_closed=None, gemini=None, config: dict | None = None) -> tuple[dict, bytes]:
+              sample_open=None, score_closed=None, gemini=None, config: dict | None = None,
+              crop_width: int | None = None) -> tuple[dict, bytes]:
     """Crop one recording and run every call on it in parallel; returns (record, crop bytes), not stored yet.
 
     Crop boxes: browser-tracker `mouths` [[t_ms, x, y, w, h]] or SAM `faces` [[x, y, w, h]] (see crop.crop). The
     label is `transcript` when given, else STT of the original recording (with audio) when `transcribe` is given,
-    else none. Readers default to the real calls, looked up at call time."""
+    else none. Readers default to the real calls, looked up at call time. `crop_width` overrides the crop's output
+    width (crop.WIDTH) for experiments."""
     sample_open = sample_open or muse_sampler.sample_open
     score_closed = score_closed or muse_sampler.score_closed
     gemini = gemini or scorers.gemini_scores
@@ -207,7 +209,7 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
         source, clip = Path(tmp, "recording"), Path(tmp, "clip.mp4")
         source.write_bytes(recording)
         crop_rect, _ = crop.rectangle(source, faces=faces, mouths=mouths)
-        crop_id = crop.crop(source, clip, faces=faces, mouths=mouths)
+        crop_id = crop.crop(source, clip, faces=faces, mouths=mouths, width=crop_width or crop.WIDTH)
         frames = crop.count_frames(clip)
         with ThreadPoolExecutor(4) as pool:
             heard = pool.submit(transcribe, recording) if transcript is None and transcribe else None
