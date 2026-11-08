@@ -1,0 +1,4 @@
+/build/
+/.env.local
+WORKPLAN-*.md
+.DS_Store
