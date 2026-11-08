@@ -19,7 +19,7 @@ final class Studio: ObservableObject {
         var description: String {
             switch self {
             case .whisper: "Move your lips silently and type at the text cursor."
-            case .cursor: "Point with two fingers of your right hand together. Bring your thumb near the fingertips to click. Spread the two fingers and move up or down to scroll."
+            case .cursor: "Point with your right index and middle fingers together. Spread and rejoin them twice to click. Move your hand up or down with the fingers spread to scroll."
             }
         }
     }
@@ -156,7 +156,7 @@ final class Studio: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.handRun == run else { return }
                 self.phase = running ? .handCursor : .ready
-                self.status = running ? "Move Cursor is on. Point with two fingers together or spread them to scroll." : "Could not start the camera."
+                self.status = running ? "Move Cursor is on. Spread and rejoin twice to click, or spread and move vertically to scroll." : "Could not start the camera."
                 if !running { self.handRun = nil }
             }
         }, onFailure: { [weak self] in

@@ -176,6 +176,16 @@ struct HandPointer {
     private static let movementSensitivity: CGFloat = 1.5
     private static let scrollPixelsPerFrameHeight: CGFloat = 7200
     private static let scrollNoiseRadius: CGFloat = 0.0015
+    private static let spreadClickMotionTolerance: CGFloat = 0.006
+    private static let spreadClickDriftTolerance: CGFloat = 0.003
+    private static let spreadClickPulse: ClosedRange<TimeInterval> = 0.04...0.28
+    private static let spreadClickWindow: TimeInterval = 0.72
+
+    private enum SpreadClick {
+        case ready
+        case open(origin: CGPoint, startedAt: TimeInterval, openedAt: TimeInterval, second: Bool, height: CGFloat)
+        case joinedOnce(origin: CGPoint, startedAt: TimeInterval, joinedAt: TimeInterval)
+    }
 
     enum Event {
         case move(CGPoint)
@@ -212,6 +222,7 @@ struct HandPointer {
     private var lastPointingAt: TimeInterval?
     private var thumbNearSince: TimeInterval?
     private var scrollHeight: CGFloat?
+    private var spreadClick: SpreadClick?
 
     mutating func event(for gesture: HandGesture, at time: TimeInterval, in bounds: CGRect) -> Event? {
         let interval = lastSampleAt.map { time - $0 } ?? 0
@@ -229,13 +240,20 @@ struct HandPointer {
         case .pointing(let tip, let thumbDistance):
             lastPointingAt = time
             scrollHeight = nil
+            if let origin = closeSpread(at: time) {
+                posted = origin
+                filtered = origin
+                return .click(origin)
+            }
             let movement = position(for: tip, after: interval, in: bounds)
             if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
+                spreadClick = .ready
                 return .click(posted)
             }
             return movement.map(Event.move)
         case .pinching(let thumbDistance):
             scrollHeight = nil
+            spreadClick = nil
             guard lastPointingAt != nil else { return nil }
             if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
                 return .click(posted)
@@ -247,9 +265,26 @@ struct HandPointer {
             thumbNearSince = nil
             guard let previousHeight = scrollHeight else {
                 scrollHeight = height
+                openSpread(at: time, height: height)
                 return nil
             }
             let delta = height - previousHeight
+            if case .open(let origin, let startedAt, let openedAt, let second, let lastHeight) = spreadClick {
+                // Accept a clear stroke immediately, or a smaller one moving steadily in the same direction.
+                let step = height - lastHeight
+                let offset = lastHeight - previousHeight
+                let steadyMotion = abs(delta) >= Self.spreadClickDriftTolerance
+                    && abs(step) >= 0.001 && abs(offset) >= 0.001 && step * offset > 0
+                if abs(delta) < Self.spreadClickMotionTolerance,
+                   !steadyMotion,
+                   time - openedAt <= Self.spreadClickPulse.upperBound,
+                   time - startedAt <= Self.spreadClickWindow {
+                    spreadClick = .open(origin: origin, startedAt: startedAt, openedAt: openedAt,
+                                        second: second, height: height)
+                    return nil
+                }
+                spreadClick = nil
+            }
             let distance = max(0, abs(delta) - Self.scrollNoiseRadius)
             let pixels = Int32(distance * Self.scrollPixelsPerFrameHeight) * (delta < 0 ? -1 : 1)
             guard pixels != 0 else { return nil }
@@ -259,9 +294,38 @@ struct HandPointer {
         case .other:
             thumbNearSince = nil
             scrollHeight = nil
+            spreadClick = nil
             return nil
         case .lost:
             self = HandPointer()
+            return nil
+        }
+    }
+
+    private mutating func openSpread(at time: TimeInterval, height: CGFloat) {
+        switch spreadClick {
+        case .joinedOnce(let origin, let startedAt, let joinedAt)
+            where time - startedAt <= Self.spreadClickWindow
+                && time - joinedAt >= Self.spreadClickPulse.lowerBound:
+            spreadClick = .open(origin: origin, startedAt: startedAt, openedAt: time, second: true, height: height)
+        case .ready, .joinedOnce:
+            spreadClick = posted.map { .open(origin: $0, startedAt: time, openedAt: time, second: false, height: height) }
+        default:
+            spreadClick = nil
+        }
+    }
+
+    private mutating func closeSpread(at time: TimeInterval) -> CGPoint? {
+        switch spreadClick {
+        case .open(let origin, let startedAt, let openedAt, let second, _)
+            where Self.spreadClickPulse.contains(time - openedAt)
+                && time - startedAt <= Self.spreadClickWindow:
+            spreadClick = second ? .ready : .joinedOnce(origin: origin, startedAt: startedAt, joinedAt: time)
+            return second ? origin : nil
+        case .joinedOnce(_, let startedAt, _) where time - startedAt <= Self.spreadClickWindow:
+            return nil
+        default:
+            spreadClick = .ready
             return nil
         }
     }
