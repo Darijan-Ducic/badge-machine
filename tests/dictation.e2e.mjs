@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { audioMatch, boxesOnMouth, fakeCamera, launch, probeTake, readBody, sendJSON, serveStatic } from './e2e-kit.mjs';
+import { TRACKER, trackerFlags } from './e2e-kit.mjs';
+import { DEFAULT_TRACKER } from '../static/capture.js';
 
 const SAM_DELAY_MS = Number(process.env.SAM_DELAY_MS ?? 300), PROCESS_MS = 6500;
 const work = await mkdtemp(join(tmpdir(), 'dictation-e2e-'));
@@ -46,7 +48,7 @@ const server = createServer(async (req, res) => {
     const jpeg = await readBody(req);
     if (stub.sam === 'empty') return sendJSON(res, { objects: [] });
     await sleep(SAM_DELAY_MS);
-    return sendJSON(res, { objects: [{ id: 1, box: await cam.samBox(jpeg) }] });
+    return sendJSON(res, { objects: await cam.samObjects(jpeg, url.searchParams.get('prompt')) });
   }
   if (req.method === 'POST' && path === '/dictation') {
     const data = await readBody(req), id = `s-${stub.sessions.length}`, file = join(OUT, `${id}.webm`);
@@ -99,7 +101,8 @@ async function main() {
   const shownStt = await waitFor(`document.querySelector('#said .tip-text')?.textContent === ${JSON.stringify(STT)}`, 10000);
   const said = await evaluate(`(() => { const c = document.getElementById('said'); return { text: c.textContent, chip: c.querySelector('.chip')?.textContent }; })()`);
   const up = stub.uploads.at(-1);
-  const flags = JSON.parse(up?.flags ?? 'null'), boxes = JSON.parse(up?.boxes ?? 'null');
+  const { version, frames: flags } = trackerFlags(up?.flags), boxes = JSON.parse(up?.boxes ?? 'null');
+  check('trackerVersion', version === (TRACKER ?? DEFAULT_TRACKER), { version, expected: TRACKER ?? DEFAULT_TRACKER });
   const take = await probeTake(up.file), audioCorr = take.audio.length ? +(await audioMatch(up.file, cam.wav)).toFixed(3) : null;
   check('upload', shownStt && said.chip === 'learning' && stub.uploads.length === 1 && up.user === 'e2e'
     && take.video.length === 1 && take.video[0].width === 640 && take.video[0].height === 480
@@ -137,7 +140,7 @@ async function main() {
   const before = stub.uploads.length;
   await holdSpace(1500);
   await waitFor(`document.querySelector('#said .tip-text')?.textContent === ${JSON.stringify(STT)}`, 10000);
-  const noFace = stub.uploads.at(-1), nfFlags = JSON.parse(noFace.flags), nfBoxes = JSON.parse(noFace.boxes);
+  const noFace = stub.uploads.at(-1), nfFlags = trackerFlags(noFace.flags).frames, nfBoxes = JSON.parse(noFace.boxes);
   check('noGate', stub.uploads.length === before + 1 && nfFlags.length > 30 && nfFlags.every((f) => f.includes('no-face')) && nfBoxes.length === 0,
     { flags: nfFlags.length, sampleFlags: nfFlags.slice(0, 2), boxes: nfBoxes.length, quality: await evaluate('window.__dict.quality') });
   const noFaceErrors = errors.splice(0);

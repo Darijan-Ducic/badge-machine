@@ -8,6 +8,16 @@ import { extname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 export const SOURCE = process.env.SOURCE ?? '/tmp/badge-sam/talking.mp4';
+// TRACKER=v1|v2 runs every page with ?tracker=<v> (static/capture.js); unset = the pages' default tracker.
+export const TRACKER = process.env.TRACKER || null;
+export const withTracker = (path) => (TRACKER ? `${path}${path.includes('?') ? '&' : '?'}tracker=${TRACKER}` : path);
+// X-Tracker-Flags -> {version: 'v1'|'v2'|null, frames: per-frame flag lists} (capture.js puts "tracker:<v>" first).
+export function trackerFlags(header) {
+  const list = JSON.parse(header ?? 'null');
+  if (!Array.isArray(list)) return { version: null, frames: list };
+  const tag = typeof list[0] === 'string' && list[0].startsWith('tracker:') ? list[0].slice(8) : null;
+  return { version: tag, frames: tag ? list.slice(1) : list };
+}
 export const GT = process.env.GT ?? '/tmp/badge-sam/talking.gt.json';
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const STATIC = new URL('../static/', import.meta.url);
@@ -46,6 +56,11 @@ export async function fakeCamera(dir, { audio = false } = {}) {
     camera, wav, toCam, gtAt,
     // what SAM would say for this JPEG of the camera: the ground-truth face of its source frame
     samBox: async (jpeg) => toCam(gtAt(await frameOf(jpeg)).face).map(Math.round),
+    // the same for any prompt: 'face' -> the face, 'lips'/'mouth' -> the ground-truth lips (none where GT has none)
+    samObjects: async (jpeg, prompt) => {
+      const g = gtAt(await frameOf(jpeg)), box = prompt === 'lips' || prompt === 'mouth' ? g.mouth : g.face;
+      return box ? [{ id: 1, box: toCam(box).map(Math.round) }] : [];
+    },
     // per recorded frame of a webm, its camera frame index
     recordedFrames: async (file) => thumbs(await run('ffmpeg', ['-v', 'error', '-i', file, '-vf', `scale=${TW}:${TH}`, '-fps_mode', 'passthrough', '-f', 'rawvideo', '-pix_fmt', 'gray', '-']))
       .map((t) => nearest(t, camThumbs)),
@@ -176,7 +191,7 @@ export async function launch({ camera, wav, profile, base }) {
       for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) if (await evaluate(expression)) return true;
       return false;
     },
-    async go(path) { page = path; await cdp('Page.navigate', { url: `${base}/${path}` }); await sleep(300); },
+    async go(path) { page = withTracker(path); await cdp('Page.navigate', { url: `${base}/${page}` }); await sleep(300); },
     async shot(file) {
       const { cssContentSize: size } = await cdp('Page.getLayoutMetrics');
       const s = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale: 1 } });
