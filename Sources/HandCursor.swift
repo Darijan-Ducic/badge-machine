@@ -1,70 +1,196 @@
 import AVFoundation
 import CoreGraphics
+import os
 import Vision
 
 final class HandCursor: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "baijiu.hand-cursor")
-    private let frameQueue = DispatchQueue(label: "baijiu.hand-cursor.frames")
-    private let session = AVCaptureSession()
-    private let output = AVCaptureVideoDataOutput()
-    private var tracker: HandFrameTracker?
-    private var run: UUID?
-    private var sessionObservers: [NSObjectProtocol] = []
+    private static let logger = Logger(subsystem: "com.darijanducic.baijiumachine", category: "HandCapture")
+    private static let maximumRetries = 2
+    private let queue = DispatchQueue(label: "baijiu.hand-cursor", qos: .userInteractive)
+
+    private struct Run {
+        let id = UUID()
+        let onGesture: (HandGesture, TimeInterval) -> Void
+        let onFailure: () -> Void
+        var retries = 0
+    }
+
+    private struct Attempt {
+        let id: UUID
+        let session: AVCaptureSession
+        let output: AVCaptureVideoDataOutput
+        let tracker: HandFrameTracker
+        let observers: [NSObjectProtocol]
+        var startedAt: TimeInterval
+        var reportedFirstFrame = false
+        var lastUsablePoseAt: TimeInterval?
+        var reportedPoseGap = false
+    }
+
+    private var run: Run?
+    private var attempt: Attempt?
+    private var watchdog: DispatchSourceTimer?
 
     func start(onGesture: @escaping (HandGesture, TimeInterval) -> Void, onStart: @escaping (Bool) -> Void,
                onFailure: @escaping () -> Void) {
         queue.async { [self] in
-            guard self.configure() else { onStart(false); return }
-            let run = UUID()
-            self.run = run
-            let tracker = HandFrameTracker(onGesture: onGesture)
-            self.tracker = tracker
-            self.output.setSampleBufferDelegate(tracker, queue: self.frameQueue)
-            self.sessionObservers = [AVCaptureSession.runtimeErrorNotification,
-                                     AVCaptureSession.didStopRunningNotification].map { notification in
-                NotificationCenter.default.addObserver(forName: notification, object: self.session, queue: nil) { [weak self] _ in
-                    guard let self else { return }
-                    self.queue.async {
-                        guard self.run == run else { return }
-                        self.releaseCamera()
-                        onFailure()
-                    }
-                }
-            }
-            self.session.startRunning()
-            let running = self.session.isRunning
-            if !running { self.releaseCamera() }
+            guard run == nil else { onStart(false); return }
+            run = Run(onGesture: onGesture, onFailure: onFailure)
+            let running = startAttempt()
+            if !running { run = nil }
             onStart(running)
         }
     }
 
     func stop(onStop: @escaping () -> Void) {
         queue.async { [self] in
-            self.releaseCamera()
+            run = nil
+            releaseAttempt()
+            Self.logger.notice("Move Cursor capture stopped by user")
             onStop()
         }
     }
 
-    private func releaseCamera() {
-        guard run != nil else { return }
-        run = nil
-        sessionObservers.forEach { NotificationCenter.default.removeObserver($0) }
-        sessionObservers.removeAll()
-        output.setSampleBufferDelegate(nil, queue: nil)
-        tracker = nil
-        if session.isRunning { session.stopRunning() }
-        session.beginConfiguration()
-        session.removeOutput(output)
-        for input in session.inputs { session.removeInput(input) }
-        session.commitConfiguration()
+    private func startAttempt() -> Bool {
+        guard let run else { return false }
+        let session = AVCaptureSession()
+        let output = AVCaptureVideoDataOutput()
+        let id = UUID()
+        let start = ProcessInfo.processInfo.systemUptime
+        let number = run.retries + 1
+        Self.logger.notice("Starting Move Cursor capture attempt \(number, privacy: .public)")
+        guard configure(session: session, output: output) else { return false }
+
+        let tracker = HandFrameTracker(callbackQueue: queue) { [weak self] gesture, timestamp, succeeded in
+            guard let self, self.attempt?.id == id else { return }
+            if succeeded && self.attempt?.reportedFirstFrame == false {
+                self.attempt?.reportedFirstFrame = true
+                let elapsed = Int((ProcessInfo.processInfo.systemUptime - start) * 1000)
+                Self.logger.notice("First Vision result for capture attempt \(number, privacy: .public) after \(elapsed, privacy: .public) ms")
+            }
+            self.recordPose(gesture, at: timestamp)
+            self.run?.onGesture(gesture, timestamp)
+        }
+        output.setSampleBufferDelegate(tracker, queue: DispatchQueue(label: "baijiu.hand-cursor.frames", qos: .userInteractive))
+        let observers = [AVCaptureSession.runtimeErrorNotification, AVCaptureSession.didStopRunningNotification,
+                         AVCaptureSession.wasInterruptedNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: session, queue: nil) { [weak self] notification in
+                let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
+                let reason = error.map { "\(name.rawValue) (\($0.domain) \($0.code))" } ?? name.rawValue
+                Self.logger.notice("Move Cursor capture event: \(reason, privacy: .public)")
+                self?.queue.async { [weak self] in self?.recover(attemptID: id, reason: reason) }
+            }
+        }
+        attempt = Attempt(id: id, session: session, output: output, tracker: tracker, observers: observers, startedAt: start)
+        session.startRunning()
+        guard session.isRunning else {
+            Self.logger.error("Capture attempt \(number, privacy: .public) failed to start")
+            releaseAttempt()
+            return false
+        }
+        attempt?.startedAt = ProcessInfo.processInfo.systemUptime
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(500), repeating: .milliseconds(500), leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in self?.checkProgress(attemptID: id) }
+        watchdog = timer
+        timer.activate()
+        return true
     }
 
-    private func configure() -> Bool {
-        guard let camera = AVCaptureDevice.default(for: .video),
-              let input = try? AVCaptureDeviceInput(device: camera) else { return false }
+    private func recordPose(_ gesture: HandGesture, at timestamp: TimeInterval) {
+        switch gesture {
+        case .extended, .pinching:
+            if let attempt, attempt.reportedPoseGap, let lastPose = attempt.lastUsablePoseAt {
+                let elapsed = Int((timestamp - lastPose) * 1000)
+                Self.logger.notice("Usable Move Cursor pose returned after \(elapsed, privacy: .public) ms")
+            }
+            attempt?.lastUsablePoseAt = timestamp
+            attempt?.reportedPoseGap = false
+        case .other, .lost:
+            break
+        }
+    }
+
+    private func checkProgress(attemptID: UUID) {
+        guard let attempt, attempt.id == attemptID else { return }
+        let progress = attempt.tracker.progress
+        let now = ProcessInfo.processInfo.systemUptime
+        let silence = now - (progress.lastSuccess ?? attempt.startedAt)
+        if silence < 1, let lastPose = attempt.lastUsablePoseAt, now - lastPose >= 3, !attempt.reportedPoseGap {
+            self.attempt?.reportedPoseGap = true
+            Self.logger.notice("Vision is completing frames without a usable Move Cursor pose")
+        }
+        if let run, run.retries > 0, let stableSince = progress.stableSince,
+           silence < 1, now - stableSince >= 15 {
+            self.run?.retries = 0
+            Self.logger.notice("Move Cursor capture stabilized and restored its recovery budget")
+        }
+        guard silence >= (progress.lastSuccess == nil ? 4 : 3) else { return }
+        let reason: String
+        if let sample = progress.lastSample, now - sample < 1 {
+            reason = progress.lastError.map { "Vision errors (\($0))" } ?? "Vision made no progress"
+        } else {
+            reason = "camera delivered no recent frames"
+        }
+        recover(attemptID: attemptID, reason: "\(reason) for \(Int(silence * 1000)) ms")
+    }
+
+    private func recover(attemptID: UUID, reason: String) {
+        guard let run, attempt?.id == attemptID else { return }
+        Self.logger.warning("Move Cursor capture lost progress: \(reason, privacy: .public)")
+        run.onGesture(.lost, ProcessInfo.processInfo.systemUptime)
+        releaseAttempt()
+        retry(runID: run.id)
+    }
+
+    private func retry(runID: UUID) {
+        guard let run, run.id == runID else { return }
+        guard run.retries < Self.maximumRetries else {
+            Self.logger.error("Move Cursor capture exhausted automatic recovery")
+            self.run = nil
+            run.onFailure()
+            return
+        }
+        self.run?.retries += 1
+        queue.asyncAfter(deadline: .now() + .milliseconds(750)) { [weak self] in
+            guard let self, self.run?.id == runID else { return }
+            if !self.startAttempt() { self.retry(runID: runID) }
+        }
+    }
+
+    private func releaseAttempt() {
+        guard let attempt else { return }
+        self.attempt = nil
+        watchdog?.cancel()
+        watchdog = nil
+        attempt.observers.forEach { NotificationCenter.default.removeObserver($0) }
+        attempt.tracker.stop()
+        attempt.output.setSampleBufferDelegate(nil, queue: nil)
+        if attempt.session.isRunning { attempt.session.stopRunning() }
+        attempt.session.beginConfiguration()
+        attempt.session.removeOutput(attempt.output)
+        for input in attempt.session.inputs { attempt.session.removeInput(input) }
+        attempt.session.commitConfiguration()
+    }
+
+    private func configure(session: AVCaptureSession, output: AVCaptureVideoDataOutput) -> Bool {
+        guard let camera = AVCaptureDevice.default(for: .video) else {
+            Self.logger.error("No camera is available for Move Cursor")
+            return false
+        }
+        let input: AVCaptureDeviceInput
+        do {
+            input = try AVCaptureDeviceInput(device: camera)
+        } catch let error as NSError {
+            Self.logger.error("Could not open Move Cursor camera: \(error.domain, privacy: .public) \(error.code, privacy: .public)")
+            return false
+        }
         session.beginConfiguration()
         defer { session.commitConfiguration() }
-        guard session.canAddInput(input), session.canAddOutput(output) else { return false }
+        guard session.canAddInput(input), session.canAddOutput(output) else {
+            Self.logger.error("Could not configure Move Cursor camera input or output")
+            return false
+        }
         if session.canSetSessionPreset(.vga640x480) { session.sessionPreset = .vga640x480 }
         session.addInput(input)
         session.addOutput(output)
@@ -84,7 +210,7 @@ final class HandCursor: @unchecked Sendable {
             guard let value = points[joint], value.confidence >= 0.55 else { return nil }
             return value.location
         }
-        guard let indexBase = point(.indexMCP), let palmEdge = point(.littleMCP) else { return .lost }
+        guard let indexBase = point(.indexMCP), let palmEdge = point(.littleMCP) else { return .other }
         let palmWidth = hypot(palmEdge.x - indexBase.x, palmEdge.y - indexBase.y)
         guard let indexJoint = point(.indexPIP), let indexTip = point(.indexTip),
               let middleBase = point(.middleMCP), let middleJoint = point(.middlePIP),
@@ -117,9 +243,8 @@ struct Finger {
 enum HandGesture {
     static let clickDistance: CGFloat = 0.32
 
-    case pointing(CGPoint, thumbDistance: CGFloat?)
+    case extended(tip: CGPoint, height: CGFloat, spread: CGFloat, thumbDistance: CGFloat?)
     case pinching(thumbDistance: CGFloat)
-    case scrolling(height: CGFloat)
     case other
     case lost
 
@@ -128,63 +253,168 @@ enum HandGesture {
         let extended = (index.straightness ?? 0) > 0.8 && (middle.straightness ?? 0) > 0.8
             && index.reach > 0.55 * palmWidth && middle.reach > 0.55 * palmWidth
         let spread = hypot(index.tip.x - middle.tip.x, index.tip.y - middle.tip.y) / palmWidth
-        if spread > 0.48 {
-            return extended ? .scrolling(height: (index.base.y + middle.base.y) / 2) : .other
-        }
         let thumbDistance = thumb.map {
             min(hypot($0.x - index.tip.x, $0.y - index.tip.y),
                 hypot($0.x - middle.tip.x, $0.y - middle.tip.y)) / palmWidth
         }
         guard extended else {
             // Allow the fingers to bend naturally as the thumb reaches their tips.
-            if let thumbDistance, thumbDistance <= clickDistance,
+            if spread <= 0.48, let thumbDistance, thumbDistance <= clickDistance,
                index.reach > 0.45 * palmWidth, middle.reach > 0.45 * palmWidth {
                 return .pinching(thumbDistance: thumbDistance)
             }
             return .other
         }
-        return .pointing(CGPoint(x: (index.tip.x + middle.tip.x) / 2,
-                                 y: (index.tip.y + middle.tip.y) / 2), thumbDistance: thumbDistance)
+        return .extended(tip: CGPoint(x: (index.tip.x + middle.tip.x) / 2,
+                                      y: (index.tip.y + middle.tip.y) / 2),
+                         height: (index.base.y + middle.base.y) / 2,
+                         spread: spread, thumbDistance: thumbDistance)
     }
 }
 
-private final class HandFrameTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    private let request = VNDetectHumanHandPoseRequest()
-    private let onGesture: (HandGesture, TimeInterval) -> Void
+private final class HandFrameTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+    struct Progress {
+        var lastSample: TimeInterval?
+        var lastSuccess: TimeInterval?
+        var lastError: Int?
+        var stableSince: TimeInterval?
+    }
 
-    init(onGesture: @escaping (HandGesture, TimeInterval) -> Void) {
+    private struct Frame: @unchecked Sendable {
+        let buffer: CVPixelBuffer
+        let timestamp: TimeInterval
+    }
+
+    private struct State {
+        var stopped = false
+        var processing = false
+        var pending: Frame?
+        var progress = Progress()
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    private let request = VNDetectHumanHandPoseRequest()
+    private let visionQueue = DispatchQueue(label: "baijiu.hand-cursor.vision", qos: .userInteractive)
+    private let callbackQueue: DispatchQueue
+    private let onGesture: (HandGesture, TimeInterval, Bool) -> Void
+
+    init(callbackQueue: DispatchQueue, onGesture: @escaping (HandGesture, TimeInterval, Bool) -> Void) {
+        self.callbackQueue = callbackQueue
         self.onGesture = onGesture
         super.init()
         request.maximumHandCount = 2
     }
 
+    var progress: Progress { state.withLock { $0.progress } }
+
+    func stop() {
+        state.withLock {
+            $0.stopped = true
+            $0.pending = nil
+        }
+    }
+
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let timestamp = ProcessInfo.processInfo.systemUptime
-        let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up)
-        do {
-            try handler.perform([request])
-            onGesture(HandCursor.gesture(in: request.results ?? []), timestamp)
-        } catch {
-            onGesture(.lost, timestamp)
+        let frame = Frame(buffer: buffer, timestamp: ProcessInfo.processInfo.systemUptime)
+        let shouldStart = state.withLock { state in
+            guard !state.stopped else { return false }
+            state.progress.lastSample = frame.timestamp
+            if state.processing {
+                state.pending = frame
+                return false
+            }
+            state.processing = true
+            return true
+        }
+        if shouldStart { process(frame) }
+    }
+
+    private func process(_ frame: Frame) {
+        // Keep the newest pending frame and let AVFoundation tear down even if Vision is blocked.
+        visionQueue.async { [self] in
+            guard state.withLock({ !$0.stopped }) else { return }
+            let gesture: HandGesture
+            let errorCode: Int?
+            let handler = VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up)
+            do {
+                try handler.perform([request])
+                gesture = HandCursor.gesture(in: request.results ?? [])
+                errorCode = nil
+            } catch {
+                gesture = .lost
+                errorCode = (error as NSError).code
+            }
+            guard state.withLock({ state in
+                guard !state.stopped else { return false }
+                state.progress.lastError = errorCode
+                if errorCode == nil {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if now - (state.progress.lastSuccess ?? -.infinity) >= 1 {
+                        state.progress.stableSince = now
+                    }
+                    state.progress.lastSuccess = now
+                }
+                return true
+            }) else { return }
+            callbackQueue.async { [self] in
+                onGesture(gesture, frame.timestamp, errorCode == nil)
+                let next = state.withLock { state in
+                    let pending = state.pending
+                    state.pending = nil
+                    state.processing = pending != nil
+                    return pending
+                }
+                if let next { process(next) }
+            }
+        }
+    }
+}
+
+// Each activation owns its pointer. Stop synchronizes with an in-flight event
+// so callbacks from that activation cannot move the cursor afterward.
+final class HandPointerOutput: @unchecked Sendable {
+    private let pointer = OSAllocatedUnfairLock<HandPointer?>(initialState: nil)
+
+    func start() { pointer.withLock { $0 = HandPointer() } }
+
+    func stop() { pointer.withLock { $0 = nil } }
+
+    func receive(_ gesture: HandGesture, _ timestamp: TimeInterval) {
+        pointer.withLock { state in
+            guard state != nil else { return }
+            let age = ProcessInfo.processInfo.systemUptime - timestamp
+            guard age < 0.5 else {
+                state = HandPointer()
+                return
+            }
+            let bounds = CGDisplayBounds(CGMainDisplayID())
+            guard let event = state?.event(for: gesture, at: timestamp, in: bounds) else { return }
+            if case .click = event, age >= 0.2 {
+                state = HandPointer()
+                return
+            }
+            event.post()
         }
     }
 }
 
 struct HandPointer {
     private static let movementSensitivity: CGFloat = 1.5
-    private static let scrollPixelsPerFrameHeight: CGFloat = 7200
-    private static let scrollNoiseRadius: CGFloat = 0.0015
-    private static let spreadClickMotionTolerance: CGFloat = 0.006
-    private static let spreadClickDriftTolerance: CGFloat = 0.003
-    private static let spreadClickPulse: ClosedRange<TimeInterval> = 0.04...0.28
+    private static let scrollPixelsPerFrameHeight: CGFloat = 9000
+    private static let scrollNoiseRadius: CGFloat = 0.001
+    private static let spreadOpen: CGFloat = 0.51
+    private static let spreadClosed: CGFloat = 0.44
+    private static let scrollStartDistance: CGFloat = 0.004
+    private static let maxReacquisitionDelta: CGFloat = 0.045
+    private static let spreadClickPulse: ClosedRange<TimeInterval> = 0.03...0.28
     private static let spreadClickWindow: TimeInterval = 0.72
 
     private enum SpreadClick {
         case ready
         case open(origin: CGPoint, startedAt: TimeInterval, openedAt: TimeInterval, second: Bool, height: CGFloat)
-        case joinedOnce(origin: CGPoint, startedAt: TimeInterval, joinedAt: TimeInterval)
+        case joinedOnce(origin: CGPoint, startedAt: TimeInterval, joinedAt: TimeInterval, height: CGFloat)
     }
 
     enum Event {
@@ -222,13 +452,21 @@ struct HandPointer {
     private var lastPointingAt: TimeInterval?
     private var thumbNearSince: TimeInterval?
     private var scrollHeight: CGFloat?
+    private var lastPalmHeight: CGFloat?
+    private var uncertainSince: TimeInterval?
     private var spreadClick: SpreadClick?
 
     mutating func event(for gesture: HandGesture, at time: TimeInterval, in bounds: CGRect) -> Event? {
         let interval = lastSampleAt.map { time - $0 } ?? 0
-        if displayBounds != bounds || interval > 0.18 {
+        if displayBounds != bounds || interval > 0.35 {
             self = HandPointer()
             displayBounds = bounds
+        } else if interval > 0.18 {
+            // Slow frames may still move or scroll, but cannot complete an old click.
+            spreadClick = nil
+            lastPointingAt = nil
+            clickArmed = false
+            thumbNearSince = nil
         }
         lastSampleAt = time
         if let lastPointingAt, time - lastPointingAt > 0.25 {
@@ -236,64 +474,68 @@ struct HandPointer {
             clickArmed = false
             thumbNearSince = nil
         }
-        switch gesture {
-        case .pointing(let tip, let thumbDistance):
-            lastPointingAt = time
+        if let uncertainSince, time - uncertainSince > 0.12 {
             scrollHeight = nil
-            if let origin = closeSpread(at: time) {
+            lastPalmHeight = nil
+        }
+        switch gesture {
+        case .extended(let tip, let height, let spread, let thumbDistance):
+            if let lastPalmHeight, (uncertainSince != nil || interval > 0.18),
+               abs(height - lastPalmHeight) > Self.maxReacquisitionDelta {
+                // Rebase after an unobserved jump rather than sending it as one large wheel event.
+                self.lastPalmHeight = nil
+                if scrollHeight != nil { scrollHeight = height }
+            }
+            uncertainSince = nil
+            let previousHeight = lastPalmHeight ?? height
+            lastPalmHeight = height
+            if spread >= Self.spreadOpen || (scrollHeight != nil && spread > Self.spreadClosed) {
+                lastPointingAt = nil
+                clickArmed = false
+                thumbNearSince = nil
+                if scrollHeight == nil {
+                    scrollHeight = previousHeight
+                    openSpread(at: time, height: previousHeight)
+                }
+                return scroll(to: height, previousHeight: previousHeight, at: time)
+            }
+
+            lastPointingAt = time
+            // A stroke may end on the same frame on which the fingers come together.
+            var finalScroll: Event?
+            if case .open = spreadClick, let anchor = scrollHeight,
+               Self.isScrollStroke(to: height, from: anchor, previousHeight: previousHeight) {
+                spreadClick = nil
+                finalScroll = scroll(to: height, previousHeight: previousHeight, at: time)
+            }
+            scrollHeight = nil
+            let origin = closeSpread(at: time, height: height)
+            let thumbClicked = shouldClick(thumbDistance: thumbDistance, at: time)
+            if let finalScroll { return finalScroll }
+            if let origin {
                 posted = origin
                 filtered = origin
                 return .click(origin)
             }
             let movement = position(for: tip, after: interval, in: bounds)
-            if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
+            if thumbClicked, let posted {
                 spreadClick = .ready
                 return .click(posted)
             }
             return movement.map(Event.move)
         case .pinching(let thumbDistance):
             scrollHeight = nil
+            lastPalmHeight = nil
+            uncertainSince = nil
             spreadClick = nil
             guard lastPointingAt != nil else { return nil }
             if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
                 return .click(posted)
             }
             return nil
-        case .scrolling(let height):
-            lastPointingAt = nil
-            clickArmed = false
-            thumbNearSince = nil
-            guard let previousHeight = scrollHeight else {
-                scrollHeight = height
-                openSpread(at: time, height: height)
-                return nil
-            }
-            let delta = height - previousHeight
-            if case .open(let origin, let startedAt, let openedAt, let second, let lastHeight) = spreadClick {
-                // Accept a clear stroke immediately, or a smaller one moving steadily in the same direction.
-                let step = height - lastHeight
-                let offset = lastHeight - previousHeight
-                let steadyMotion = abs(delta) >= Self.spreadClickDriftTolerance
-                    && abs(step) >= 0.001 && abs(offset) >= 0.001 && step * offset > 0
-                if abs(delta) < Self.spreadClickMotionTolerance,
-                   !steadyMotion,
-                   time - openedAt <= Self.spreadClickPulse.upperBound,
-                   time - startedAt <= Self.spreadClickWindow {
-                    spreadClick = .open(origin: origin, startedAt: startedAt, openedAt: openedAt,
-                                        second: second, height: height)
-                    return nil
-                }
-                spreadClick = nil
-            }
-            let distance = max(0, abs(delta) - Self.scrollNoiseRadius)
-            let pixels = Int32(distance * Self.scrollPixelsPerFrameHeight) * (delta < 0 ? -1 : 1)
-            guard pixels != 0 else { return nil }
-            // Keep the unposted fraction for the next frame so slow strokes stay continuous.
-            scrollHeight = previousHeight + CGFloat(pixels) / Self.scrollPixelsPerFrameHeight
-            return .scroll(pixels)
         case .other:
             thumbNearSince = nil
-            scrollHeight = nil
+            if uncertainSince == nil { uncertainSince = time }
             spreadClick = nil
             return nil
         case .lost:
@@ -302,12 +544,40 @@ struct HandPointer {
         }
     }
 
+    private static func isScrollStroke(to height: CGFloat, from anchor: CGFloat, previousHeight: CGFloat) -> Bool {
+        let distance = abs(height - anchor)
+        let step = height - previousHeight
+        let offset = previousHeight - anchor
+        return distance >= scrollStartDistance
+            || (distance >= 0.0025 && abs(step) >= 0.0008 && abs(offset) >= 0.0008 && step * offset > 0)
+    }
+
+    private mutating func scroll(to height: CGFloat, previousHeight: CGFloat, at time: TimeInterval) -> Event? {
+        guard let anchor = scrollHeight else { return nil }
+        if case .open(_, let startedAt, let openedAt, _, _) = spreadClick {
+            if time - openedAt <= Self.spreadClickPulse.upperBound,
+               time - startedAt <= Self.spreadClickWindow,
+               !Self.isScrollStroke(to: height, from: anchor, previousHeight: previousHeight) {
+                return nil
+            }
+            spreadClick = nil
+        }
+        let delta = height - anchor
+        let distance = max(0, abs(delta) - Self.scrollNoiseRadius)
+        let pixels = Int32(distance * Self.scrollPixelsPerFrameHeight) * (delta < 0 ? -1 : 1)
+        guard pixels != 0 else { return nil }
+        // Carry the remainder forward so slow strokes don't lose distance on every frame.
+        scrollHeight = anchor + CGFloat(pixels) / Self.scrollPixelsPerFrameHeight
+        return .scroll(pixels)
+    }
+
     private mutating func openSpread(at time: TimeInterval, height: CGFloat) {
         switch spreadClick {
-        case .joinedOnce(let origin, let startedAt, let joinedAt)
+        case .joinedOnce(let origin, let startedAt, let joinedAt, let firstHeight)
             where time - startedAt <= Self.spreadClickWindow
-                && time - joinedAt >= Self.spreadClickPulse.lowerBound:
-            spreadClick = .open(origin: origin, startedAt: startedAt, openedAt: time, second: true, height: height)
+                && time - joinedAt >= Self.spreadClickPulse.lowerBound
+                && abs(height - firstHeight) < Self.scrollStartDistance:
+            spreadClick = .open(origin: origin, startedAt: startedAt, openedAt: time, second: true, height: firstHeight)
         case .ready, .joinedOnce:
             spreadClick = posted.map { .open(origin: $0, startedAt: time, openedAt: time, second: false, height: height) }
         default:
@@ -315,14 +585,17 @@ struct HandPointer {
         }
     }
 
-    private mutating func closeSpread(at time: TimeInterval) -> CGPoint? {
+    private mutating func closeSpread(at time: TimeInterval, height: CGFloat) -> CGPoint? {
         switch spreadClick {
-        case .open(let origin, let startedAt, let openedAt, let second, _)
+        case .open(let origin, let startedAt, let openedAt, let second, let firstHeight)
             where Self.spreadClickPulse.contains(time - openedAt)
-                && time - startedAt <= Self.spreadClickWindow:
-            spreadClick = second ? .ready : .joinedOnce(origin: origin, startedAt: startedAt, joinedAt: time)
+                && time - startedAt <= Self.spreadClickWindow
+                && abs(height - firstHeight) < Self.scrollStartDistance:
+            spreadClick = second ? .ready : .joinedOnce(origin: origin, startedAt: startedAt,
+                                                       joinedAt: time, height: firstHeight)
             return second ? origin : nil
-        case .joinedOnce(_, let startedAt, _) where time - startedAt <= Self.spreadClickWindow:
+        case .joinedOnce(_, let startedAt, _, let firstHeight)
+            where time - startedAt <= Self.spreadClickWindow && abs(height - firstHeight) < Self.scrollStartDistance:
             return nil
         default:
             spreadClick = .ready

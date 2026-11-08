@@ -34,7 +34,7 @@ final class Studio: ObservableObject {
     @Published private(set) var pendingShortcut: Shortcut?
     private let camera = Capture()
     private let handCamera = HandCursor()
-    private var handPointer = HandPointer()
+    private var handOutput: HandPointerOutput?
     private var handRun: UUID?
     private let hotkeys: [Mode: GlobalShortcut] = [
         .whisper: GlobalShortcut(signature: 0x4241494A),
@@ -115,6 +115,8 @@ final class Studio: ObservableObject {
         if phase == .handCursor {
             phase = .handStopping
             handRun = nil
+            handOutput?.stop()
+            handOutput = nil
             status = "Stopping Move Cursor…"
             handCamera.stop { [weak self] in
                 DispatchQueue.main.async { [weak self] in
@@ -140,31 +142,28 @@ final class Studio: ObservableObject {
             return
         }
         let run = UUID()
+        let output = HandPointerOutput()
         handRun = run
-        handPointer = HandPointer()
-        handCamera.start(onGesture: { [weak self] gesture, timestamp in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.handRun == run, self.phase == .handCursor else { return }
-                guard ProcessInfo.processInfo.systemUptime - timestamp < 0.2 else {
-                    self.handPointer = HandPointer()
-                    return
-                }
-                let bounds = CGDisplayBounds(CGMainDisplayID())
-                self.handPointer.event(for: gesture, at: timestamp, in: bounds)?.post()
-            }
-        }, onStart: { [weak self] running in
+        handOutput = output
+        handCamera.start(onGesture: output.receive, onStart: { [weak self] running in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.handRun == run else { return }
+                if running { output.start() }
                 self.phase = running ? .handCursor : .ready
                 self.status = running ? "Move Cursor is on. Spread and rejoin twice to click, or spread and move vertically to scroll." : "Could not start the camera."
-                if !running { self.handRun = nil }
+                if !running {
+                    self.handRun = nil
+                    self.handOutput = nil
+                }
             }
         }, onFailure: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.handRun == run else { return }
+                self.handOutput?.stop()
+                self.handOutput = nil
                 self.handRun = nil
                 self.phase = .ready
-                self.status = "The camera stopped. Restart Move Cursor to try again."
+                self.status = "The camera could not recover. Restart Move Cursor to try again."
             }
         })
     }

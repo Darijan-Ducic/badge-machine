@@ -13,5 +13,6 @@
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSCameraUsageDescription</key><string>Baijiu Machine uses the camera for silent dictation and finger tracking.</string>
+    <key>NSCameraReactionEffectGesturesEnabledDefault</key><false/>
 </dict>
 </plist>
