@@ -116,20 +116,22 @@ struct Finger {
 
 enum HandGesture {
     case pointing(CGPoint, thumbDistance: CGFloat?)
+    case scrolling(height: CGFloat)
     case other
     case lost
 
     static func classify(index: Finger, middle: Finger, thumb: CGPoint?, palmWidth: CGFloat) -> HandGesture {
         guard palmWidth >= 0.025 else { return .lost }
         guard let indexAngle = index.straightness, let middleAngle = middle.straightness else { return .other }
-        if indexAngle > 0.8, middleAngle > 0.8,
-           index.reach > 0.55 * palmWidth, middle.reach > 0.55 * palmWidth,
-           hypot(index.tip.x - middle.tip.x, index.tip.y - middle.tip.y) <= 0.5 * palmWidth {
-            let thumbDistance = thumb.map { hypot($0.x - index.joint.x, $0.y - index.joint.y) / palmWidth }
-            return .pointing(CGPoint(x: (index.tip.x + middle.tip.x) / 2,
-                                     y: (index.tip.y + middle.tip.y) / 2), thumbDistance: thumbDistance)
+        guard indexAngle > 0.8, middleAngle > 0.8,
+              index.reach > 0.55 * palmWidth, middle.reach > 0.55 * palmWidth else { return .other }
+        let spread = hypot(index.tip.x - middle.tip.x, index.tip.y - middle.tip.y) / palmWidth
+        if spread > 0.48 {
+            return .scrolling(height: (index.base.y + middle.base.y) / 2)
         }
-        return .other
+        let thumbDistance = thumb.map { hypot($0.x - index.joint.x, $0.y - index.joint.y) / palmWidth }
+        return .pointing(CGPoint(x: (index.tip.x + middle.tip.x) / 2,
+                                 y: (index.tip.y + middle.tip.y) / 2), thumbDistance: thumbDistance)
     }
 }
 
@@ -163,6 +165,7 @@ struct HandPointer {
     enum Event {
         case move(CGPoint)
         case click(CGPoint)
+        case scroll(Int32)
 
         func post() {
             switch self {
@@ -179,6 +182,9 @@ struct HandPointer {
                 Event.move(point).post()
                 down.post(tap: .cghidEventTap)
                 up.post(tap: .cghidEventTap)
+            case .scroll(let pixels):
+                CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                        wheel1: pixels, wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
             }
         }
     }
@@ -189,6 +195,8 @@ struct HandPointer {
     private var lastSampleAt: TimeInterval?
     private var clickArmed = false
     private var thumbNearSince: TimeInterval?
+    private var spreadSince: TimeInterval?
+    private var scrollHeight: CGFloat?
 
     mutating func event(for gesture: HandGesture, at time: TimeInterval, in bounds: CGRect) -> Event? {
         let interval = lastSampleAt.map { time - $0 } ?? 0
@@ -199,13 +207,31 @@ struct HandPointer {
         lastSampleAt = time
         switch gesture {
         case .pointing(let tip, let thumbDistance):
+            spreadSince = nil
+            scrollHeight = nil
             let movement = position(for: tip, after: interval, in: bounds)
             if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
                 return .click(posted)
             }
             return movement.map(Event.move)
+        case .scrolling(let height):
+            clickArmed = false
+            thumbNearSince = nil
+            if spreadSince == nil { spreadSince = time }
+            guard let spreadSince, time - spreadSince >= 0.055 else { return nil }
+            guard let previousHeight = scrollHeight else {
+                scrollHeight = height
+                return nil
+            }
+            let delta = height - previousHeight
+            guard abs(delta) >= 0.008 else { return nil }
+            scrollHeight = height
+            let pixels = Int32((delta * 1600).rounded())
+            return .scroll(pixels)
         case .other:
             thumbNearSince = nil
+            spreadSince = nil
+            scrollHeight = nil
             return nil
         case .lost:
             self = HandPointer()
