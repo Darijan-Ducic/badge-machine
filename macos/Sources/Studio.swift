@@ -47,6 +47,7 @@ final class Studio: ObservableObject {
     @Published private(set) var fnInputMonitoringMissing = false
     private let reader = LipReader()
     private var target: CursorTarget?
+    private let hud = ProcessingHUD()
 
     init() {
         modifierTapMonitor.onTap = { [weak self] shortcut in
@@ -287,6 +288,7 @@ final class Studio: ObservableObject {
             target = CursorTarget.current()
             phase = .processing
             status = "Finding your lips…"
+            hud.show(.reading)
             if cameraStarted { camera.stop() }
         case .ready:
             guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
@@ -303,6 +305,7 @@ final class Studio: ObservableObject {
                     guard self.phase == .starting else { return }
                     self.phase = .recording
                     self.status = "Recording…"
+                    self.hud.show(.recording)
                 }
             }, onFinish: { [weak self] result in
                 Task { @MainActor in await self?.finish(result) }
@@ -313,7 +316,12 @@ final class Studio: ObservableObject {
     }
 
     private func finish(_ result: Result<URL, Error>) async {
-        defer { phase = .ready; target = nil }
+        var insertedText: String?
+        defer {
+            phase = .ready
+            target = nil
+            if let insertedText { hud.show(.done(insertedText)) } else { hud.show(.failed(status)) }
+        }
         do {
             let file = try result.get()
             defer { try? FileManager.default.removeItem(at: file) }
@@ -330,8 +338,8 @@ final class Studio: ObservableObject {
                 return
             }
             switch target.insert(text) {
-            case .inserted: status = "Text inserted."
-            case .pasteRequested: status = "Paste requested."
+            case .inserted: status = "Text inserted."; insertedText = text
+            case .pasteRequested: status = "Paste requested."; insertedText = text
             case .targetUnavailable: status = "Could not insert text in the original field."
             }
         } catch {
