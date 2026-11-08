@@ -417,7 +417,9 @@ def gemini_open_request(grids: Grids) -> dict:
     return {
         "model": GEMINI_MODEL,
         "contents": [types.Content(role="user", parts=[types.Part(text=_open_prompt(grids)), *images])],
-        "config": types.GenerateContentConfig(response_mime_type="application/json", response_json_schema=WIRE_SCHEMA),
+        # No thinking: on a presenter take Gemini 4 Argon wrote the rich output in 15.6 s, vs 57.7 s at its default.
+        "config": types.GenerateContentConfig(response_mime_type="application/json", response_json_schema=WIRE_SCHEMA,
+                                              thinking_config=types.ThinkingConfig(thinking_budget=0)),
     }
 
 
