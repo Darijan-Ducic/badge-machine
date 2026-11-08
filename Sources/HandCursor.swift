@@ -174,6 +174,8 @@ private final class HandFrameTracker: NSObject, AVCaptureVideoDataOutputSampleBu
 
 struct HandPointer {
     private static let movementSensitivity: CGFloat = 1.5
+    private static let scrollPixelsPerFrameHeight: CGFloat = 7200
+    private static let scrollNoiseRadius: CGFloat = 0.0015
 
     enum Event {
         case move(CGPoint)
@@ -208,7 +210,6 @@ struct HandPointer {
     private var lastSampleAt: TimeInterval?
     private var clickArmed = false
     private var thumbNearSince: TimeInterval?
-    private var spreadSince: TimeInterval?
     private var scrollHeight: CGFloat?
 
     mutating func event(for gesture: HandGesture, at time: TimeInterval, in bounds: CGRect) -> Event? {
@@ -220,7 +221,6 @@ struct HandPointer {
         lastSampleAt = time
         switch gesture {
         case .pointing(let tip, let thumbDistance):
-            spreadSince = nil
             scrollHeight = nil
             let movement = position(for: tip, after: interval, in: bounds)
             if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
@@ -228,7 +228,6 @@ struct HandPointer {
             }
             return movement.map(Event.move)
         case .pinching(let thumbDistance):
-            spreadSince = nil
             scrollHeight = nil
             if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
                 return .click(posted)
@@ -237,20 +236,19 @@ struct HandPointer {
         case .scrolling(let height):
             clickArmed = false
             thumbNearSince = nil
-            if spreadSince == nil {
-                spreadSince = time
+            guard let previousHeight = scrollHeight else {
                 scrollHeight = height
+                return nil
             }
-            guard let spreadSince, time - spreadSince >= 0.025,
-                  let previousHeight = scrollHeight else { return nil }
             let delta = height - previousHeight
-            guard abs(delta) >= 0.005 else { return nil }
-            scrollHeight = height
-            let pixels = Int32((delta * 4800).rounded())
+            let distance = max(0, abs(delta) - Self.scrollNoiseRadius)
+            let pixels = Int32(distance * Self.scrollPixelsPerFrameHeight) * (delta < 0 ? -1 : 1)
+            guard pixels != 0 else { return nil }
+            // Keep the unposted fraction for the next frame so slow strokes stay continuous.
+            scrollHeight = previousHeight + CGFloat(pixels) / Self.scrollPixelsPerFrameHeight
             return .scroll(pixels)
         case .other:
             thumbNearSince = nil
-            spreadSince = nil
             scrollHeight = nil
             return nil
         case .lost:
