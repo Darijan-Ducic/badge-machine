@@ -67,7 +67,7 @@
     const $ = (id) => document.getElementById(id);
     const USER = new URLSearchParams(location.search).get("user") || "default";
     const TOP3 = new URLSearchParams(location.search).has("top3");
-    const DEMO = new URLSearchParams(location.search).has("demo");  // ?demo: Gemini's top 3, no sources, p or timings
+    const DEMO = new URLSearchParams(location.search).has("demo");  // ?demo: the pipeline's top 3, no sources, p or timings
     const MIN_MS = 500, RECENT = 30; // shortest take sent; frames in the live quality window
     const MAX_MS = 8000; // a take stops itself here: Muse sees at most 192 frames (48 images × 2×2) = 8 s at 24 fps
     const css = getComputedStyle(document.documentElement), color = (v) => css.getPropertyValue(v).trim();
@@ -191,9 +191,9 @@
         pending.remove();
         if (!DEMO) head.insertBefore(document.createTextNode(` · ${data.latency_ms} ms`), chip);
         const view = { c, chip, clip: data.clip };
-        if (DEMO && data.gemini_lines?.length) {
+        if (DEMO && data.lines?.length) {  // ?demo: the pipeline's top 3 list lines, with no sources on screen
           setChip(chip, "near", "Pick one");
-          ask(view, data.gemini_lines, "You said one of these");
+          ask(view, data.lines, "You said one of these");
         } else if (TOP3 && data.lines?.length) {  // ?top3: always offer the 3 most probable phrase-list lines to pick from
           setChip(chip, data.action === "auto" ? "onplan" : "near", data.action === "auto" ? "Sure" : "Pick one");
           ask(view, data.lines, "You said one of these");
