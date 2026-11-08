@@ -193,7 +193,7 @@ def _gemini_call(gemini, clip: Path, phrases: list[str]) -> dict:
 def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, k: int, transcribe=None,
               transcript: str | None = None, faces: list | None = None, mouths: list | None = None,
               tracker_flags=(), fps: float | None = None, prompted: int | None = None, extra: dict | None = None,
-              sample_open=None, score_closed=None, gemini=None) -> tuple[dict, bytes]:
+              sample_open=None, score_closed=None, gemini=None, config: dict | None = None) -> tuple[dict, bytes]:
     """Crop one recording and run every call on it in parallel; returns (record, crop bytes), not stored yet.
 
     Crop boxes: browser-tracker `mouths` [[t_ms, x, y, w, h]] or SAM `faces` [[x, y, w, h]] (see crop.crop). The
@@ -221,7 +221,7 @@ def read_clip(recording: bytes, *, phrases: list[str], user_id: str, mode: str, 
         "record": V1, "id": str(time.time_ns()), "t": started, "user_id": user_id, "mode": mode, "fps": fps,
         "prompted": prompted, "phrases": list(phrases), "vocab": vocab_id(phrases),
         "config": {**muse_sampler.CONFIG, "crop": crop_id, "k": k, "gemini_model": scorers.GEMINI_MODEL,
-                   "viseme_costs": costs_hash()},
+                   "viseme_costs": costs_hash(), **(config or {})},
         "tracker_flags": list(tracker_flags), "frames": frames, "crop_rect": crop_rect,
         "label": {"stt_text": stt, "user_edit": None},
         "samples": samples, "closed": closed, "gemini": gemini_item, **(extra or {}),

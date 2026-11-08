@@ -91,7 +91,10 @@ def from_wire(value):
 class Grids:
     images: list[bytes]  # JPEG grids, in time order
     frames: list[list[int]]  # frame number of each tile per image, left to right then top to bottom
-    n_frames: int  # frames in the clip at FPS; valid frame numbers are 0..n_frames-1
+    n_frames: int  # frames in the clip at `fps`; valid frame numbers are 0..n_frames-1
+    grid: str = "2x2"  # columns x rows of every image
+    fps: int = FPS  # the rate the clip was decoded at
+    stamped: bool = True  # each tile carries its frame number; unstamped tiles are numbered by position
 
 
 @lru_cache
@@ -110,18 +113,20 @@ def stamp(image: Image.Image, frame: int) -> Image.Image:
     return image
 
 
-def _decode(clip: Path, tile_width: int) -> list[Image.Image]:
+def _decode(clip: Path, tile_width: int, fps: int = FPS) -> list[Image.Image]:
     with tempfile.TemporaryDirectory() as tmp:
-        subprocess.run(["ffmpeg", "-loglevel", "error", "-i", clip, "-vf", f"fps={FPS},scale={tile_width}:-2",
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-i", clip, "-vf", f"fps={fps},scale={tile_width}:-2",
                         f"{tmp}/%05d.png"], check=True)
         return [Image.open(path).convert("RGB") for path in sorted(Path(tmp).glob("*.png"))]
 
 
-def labeled_grids(clip: Path, grid: str = "2x2", tile_width: int = 320, max_images: int = MAX_IMAGES) -> Grids:
-    """Tile the clip's frames at FPS into `grid` (columns x rows) images, each tile stamped with its frame number.
-    A clip too long for `max_images` keeps evenly spaced frames, still labeled with their real numbers."""
+def labeled_grids(clip: Path, grid: str = "2x2", tile_width: int = 320, max_images: int = MAX_IMAGES,
+                  fps: int = FPS, stamps: bool = True) -> Grids:
+    """Tile the clip's frames at `fps` into `grid` (columns x rows) images, each tile stamped with its frame number.
+    A clip too long for `max_images` keeps evenly spaced frames, still labeled with their real numbers. Without
+    `stamps` the tiles are bare and numbered by position (0, 1, ... in reading order across the images)."""
     cols, rows = map(int, grid.split("x"))
-    frames = _decode(clip, tile_width)
+    frames = _decode(clip, tile_width, fps)
     capacity = max_images * cols * rows
     keep = list(range(len(frames)))
     if len(frames) > capacity:
@@ -132,12 +137,13 @@ def labeled_grids(clip: Path, grid: str = "2x2", tile_width: int = 320, max_imag
         width, height = frames[0].size
         sheet = Image.new("RGB", (cols * width, rows * height))
         for slot, frame in enumerate(chunk):
-            sheet.paste(stamp(frames[frame].copy(), frame), (slot % cols * width, slot // cols * height))
+            tile = stamp(frames[frame].copy(), frame) if stamps else frames[frame]
+            sheet.paste(tile, (slot % cols * width, slot // cols * height))
         buffer = io.BytesIO()
         sheet.save(buffer, "JPEG", quality=90)
         images.append(buffer.getvalue())
-        labels.append(chunk)
-    return Grids(images, labels, len(frames))
+        labels.append(chunk if stamps else list(range(start, start + len(chunk))))
+    return Grids(images, labels, len(frames) if stamps else len(keep), grid, fps, stamps)
 
 
 # ---------------------------------------------------------------- local validation
@@ -180,10 +186,13 @@ REST closed or neutral mouth, not articulating"""
 
 
 def _frames_note(grids: Grids) -> str:
-    cols, rows = CONFIG["grid"].split("x")
+    cols, rows = grids.grid.split("x")
+    numbers = ("Each tile's frame number is printed white on black in its top-left corner." if grids.stamped else
+               "Frames are numbered by tile position: the first tile of the first image is frame 0, the next tile "
+               "frame 1, and so on through every image.")
     note = (f"The {len(grids.images)} images are in time order. Each image is a grid of {cols} x {rows} video frames "
-            f"({FPS} frames per second), read left to right, then top to bottom. Each tile's frame number is printed "
-            f"white on black in its top-left corner. The clip's frames are numbered 0 to {grids.n_frames - 1}.")
+            f"({grids.fps} frames per second), read left to right, then top to bottom. {numbers} The clip's frames "
+            f"are numbered 0 to {grids.n_frames - 1}.")
     if sum(map(len, grids.frames)) < grids.n_frames:
         note += " Some frames were skipped to fit; the printed numbers are the real frame numbers."
     if grids.frames and len(grids.frames[-1]) < int(cols) * int(rows):
@@ -218,7 +227,8 @@ Scores: every s is your own subjective confidence, from 0 to 1, that this altern
 not sum to 1. Give low scores when the evidence is weak; honest uncertainty is more useful than a confident guess.
 
 Rules:
-- Every [start, end] uses frame numbers printed on the tiles, with start <= end, within 0 to {grids.n_frames - 1}.
+- Every [start, end] uses frame numbers {"printed on the tiles" if grids.stamped else "counted as above"}, with \
+start <= end, within 0 to {grids.n_frames - 1}.
 - Judge only from what is visible. With no visible mouth or no speech: present false, frames null, and empty visemes, \
 slots and hypotheses."""
 
@@ -359,10 +369,13 @@ def closed_request(grids: Grids, phrases: list[str]) -> dict:
 
 
 def sample_open(clip: Path, k: int, examples: list[dict] | None = None, *, temperature: float | None = None,
-                effort: str | None = None, context: list[str] | None = None) -> list[dict]:
+                effort: str | None = None, context: list[str] | None = None, grid: str | None = None,
+                tile_width: int | None = None, fps: int | None = None, stamps: bool = True, client=None) -> list[dict]:
     """K parallel open samples (schema v1). Outputs violating v1 or citing frames outside the clip keep their
-    output and list the violations in `error`. Overrides as in `open_request`."""
-    grids = reader_grids(clip)
+    output and list the violations in `error`. Overrides as in `open_request`; layout knobs (tools/exp_frames.py)
+    default to CONFIG; `client` defaults to make_client()."""
+    grids = labeled_grids(clip, grid or CONFIG["grid"], tile_width or CONFIG["tile_width"], fps=fps or CONFIG["fps"],
+                          stamps=stamps)
     request = open_request(grids, temperature=temperature, effort=effort, context=context, examples=examples)
 
     def finish(raw):
@@ -370,7 +383,7 @@ def sample_open(clip: Path, k: int, examples: list[dict] | None = None, *, tempe
         problems = validate_open(output, grids.n_frames)
         return output, ("; ".join(problems) or None)
 
-    client = make_client()
+    client = client or make_client()
     with ThreadPoolExecutor(max_workers=max(k, 1)) as pool:
         return list(pool.map(lambda i: _call(client, "open", i, request, finish), range(k)))
 

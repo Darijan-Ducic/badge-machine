@@ -519,6 +519,63 @@ def test_open_prompt_contains_no_phrase_list(short_clip, muse):
     assert [p for p in multiword if p in text] == []
 
 
+# ---------------------------------------------------------------- frame layout variants (lab-frames experiments)
+
+
+def test_grids_at_a_lower_fps_keep_evenly_spaced_frames_numbered_at_that_fps(short_clip):
+    grids = labeled_grids(short_clip, fps=12)  # the clip is 30 frames at 24 fps
+
+    flat = [f for image in grids.frames for f in image]
+    shown = [centre_index(tile) for jpeg, labels in zip(grids.images, grids.frames)
+             for tile in list(tiles(jpeg))[: len(labels)]]
+    steps = [b - a for a, b in zip(shown, shown[1:])]
+    assert grids.n_frames == 15 and flat == list(range(15))
+    # ffmpeg's fps filter rounds timestamps, so a step is 1..3 source frames; over the clip they average 2.
+    assert all(1 <= s <= 3 for s in steps) and shown[-1] - shown[0] >= 26, "about every other frame, in order"
+
+
+def test_grids_without_stamps_leave_the_corner_bare(short_clip):
+    stamped, bare = labeled_grids(short_clip), labeled_grids(short_clip, stamps=False)
+
+    def corner(grids):  # top-left corner of the tile showing frame 5 (image 1, slot 1): colour(5) is bright red
+        tile = list(tiles(grids.images[1]))[1]
+        return index_of(np.median(np.asarray(tile)[:8, :8].reshape(-1, 3), axis=0))
+
+    assert corner(bare) == 5
+    assert corner(stamped) != 5, "the default still stamps the frame number there"
+
+
+def test_open_request_follows_the_layout_it_was_given(short_clip):
+    fake = FakeMuse(lambda request: to_wire(in_range_sample(14)))
+
+    [item] = sample_open(short_clip, 1, grid="3x3", fps=12, client=fake)
+
+    [request] = fake.requests
+    text = text_of(request)
+    assert "grid of 3 x 3 video frames (12 frames per second)" in text
+    assert "numbered 0 to 14" in text
+    assert len(images_of(request)) == 2, "15 frames fill 2 grids of 9"
+    assert item["error"] is None
+
+
+def test_frames_cited_past_the_end_of_a_lower_fps_clip_are_flagged(short_clip):
+    fake = FakeMuse(lambda request: to_wire(in_range_sample(20)))  # valid at 24 fps (0..29), not at 12 (0..14)
+
+    [item] = sample_open(short_clip, 1, fps=12, client=fake)
+
+    assert item["error"]
+
+
+def test_unstamped_prompt_does_not_claim_printed_frame_numbers(short_clip):
+    stamped, bare = FakeMuse(lambda r: to_wire(in_range_sample(29))), FakeMuse(lambda r: to_wire(in_range_sample(29)))
+
+    sample_open(short_clip, 1, client=stamped)
+    sample_open(short_clip, 1, stamps=False, client=bare)
+
+    assert "printed" in text_of(stamped.requests[0])
+    assert "printed" not in text_of(bare.requests[0])
+
+
 # Twelve phrases, so the ids cross from one digit to two: unpadded ids would sort 1, 10, 11, 12, 2, ...
 TWELVE = ["yes", "no", "hello", "thank you", "stop", "next", "go back", "help me", "call mom", "send message",
           "turn on the lights", "turn off the lights"]
