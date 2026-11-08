@@ -25,11 +25,17 @@ final class Capture: NSObject, AVCaptureFileOutputRecordingDelegate, @unchecked 
                     self.session.addOutput(self.output)
                     self.session.commitConfiguration()
                 }
+                self.session.startRunning()
+                guard self.session.isRunning,
+                      let connection = self.output.connection(with: .video),
+                      connection.isActive, connection.isEnabled else {
+                    if self.session.isRunning { self.session.stopRunning() }
+                    throw CaptureError.unavailable
+                }
                 self.started = onStart
                 self.finished = onFinish
                 let file = FileManager.default.temporaryDirectory
                     .appendingPathComponent(UUID().uuidString).appendingPathExtension("mov")
-                self.session.startRunning()
                 self.output.startRecording(to: file, recordingDelegate: self)
             } catch {
                 onFinish(.failure(error))

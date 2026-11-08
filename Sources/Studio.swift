@@ -19,7 +19,7 @@ final class Studio: ObservableObject {
         var description: String {
             switch self {
             case .whisper: "Move your lips silently and type at the text cursor."
-            case .cursor: "Point with two fingers together. Bring your thumb near the fingertips to click. Spread the two fingers and move up or down to scroll."
+            case .cursor: "Point with two fingers of your right hand together. Bring your thumb near the fingertips to click. Spread the two fingers and move up or down to scroll."
             }
         }
     }
@@ -44,7 +44,7 @@ final class Studio: ObservableObject {
     private let modifierTapMonitor = ModifierTapMonitor()
     @Published private(set) var modifierAccessibilityMissing = false
     private var fnArmed = false
-    @Published private(set) var fnMonitoringReady = false
+    @Published private(set) var fnInputMonitoringMissing = false
     private let gemini: Gemini?
     private let muse: MuseSpark?
     private var target: CursorTarget?
@@ -83,7 +83,7 @@ final class Studio: ObservableObject {
         pendingShortcut?.isFn == true && !CGPreflightListenEventAccess()
     }
 
-    var needsFnSetup: Bool { !choosing && fnMode != nil && !fnMonitoringReady }
+    var needsFnSetup: Bool { !choosing && fnInputMonitoringMissing }
 
     private func activate(_ mode: Mode) {
         switch mode {
@@ -213,11 +213,13 @@ final class Studio: ObservableObject {
         } else {
             modifierTapMonitor.stop()
         }
+        fnInputMonitoringMissing = fnMode != nil && !CGPreflightListenEventAccess()
         if choosing || fnMode != nil {
-            fnMonitoringReady = fnMonitor.start()
+            if !fnMonitor.start(), fnMode != nil, !fnInputMonitoringMissing, !choosing {
+                status = "Could not start the Fn shortcut. Reopen Baijiu Machine to try again."
+            }
         } else {
             fnMonitor.stop()
-            fnMonitoringReady = false
         }
     }
 

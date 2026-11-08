@@ -17,6 +17,12 @@ struct CursorTarget {
         var subrole: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
         guard (subrole as? String) != kAXSecureTextFieldSubrole else { return nil }
+        var role: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+        let textRoles = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole]
+        var selectedTextIsSettable = DarwinBoolean(false)
+        AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &selectedTextIsSettable)
+        guard textRoles.contains(role as? String ?? "") || selectedTextIsSettable.boolValue else { return nil }
         return Self(pid: app.processIdentifier, element: element)
     }
 
@@ -41,6 +47,8 @@ struct CursorTarget {
             }
             return copy
         }
+        guard let pasteTarget = Self.current(), pasteTarget.pid == pid,
+              CFEqual(pasteTarget.element, element) else { return .targetUnavailable }
         clipboard.clearContents()
         clipboard.setString(text, forType: .string)
         let inserted = clipboard.changeCount

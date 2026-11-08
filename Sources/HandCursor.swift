@@ -209,6 +209,7 @@ struct HandPointer {
     private var posted: CGPoint?
     private var lastSampleAt: TimeInterval?
     private var clickArmed = false
+    private var lastPointingAt: TimeInterval?
     private var thumbNearSince: TimeInterval?
     private var scrollHeight: CGFloat?
 
@@ -219,8 +220,14 @@ struct HandPointer {
             displayBounds = bounds
         }
         lastSampleAt = time
+        if let lastPointingAt, time - lastPointingAt > 0.25 {
+            self.lastPointingAt = nil
+            clickArmed = false
+            thumbNearSince = nil
+        }
         switch gesture {
         case .pointing(let tip, let thumbDistance):
+            lastPointingAt = time
             scrollHeight = nil
             let movement = position(for: tip, after: interval, in: bounds)
             if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
@@ -229,11 +236,13 @@ struct HandPointer {
             return movement.map(Event.move)
         case .pinching(let thumbDistance):
             scrollHeight = nil
+            guard lastPointingAt != nil else { return nil }
             if shouldClick(thumbDistance: thumbDistance, at: time), let posted {
                 return .click(posted)
             }
             return nil
         case .scrolling(let height):
+            lastPointingAt = nil
             clickArmed = false
             thumbNearSince = nil
             guard let previousHeight = scrollHeight else {

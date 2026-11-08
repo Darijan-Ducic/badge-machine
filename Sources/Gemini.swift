@@ -36,7 +36,9 @@ struct Gemini {
         let text = result.candidates?.first?.content?.parts
             .filter { $0.thought != true }.compactMap(\.text).joined()
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let text, text != "UNREADABLE",
+        guard let text else { return nil }
+        let wrappers = CharacterSet.punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines)
+        guard text.trimmingCharacters(in: wrappers).uppercased() != "UNREADABLE",
               text.replacingOccurrences(of: Self.uncertaintyMarker, with: "")
                 .contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
         return text

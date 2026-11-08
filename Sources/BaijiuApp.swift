@@ -128,6 +128,12 @@ struct StudioView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             studio.resumeShortcutMonitoring()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            if studio.choosing { studio.cancelChoosing() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { _ in
+            if studio.choosing { studio.cancelChoosing() }
+        }
         .onDisappear {
             if studio.choosing { studio.cancelChoosing() }
         }
