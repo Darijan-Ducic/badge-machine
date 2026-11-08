@@ -18,11 +18,13 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from google import genai
+from google.genai import types
 from jsonschema import Draft202012Validator
 from PIL import Image, ImageDraw, ImageFont
 
 from muse_video import MODEL, make_client
-from scorers import FPS
+from scorers import FPS, GEMINI_MODEL
 from visemes import ALPHABET
 
 # visemes-v1, in the doc's table order. Changing it makes old samples incomparable: bump CONFIG["visemes"].
@@ -397,6 +399,51 @@ def score_closed(clip: Path, phrases: list[str]) -> dict:
         return closed_from_wire(raw, phrases), ("; ".join(problems) or None)
 
     return _call(make_client(), "closed", 0, closed_request(grids, phrases), finish)
+
+
+# ---------------------------------------------------------------- Gemini open reader
+# Gemini gets the same labeled grids and p3 open prompt as Muse, answering in the same wire schema as JSON, so its
+# frame numbers cite the same stamped frames and validate_open applies unchanged. Its items are tagged "gemini_open":
+# candidates.featurize pools them with Muse's open samples, but VTT · Muse (muse_pick) counts Muse's only.
+
+
+def gemini_client():
+    return genai.Client()
+
+
+def gemini_open_request(grids: Grids) -> dict:
+    """The generate_content arguments every Gemini open sample sends with these grids."""
+    images = [types.Part.from_bytes(data=jpeg, mime_type="image/jpeg") for jpeg in grids.images]
+    return {
+        "model": GEMINI_MODEL,
+        "contents": [types.Content(role="user", parts=[types.Part(text=_open_prompt(grids)), *images])],
+        "config": types.GenerateContentConfig(response_mime_type="application/json", response_json_schema=WIRE_SCHEMA),
+    }
+
+
+def sample_gemini_open(clip: Path, k: int, *, client=None) -> list[dict]:
+    """K parallel Gemini open samples as sample_open items with "call": "gemini_open"; `usage` holds Gemini's
+    usage_metadata fields. A failed call is an item with `error`, never raised."""
+    grids = reader_grids(clip)
+    request = gemini_open_request(grids)
+    client = client or gemini_client()  # keep a reference: a garbage-collected Client closes its connection
+
+    def one(i: int) -> dict:
+        start, usage = time.perf_counter(), None
+        try:
+            response = client.models.generate_content(**request)
+            if response.usage_metadata is not None:
+                usage = response.usage_metadata.model_dump(mode="json", exclude_none=True)
+            output = from_wire(json.loads(response.text))
+            error = "; ".join(validate_open(output, grids.n_frames)) or None
+        except Exception as e:  # one failed call must not sink the clip
+            output, error = None, f"{type(e).__name__}: {e}"
+        item = {"call": "gemini_open", "sample_idx": i, "latency_ms": round((time.perf_counter() - start) * 1000),
+                "output": output, "error": error}
+        return item if usage is None else {**item, "usage": usage}
+
+    with ThreadPoolExecutor(max_workers=max(k, 1)) as pool:
+        return list(pool.map(one, range(k)))
 
 
 # ---------------------------------------------------------------- open-call schema variants (v1 stays the default)
