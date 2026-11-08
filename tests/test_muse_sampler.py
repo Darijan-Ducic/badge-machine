@@ -741,3 +741,79 @@ def test_the_clips_own_images_are_the_same_with_or_without_examples(short_clip, 
 
     plain, shot = (images_of(r) for r in fake.requests)
     assert shot[-len(plain):] == plain and len(shot) == len(plain) + 1
+
+
+# ---------------------------------------------------------------- Gemini open reader (same request, schema v1)
+
+
+class FakeGenai:
+    """Stands in for google.genai.Client: records each generate_content call; `reply(request)` returns the model's
+    JSON output or raises like the SDK would."""
+
+    def __init__(self, reply):
+        self.reply, self.requests = reply, []
+        self.models = SimpleNamespace(generate_content=self.generate_content)
+
+    def generate_content(self, **request):
+        from google.genai import types
+        self.requests.append(request)
+        text = json.dumps(self.reply(request))
+        return types.GenerateContentResponse(
+            candidates=[types.Candidate(content=types.Content(role="model", parts=[types.Part(text=text)]))],
+            usage_metadata=types.GenerateContentResponseUsageMetadata(prompt_token_count=3, candidates_token_count=4,
+                                                                      total_token_count=7))
+
+
+def test_gemini_open_sends_muses_grid_images_and_prompt_with_the_wire_schema_as_json(short_clip):
+    from google.genai import types
+    import scorers
+    fake = FakeGenai(lambda request: to_wire(in_range_sample(29)))
+
+    muse_sampler.sample_gemini_open(short_clip, 1, client=fake)
+
+    (request,) = fake.requests
+    muse_request = muse_sampler.open_request(muse_sampler.reader_grids(short_clip))
+    muse_images = [base64.b64decode(part["image_url"]["url"].split(",", 1)[1]) for part in images_of(muse_request)]
+    (content,) = request["contents"]
+    text, *images = content.parts
+    assert text.text == text_of(muse_request), "the same p3 open prompt Muse gets"
+    assert [part.inline_data.data for part in images] == muse_images, "the same stamped grids, in order"
+    assert {part.inline_data.mime_type for part in images} == {"image/jpeg"}
+    config = request["config"]
+    assert isinstance(config, types.GenerateContentConfig)
+    assert config.response_mime_type == "application/json"
+    assert config.response_json_schema == WIRE_SCHEMA
+    assert request["model"] == scorers.GEMINI_MODEL
+
+
+def test_gemini_open_samples_are_tagged_validated_v1_outputs_in_the_sample_shape(short_clip):
+    fake = FakeGenai(lambda request: to_wire(in_range_sample(29)))
+
+    items = muse_sampler.sample_gemini_open(short_clip, 2, client=fake)
+
+    assert len(fake.requests) == 2
+    assert sorted(item["sample_idx"] for item in items) == [0, 1]
+    for item in items:
+        assert item == {"call": "gemini_open", "sample_idx": item["sample_idx"], "latency_ms": item["latency_ms"],
+                        "output": in_range_sample(29), "error": None,
+                        "usage": {"prompt_token_count": 3, "candidates_token_count": 4, "total_token_count": 7}}
+
+
+def test_gemini_open_output_citing_frames_outside_the_clip_is_kept_and_flagged(short_clip):
+    bad = in_range_sample(30)  # the clip's frames are 0..29
+
+    [item] = muse_sampler.sample_gemini_open(short_clip, 1, client=FakeGenai(lambda request: to_wire(bad)))
+
+    assert item["output"] == bad
+    assert "outside frames 0..29" in item["error"]
+
+
+def test_a_raised_gemini_error_becomes_an_error_item(short_clip):
+    def deadline(request):
+        raise TimeoutError("deadline exceeded")
+
+    items = muse_sampler.sample_gemini_open(short_clip, 2, client=FakeGenai(deadline))
+
+    assert [(item["call"], item["output"], item["error"]) for item in items] == \
+        [("gemini_open", None, "TimeoutError: deadline exceeded")] * 2
+    assert all("usage" not in item for item in items)

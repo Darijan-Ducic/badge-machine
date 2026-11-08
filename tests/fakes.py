@@ -6,6 +6,8 @@
                                     "error", "usage"} (muse_sampler.score_closed)
   gemini(clip, phrases, usage)  -> np.ndarray P(phrase), fills `usage` with Gemini usage_metadata fields
                                     (scorers.gemini_scores)
+  gemini_open(clip, k)          -> K items shaped like sample_open's with "call": "gemini_open" and Gemini usage
+                                    (muse_sampler.sample_gemini_open)
 Each fake records the clip bytes and arguments it was called with in `.calls`.
 """
 
@@ -62,6 +64,24 @@ class SampleOpen(Reader):
             item = {"call": "open", "sample_idx": i, "latency_ms": 2000 + i, "output": output,
                     "error": FAILED if output is None else None}
             items.append(item if output is None else {**item, "usage": OPEN_USAGE})
+        return items
+
+
+class GeminiOpen(Reader):
+    """Sample i reads `outputs[i % len(outputs)]`; with no outputs, or for indices in `fail`, the call fails."""
+
+    def __init__(self, *outputs: dict, fail=()):
+        super().__init__()
+        self.outputs, self.fail = outputs, set(fail)
+
+    def __call__(self, clip, k):
+        self.seen(clip, k)
+        items = []
+        for i in range(k):
+            output = None if i in self.fail or not self.outputs else self.outputs[i % len(self.outputs)]
+            item = {"call": "gemini_open", "sample_idx": i, "latency_ms": 3000 + i, "output": output,
+                    "error": FAILED if output is None else None}
+            items.append(item if output is None else {**item, "usage": GEMINI_USAGE})
         return items
 
 

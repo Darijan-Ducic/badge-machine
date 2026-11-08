@@ -12,9 +12,9 @@ import pytest
 
 import muse_sampler
 import scorers
-from clips import load, process_clip, record_clip, stats
-from tests.fakes import (CLOSED_USAGE, GEMINI_USAGE, OPEN_USAGE, PHRASES, Gemini, SampleOpen, ScoreClosed, readers,
-                         v1_output)
+from clips import clip_detail, load, process_clip, record_clip, stats
+from tests.fakes import (CLOSED_USAGE, GEMINI_USAGE, OPEN_USAGE, PHRASES, Gemini, GeminiOpen, SampleOpen, ScoreClosed,
+                         readers, v1_output)
 
 OLD_STATS_KEYS = {"labeled", "clips", "stage", "next_stage", "threshold", "camera_fps", "window", "accuracy", "history"}
 STATS_KEYS = OLD_STATS_KEYS | {"user", "pool_recall", "stages"}
@@ -204,3 +204,45 @@ def test_a_prompted_take_that_says_something_else_keeps_its_stt_and_a_user_edit_
     assert clips._label_text(_prompted_record("like the future of AI is here.")) == "like the future of AI is here."
     assert clips._label_text(_prompted_record("", prompted=1)) == ""
     assert clips._label_text(_prompted_record("This is sleep reading", user_edit="no sound at all")) == "no sound at all"
+
+
+# ---------------------------------------------------------------- Gemini open samples (schema v1, like Muse's)
+
+
+def test_every_read_runs_two_gemini_open_samples_by_default_and_stores_them(store, recording, offline_gemini):
+    process_clip(recording, 30.0, 0, transcribe=lambda _: "yes", phrases=PHRASES, store=store, **readers("yes"))
+
+    (record,) = load(store)
+    assert len(offline_gemini.requests) == 2, "Gemini open is on by default with K=2"
+    assert [s["call"] for s in record["gemini_open"]] == ["gemini_open"] * 2
+    assert all(s["call"] == "open" for s in record["samples"]), "samples stay Muse's"
+
+
+def test_a_gemini_open_hypothesis_no_muse_sample_proposes_joins_the_candidate_pool(store, recording):
+    gemini_open = GeminiOpen(v1_output(("lights out please", 0.7)))
+    result = process_clip(recording, 30.0, 0, transcribe=lambda _: "yes", phrases=PHRASES, store=store,
+                          gemini_open=gemini_open, **readers("yes", "no"))
+
+    pool = {c["text"]: c for c in clip_detail(store, result["clip"])["pool"]}
+    assert "lights out please" in pool
+    # 2 of the 7 valid open outputs (5 Muse, 2 Gemini) propose it
+    assert pool["lights out please"]["features"]["vote"] == pytest.approx(2 / 7)
+
+
+def test_a_failed_gemini_open_reader_leaves_the_clip_readable(store, recording):
+    def broken(clip, k):
+        raise TimeoutError("deadline exceeded")
+
+    result = process_clip(recording, 30.0, 0, transcribe=lambda _: "yes", phrases=PHRASES, store=store,
+                          gemini_open=broken, **readers("yes"))
+
+    assert result["read"]["fused"]["phrase"] == "yes"
+    (record,) = load(store)
+    assert [(s["output"], s["error"]) for s in record["gemini_open"]] == [(None, "TimeoutError: deadline exceeded")]
+
+
+def test_vtt_muse_stays_the_muse_vote_when_gemini_open_reads_otherwise(store, recording):
+    record = record_clip(recording, phrases=PHRASES, user_id="local", mode="runtime", k=1, store=store,
+                         gemini_open=GeminiOpen(v1_output(("no", 0.9))), **readers("yes"))
+
+    assert clip_detail(store, record["id"])["vtt_muse"] == {"text": "yes", "p": 1.0}
